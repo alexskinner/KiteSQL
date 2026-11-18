@@ -99,14 +99,21 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Delete<'a> {
         };
         let mut deleted_count = 0;
 
-        let table = arena
-            .table_cache()
-            .get(&table_id)
-            .ok_or(DatabaseError::TableNotFound)?;
-        let serializers = table
-            .columns()
-            .map(|col| plan_arena.column(*col).datatype().serializable())
-            .collect::<Vec<_>>();
+        let enable_undo = arena.should_record_undo();
+        let serializers = if enable_undo {
+            let table = arena
+                .table_cache()
+                .get(&table_id)
+                .ok_or(DatabaseError::TableNotFound)?;
+            Some(
+                table
+                    .columns()
+                    .map(|col| plan_arena.column(*col).datatype().serializable())
+                    .collect::<Vec<_>>(),
+            )
+        } else {
+            None
+        };
 
         while input.next_tuple(arena, plan_arena).await? {
             let tuple = arena.take_tuple();
@@ -130,16 +137,19 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Delete<'a> {
                 .remove_tuple(table_codec, table_id, &tuple_id)
                 .await?;
 
-            if arena.should_record_undo() {
+            if let Some(ref serializers) = serializers {
                 for (index_id, index_ty, exprs) in index_templates.iter().rev() {
                     arena.rewrite(exprs, plan_arena, Some(&tuple))?;
-                    let mut state = arena.local_state(plan_arena);
-                    let (values, _, _) = state.tuple_transaction_codec_mut();
+                    let index_values = {
+                        let mut state = arena.local_state(plan_arena);
+                        let (values, _, _) = state.tuple_transaction_codec_mut();
+                        values.clone()
+                    };
                     arena.undo_log().record_add_index(
                         table_id,
                         *index_id,
                         *index_ty,
-                        values.clone(),
+                        index_values,
                         tuple_id.clone(),
                     );
                 }

@@ -134,10 +134,10 @@ fn test_statement_atomicity_earlier_row_survives() -> Result<(), DatabaseError> 
     let mut iter = session.run("SELECT * FROM test ORDER BY id")?;
     let mut results = Vec::new();
     while let Some((id, val)) = iter.next_tuple(|_, row| {
-        Some((
+        (
             row.get(0).unwrap().i32().unwrap(),
             row.get(1).unwrap().i32().unwrap(),
-        ))
+        )
     })? {
         results.push((id, val));
     }
@@ -170,7 +170,7 @@ fn test_statement_atomicity_unique_index_preserved() -> Result<(), DatabaseError
 
     let mut iter = session.run("SELECT * FROM test WHERE val = 100")?;
     let mut count = 0;
-    let mut id = 0;
+    let mut id: Option<i32> = None;
     while let Some(row_id) = iter.next_tuple(|_, row| row.get(0).unwrap().i32())? {
         count += 1;
         id = row_id;
@@ -178,7 +178,7 @@ fn test_statement_atomicity_unique_index_preserved() -> Result<(), DatabaseError
     iter.done()?;
 
     assert_eq!(count, 1, "Should find original row by index");
-    assert_eq!(id, 1, "Should be original row");
+    assert_eq!(id, Some(1), "Should be original row");
 
     {
         let iter = session.run("INSERT INTO test VALUES (3, 100)")?;
@@ -206,7 +206,7 @@ fn test_statement_atomicity_update_values_and_indexes() -> Result<(), DatabaseEr
     session.run("BEGIN")?.done()?;
 
     {
-        let iter = session.run("UPDATE test SET val = val + 50")?;
+        let iter = session.run("UPDATE test SET val = 100")?;
         let result = iter.done();
         assert!(result.is_err(), "Update violating unique should fail");
     }
@@ -214,7 +214,9 @@ fn test_statement_atomicity_update_values_and_indexes() -> Result<(), DatabaseEr
     let mut iter = session.run("SELECT val FROM test ORDER BY id")?;
     let mut vals = Vec::new();
     while let Some(val) = iter.next_tuple(|_, row| row.get(0).unwrap().i32())? {
-        vals.push(val);
+        if let Some(v) = val {
+            vals.push(v);
+        }
     }
     iter.done()?;
 
@@ -223,7 +225,8 @@ fn test_statement_atomicity_update_values_and_indexes() -> Result<(), DatabaseEr
     let mut iter = session.run("SELECT id FROM test WHERE val = 200")?;
     let id = iter
         .next_tuple(|_, row| row.get(0).unwrap().i32())?
-        .expect("Index lookup should find row");
+        .expect("Index lookup should find row")
+        .expect("Should have value");
     iter.done()?;
     assert_eq!(id, 2, "Index lookup should return correct row");
 
@@ -247,7 +250,7 @@ fn test_statement_atomicity_pk_changing_update() -> Result<(), DatabaseError> {
     session.run("BEGIN")?.done()?;
 
     {
-        let iter = session.run("UPDATE test SET id = id + 10")?;
+        let iter = session.run("UPDATE test SET id = 1")?;
         let result = iter.done();
         assert!(
             result.is_err(),
@@ -258,10 +261,10 @@ fn test_statement_atomicity_pk_changing_update() -> Result<(), DatabaseError> {
     let mut iter = session.run("SELECT id, val FROM test ORDER BY id")?;
     let mut results = Vec::new();
     while let Some((id, val)) = iter.next_tuple(|_, row| {
-        Some((
+        (
             row.get(0).unwrap().i32().unwrap(),
             row.get(1).unwrap().i32().unwrap(),
-        ))
+        )
     })? {
         results.push((id, val));
     }
@@ -306,10 +309,10 @@ fn test_statement_after_failed_statement() -> Result<(), DatabaseError> {
     let mut iter = session.run("SELECT * FROM test ORDER BY id")?;
     let mut results = Vec::new();
     while let Some((id, val)) = iter.next_tuple(|_, row| {
-        Some((
+        (
             row.get(0).unwrap().i32().unwrap(),
             row.get(1).unwrap().i32().unwrap(),
-        ))
+        )
     })? {
         results.push((id, val));
     }

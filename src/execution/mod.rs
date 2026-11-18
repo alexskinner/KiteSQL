@@ -853,6 +853,10 @@ impl ExecBuffer {
         &mut self.result.tuple
     }
 
+    pub(crate) fn table_codec_mut(&mut self) -> &mut TableCodec {
+        &mut self.table_codec
+    }
+
     pub(crate) fn iter_slots<'t, T: StorageTransaction + 't>(
         &mut self,
         len: usize,
@@ -911,6 +915,10 @@ impl<'a, 't, T: StorageTransaction + 'a> ExecArena<'a, 't, T> {
 
     pub(crate) fn take_undo_log(&mut self) -> statement_undo_log::StatementUndoLog {
         mem::take(&mut self.statement_undo_log)
+    }
+
+    pub(crate) fn transaction_mut(&mut self) -> &mut T {
+        unsafe { &mut *self.transaction.0 }
     }
 
     pub(crate) fn release_iters(&mut self, buffer: Option<&mut ExecBuffer>) {

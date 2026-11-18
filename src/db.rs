@@ -2012,16 +2012,8 @@ impl<'p, T: StorageTransaction + 'p> TransactionGuard<'_, 'p, T> {
             Err(original_err) => {
                 let undo_log = self.arena.take_undo_log();
                 let rollback_result = {
-                    let state = ExecArenaLocalState {
-                        transaction: self.arena.transaction,
-                        table_codec: &mut executor.buffer.table_codec,
-                        bound_buffers: &mut executor.buffer.bound_buffers,
-                        result: &mut executor.buffer.result,
-                        plan_arena: &() as &dyn MetaArena,
-                        iters: &mut self.arena.iters,
-                        ddl_apply: &mut self.arena.ddl_apply,
-                    };
-                    let (transaction, table_codec) = state.transaction_codec_mut();
+                    let transaction = self.arena.transaction_mut();
+                    let table_codec = executor.buffer.table_codec_mut();
                     undo_log.rollback(transaction, table_codec).await
                 };
                 match rollback_result {
@@ -2031,7 +2023,7 @@ impl<'p, T: StorageTransaction + 'p> TransactionGuard<'_, 'p, T> {
                     }
                     Err(rollback_err) => {
                         self.finish(Some(&mut executor.buffer));
-                        Err(DatabaseError::Internal(format!(
+                        Err(DatabaseError::InvalidPlan(format!(
                             "Statement failed: {}. Rollback also failed: {}. Transaction needs ROLLBACK.",
                             original_err, rollback_err
                         )))

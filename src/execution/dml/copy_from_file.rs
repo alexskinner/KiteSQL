@@ -91,6 +91,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CopyFromFile<'a> {
 
         let mut record = csv::StringRecord::new();
         let mut chunk = TupleImpl::from(Tuple::new(None, Vec::with_capacity(column_count)));
+        let enable_undo = arena.should_record_undo();
         while reader.read_record(&mut record)? {
             if !(record.len() == column_count
                 || record.len() == column_count + 1 && record.get(column_count) == Some(""))
@@ -105,7 +106,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CopyFromFile<'a> {
             transaction
                 .append_tuple(table_codec, table.id(), &chunk, &serializers, false)
                 .await?;
-            if arena.should_record_undo() {
+            if enable_undo {
                 arena.undo_log().record_remove_tuple(table.id(), tuple_id);
             }
         }
