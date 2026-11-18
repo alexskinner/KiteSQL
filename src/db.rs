@@ -1381,6 +1381,15 @@ impl<S: Storage> Database<S> {
     pub fn transaction_isolation(&self) -> TransactionIsolationLevel {
         self.transaction_isolation
     }
+
+    /// Creates a session for SQL transaction control.
+    ///
+    /// The session borrows the database and provides BEGIN, COMMIT, ROLLBACK,
+    /// and SET autocommit control. See [`crate::db::session::Session`] for usage patterns.
+    #[cfg(feature = "parser")]
+    pub fn session(&self) -> crate::db::session::Session<'_, S> {
+        crate::db::session::Session::new(self)
+    }
 }
 
 #[maybe_async]

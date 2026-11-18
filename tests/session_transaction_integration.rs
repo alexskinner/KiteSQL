@@ -1,13 +1,11 @@
 // Integration test for Session transaction control
 // Transaction control (BEGIN, COMMIT, ROLLBACK, SET autocommit) is available
-// through the Session API. Note that the safe implementation tracks transaction
-// state but does not keep actual storage transactions open across calls.
+// through the Session API.
 
 #![cfg(all(not(feature = "async"), feature = "lmdb"))]
 
-use kite_sql::db::{DataBaseBuilder, Session};
+use kite_sql::db::DataBaseBuilder;
 use kite_sql::errors::DatabaseError;
-use std::sync::Arc;
 use tempfile::TempDir;
 
 #[test]
@@ -17,8 +15,7 @@ fn test_session_transaction_control_integration() -> Result<(), DatabaseError> {
 
     database.ddl("CREATE TABLE tx_test (id INT PRIMARY KEY, val INT)")?;
 
-    let database = Arc::new(database);
-    let mut session = Session::new(database.clone());
+    let mut session = database.session();
 
     // Test 1: Autocommit mode (default)
     session.run("INSERT INTO tx_test VALUES (1, 100)")?.done()?;
@@ -95,11 +92,116 @@ fn test_session_transaction_control_integration() -> Result<(), DatabaseError> {
         "BEGIN while transaction open should implicitly commit"
     );
 
-    // Test 6: ROLLBACK changes transaction state
+    // Test 6: ROLLBACK discards changes
     session.run("BEGIN")?.done()?;
-    assert!(session.in_transaction());
+    session
+        .run("INSERT INTO tx_test VALUES (99, 999)")?
+        .done()?;
     session.run("ROLLBACK")?.done()?;
-    assert!(!session.in_transaction());
+
+    let mut iter = database.run("SELECT * FROM tx_test WHERE id = 99")?;
+    let mut count = 0;
+    while iter.next_tuple(|_, _| ())?.is_some() {
+        count += 1;
+    }
+    iter.done()?;
+    assert_eq!(count, 0, "ROLLBACK should discard changes");
 
     Ok(())
 }
+
+// Statement-level atomicity tests commented out pending implementation
+// These tests verify MySQL-style statement atomicity where a failing statement
+// inside a transaction rolls back only that statement, not the entire transaction.
+// Implementation requires an undo log or write-buffer overlay at the executor level.
+
+/*
+#[test]
+fn test_statement_atomicity_insert() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    // Insert one valid row
+    session.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+
+    // Multi-row insert that fails on row 2 (duplicate key)
+    // MySQL: failing statement should be rolled back, transaction stays open
+    let result = session.run("INSERT INTO test VALUES (11,11),(1,1)");
+    let is_err = result.is_err();
+    drop(result);
+    assert!(is_err, "Duplicate key should fail");
+
+    // Transaction should still be open
+    assert!(session.in_transaction());
+
+    // The id 11 should NOT be in the table (statement rolled back)
+    let mut iter = session.run("SELECT * FROM test WHERE id = 11")?;
+    let mut count = 0;
+    while iter.next_tuple(|_, _| ())?.is_some() {
+        count += 1;
+    }
+    iter.done()?;
+    assert_eq!(
+        count, 0,
+        "Failed statement should be rolled back (id 11 should not exist)"
+    );
+
+    // The first row should still be there
+    let mut iter = session.run("SELECT * FROM test WHERE id = 1")?;
+    let mut count = 0;
+    while iter.next_tuple(|_, _| ())?.is_some() {
+        count += 1;
+    }
+    iter.done()?;
+    assert_eq!(count, 1, "Previous successful insert should remain");
+
+    session.run("COMMIT")?.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_statement_atomicity_update() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT UNIQUE)")?;
+
+    // Insert test data
+    database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+    database.run("INSERT INTO test VALUES (2, 200)")?.done()?;
+    database.run("INSERT INTO test VALUES (3, 300)")?.done()?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    // Update that fails partway (trying to set val=100 which violates UNIQUE constraint on row 2)
+    let result = session.run("UPDATE test SET val = 100");
+    let is_err = result.is_err();
+    drop(result);
+    assert!(is_err, "UNIQUE constraint should fail");
+
+    // Transaction should still be open
+    assert!(session.in_transaction());
+
+    // Check that NO updates were applied (statement rolled back)
+    let mut iter = session.run("SELECT val FROM test ORDER BY id")?;
+    let mut vals = Vec::new();
+    while let Some(val) = iter.next_tuple(|_, row| row.get(1).unwrap().clone())? {
+        vals.push(val);
+    }
+    iter.done()?;
+
+    // Values should remain unchanged
+    assert_eq!(vals.len(), 3);
+
+    session.run("ROLLBACK")?.done()?;
+
+    Ok(())
+}
+*/

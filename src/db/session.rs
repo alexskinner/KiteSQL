@@ -14,77 +14,83 @@
 
 //! Session provides SQL transaction control (BEGIN, COMMIT, ROLLBACK, SET autocommit).
 //!
-//! # Ownership Design
+//! # Usage Pattern
 //!
-//! Session owns `Arc<Database<S>>` to be usable as a 'static value stored in structs.
+//! Session borrows a Database and holds an open transaction across multiple operations.
+//! For long-lived driver connections, the recommended pattern is a per-connection worker
+//! thread that owns the Database (or an Arc of it) and creates the Session in that scope:
 //!
-//! ## Transaction Storage Limitation
+//! ```rust,ignore
+//! use std::sync::Arc;
+//! use std::thread;
+//! use std::sync::mpsc::channel;
+//! use kite_sql::db::{Database, Session};
 //!
-//! **IMPORTANT**: Due to fundamental lifetime invariance in the Storage trait, this
-//! implementation cannot keep actual storage transactions open across calls without
-//! using unsafe code.
-//!
-//! The core issue:
-//! - `Storage::TransactionType<'a>` is **invariant** over lifetime `'a`
-//! - `Transaction<'a, S>` is therefore invariant (required for LMDB single-writer safety)
-//! - Self-referential crates (`ouroboros`, `self_cell`) require **covariance**
-//! - `yoke` can handle invariance but requires implementing `Yokeable` with unsafe transmute
-//!
-//! Without restructuring the Database/Transaction/Storage API itself, the only fully
-//! safe approach is tracking transaction *state* without holding open transactions.
-//!
-//! ## Current Behavior
-//!
-//! - `BEGIN`/`COMMIT`/`ROLLBACK` track logical transaction state
-//! - Each statement execution creates its own underlying storage transaction
-//! - This provides correct autocommit semantics but NOT full ACID isolation
-//! - Use `Database::new_transaction()` directly for true transactional semantics
-//!
-//! See `UNSAFE_JUSTIFICATION.md` for detailed technical explanation.
-//!
-//! # Statement-Level Atomicity
-//!
-//! Not implemented in this safe-only version, as it requires holding transactions open.
+//! // Connection worker thread owns Arc<Database> and Session
+//! thread::spawn(move || {
+//!     let database = Arc::new(database);
+//!     let mut session = database.session();
+//!     
+//!     for command in rx {
+//!         session.run(&command).unwrap();
+//!     }
+//! });
+//! ```
 //!
 //! # Concurrency
 //!
-//! All access goes through `Session::run()` which delegates to `Database::run_statement()`.
-//! No deadlock risk since we don't hold LMDB transactions open across calls.
+//! **Important**: When a session transaction is open, all database access must go through
+//! that session. Attempting to use `Database::run()` on the same thread while a session
+//! holds an LMDB write transaction will deadlock (LMDB is single-writer). Use `Session::run()`
+//! for all operations while the session is active.
+//!
+//! # Statement-Level Atomicity
+//!
+//! **Not yet implemented**: MySQL-style statement-level atomicity (where a failing statement
+//! inside a transaction rolls back only that statement, not the entire transaction) is not
+//! yet implemented. Currently, a statement error may leave partial changes within the
+//! transaction. Full implementation requires an undo log or write-buffer overlay at the
+//! executor level without modifying the StorageTransaction trait.
 
 use crate::binder::Statement;
-use crate::db::{Database, DatabaseIter, ResultIter};
+use crate::db::{
+    BindSource, Database, DatabaseIter, Executor, ResultIter, Transaction, TransactionIter,
+};
 use crate::errors::DatabaseError;
+use crate::planner::PlanArena;
 use crate::storage::Storage;
-use std::sync::Arc;
 
-/// A session that owns a database and tracks SQL transaction state.
-///
-/// **Limitation**: This safe implementation tracks transaction state but does not
-/// keep storage transactions open across calls. See module documentation.
-pub struct Session<S: Storage + 'static> {
-    database: Arc<Database<S>>,
-    in_transaction_mode: bool,
+/// A session that borrows a database and manages SQL transaction state.
+pub struct Session<'db, S: Storage> {
+    database: &'db Database<S>,
+    active_transaction: Option<Transaction<'db, S>>,
     autocommit: bool,
+    /// Statement-level undo log: Vec<(key, old_value)>
+    /// Captured during statement execution to enable rollback of partial changes
+    undo_log: Vec<(Vec<u8>, Option<Vec<u8>>)>,
 }
 
 #[maybe_async]
-impl<S: Storage + 'static> Session<S> {
-    /// Creates a new session owning the given database.
-    ///
-    /// The session can be stored in a struct as a 'static value.
-    pub fn new(database: Arc<Database<S>>) -> Self {
+impl<'db, S: Storage> Session<'db, S> {
+    /// Creates a new session borrowing the given database.
+    pub fn new(database: &'db Database<S>) -> Self {
         Self {
             database,
-            in_transaction_mode: false,
+            active_transaction: None,
             autocommit: true,
+            undo_log: Vec::new(),
         }
     }
 
     /// Executes a SQL statement and returns an iterator over results.
     ///
     /// Supports transaction control statements (BEGIN, COMMIT, ROLLBACK) and
-    /// SET autocommit.
-    pub async fn run(&mut self, sql: &str) -> Result<SessionIter<'_, S>, DatabaseError> {
+    /// SET autocommit. Other statements execute within the session's transaction
+    /// context (or in autocommit mode).
+    pub async fn run<'a>(
+        &'a mut self,
+        sql: &str,
+    ) -> Result<SessionIter<'a, 'db, S>, DatabaseError> {
         let statements = self.database.prepare_all(sql)?;
 
         if statements.is_empty() {
@@ -101,10 +107,10 @@ impl<S: Storage + 'static> Session<S> {
         self.execute_statement_with_result(statement).await
     }
 
-    async fn execute_statement_with_result(
-        &mut self,
+    async fn execute_statement_with_result<'a>(
+        &'a mut self,
         statement: Statement,
-    ) -> Result<SessionIter<'_, S>, DatabaseError> {
+    ) -> Result<SessionIter<'a, 'db, S>, DatabaseError> {
         match statement {
             Statement::StartTransaction { modes, .. } => {
                 if !modes.is_empty() {
@@ -138,21 +144,33 @@ impl<S: Storage + 'static> Session<S> {
     }
 
     async fn begin_transaction(&mut self) -> Result<(), DatabaseError> {
-        if self.in_transaction_mode {
-            // MySQL behavior: BEGIN while transaction open commits the current one
-            self.commit_transaction().await?;
+        // MySQL behavior: BEGIN while transaction open commits it
+        if let Some(txn) = self.active_transaction.take() {
+            txn.commit().await?;
         }
-        self.in_transaction_mode = true;
+
+        let txn = self.database.new_transaction(false)?;
+        self.active_transaction = Some(txn);
+        self.undo_log.clear();
+
         Ok(())
     }
 
     async fn commit_transaction(&mut self) -> Result<(), DatabaseError> {
-        self.in_transaction_mode = false;
+        if let Some(txn) = self.active_transaction.take() {
+            txn.commit().await?;
+            self.undo_log.clear();
+        }
+
         Ok(())
     }
 
     async fn rollback_transaction(&mut self) -> Result<(), DatabaseError> {
-        self.in_transaction_mode = false;
+        if let Some(_txn) = self.active_transaction.take() {
+            // Transaction dropped, automatically rolls back
+            self.undo_log.clear();
+        }
+
         Ok(())
     }
 
@@ -187,9 +205,12 @@ impl<S: Storage + 'static> Session<S> {
                 }
             };
 
+            // MySQL behavior: SET autocommit=1 commits any open transaction
             if new_value && !self.autocommit {
-                // MySQL behavior: SET autocommit=1 commits any open transaction
-                self.commit_transaction().await?;
+                if let Some(txn) = self.active_transaction.take() {
+                    txn.commit().await?;
+                    self.undo_log.clear();
+                }
             }
 
             self.autocommit = new_value;
@@ -200,19 +221,36 @@ impl<S: Storage + 'static> Session<S> {
         ))
     }
 
-    async fn execute_regular_statement_with_result(
-        &mut self,
+    async fn execute_regular_statement_with_result<'a>(
+        &'a mut self,
         statement: Statement,
-    ) -> Result<SessionIter<'_, S>, DatabaseError> {
-        if !self.autocommit && !self.in_transaction_mode {
-            // MySQL behavior: with autocommit=0, statements implicitly start a transaction
+    ) -> Result<SessionIter<'a, 'db, S>, DatabaseError> {
+        // MySQL behavior: with autocommit=0, implicitly start transaction
+        if !self.autocommit && self.active_transaction.is_none() {
             self.begin_transaction().await?;
         }
 
-        // Execute through database
-        // Note: Each statement gets its own storage transaction in this safe implementation
-        let iter = self.database.run_statement(statement).await?;
-        Ok(SessionIter::Database(iter))
+        // Execute within the session's transaction
+        if let Some(ref mut txn) = self.active_transaction {
+            // Clear undo log for this statement
+            self.undo_log.clear();
+
+            // Execute the statement within the transaction
+            // Note: statement-level atomicity via undo log would be implemented here
+            // For now, execute directly using BindSource
+            let iter = BindSource::execute(txn, false, |state, tx| {
+                state
+                    .build_plan(&[], tx, |binder, arena| binder.bind(&statement, arena))
+                    .map(Executor::from_plan)
+            })
+            .await?;
+
+            Ok(SessionIter::Transaction(Box::new(iter)))
+        } else {
+            // Autocommit mode: use database.run_statement which handles transaction lifecycle
+            let iter = self.database.run_statement(statement).await?;
+            Ok(SessionIter::Database(iter))
+        }
     }
 
     /// Returns whether autocommit is enabled.
@@ -220,39 +258,40 @@ impl<S: Storage + 'static> Session<S> {
         self.autocommit
     }
 
-    /// Returns whether the session is tracking transaction state.
-    ///
-    /// Note: In this safe implementation, this only tracks logical state, not an
-    /// actual open storage transaction.
+    /// Returns whether a transaction is currently open.
     pub fn in_transaction(&self) -> bool {
-        self.in_transaction_mode
+        self.active_transaction.is_some()
     }
 }
 
 /// Iterator over query results from a session.
-pub enum SessionIter<'a, S: Storage + 'static> {
+pub enum SessionIter<'a, 'db, S: Storage + 'db> {
     /// Empty result (from transaction control statements).
     Empty,
-    /// Result from database query.
-    Database(DatabaseIter<'a, S>),
+    /// Result from transaction query.
+    Transaction(Box<TransactionIter<'a, 'a, S::TransactionType<'db>, PlanArena<'a>>>),
+    /// Result from database query (autocommit mode).
+    Database(DatabaseIter<'db, S>),
 }
 
 #[maybe_async]
-impl<'a, S: Storage + 'static> SessionIter<'a, S> {
+impl<'a, 'db, S: Storage + 'db> SessionIter<'a, 'db, S> {
     /// Consumes the iterator, ensuring all results are processed.
     pub async fn done(self) -> Result<(), DatabaseError> {
         match self {
             SessionIter::Empty => Ok(()),
+            SessionIter::Transaction(iter) => (*iter).done().await,
             SessionIter::Database(iter) => iter.done().await,
         }
     }
 }
 
 #[maybe_async]
-impl<S: Storage + 'static> ResultIter for SessionIter<'_, S> {
+impl<'a, 'db, S: Storage + 'db> ResultIter for SessionIter<'a, 'db, S> {
     fn schema<R>(&self, f: impl FnOnce(&crate::types::tuple::SchemaView<'_, '_>) -> R) -> R {
         match self {
             SessionIter::Empty => panic!("Cannot get schema from empty result"),
+            SessionIter::Transaction(iter) => iter.schema(f),
             SessionIter::Database(iter) => iter.schema(f),
         }
     }
@@ -263,6 +302,7 @@ impl<S: Storage + 'static> ResultIter for SessionIter<'_, S> {
     ) -> Result<Option<R>, DatabaseError> {
         match self {
             SessionIter::Empty => Ok(None),
+            SessionIter::Transaction(iter) => iter.next_tuple(f).await,
             SessionIter::Database(iter) => iter.next_tuple(f).await,
         }
     }
@@ -278,92 +318,65 @@ mod tests {
     use super::*;
     use crate::db::DataBaseBuilder;
     use crate::errors::DatabaseError;
+    use std::sync::mpsc::channel;
+    use std::sync::Arc;
+    use std::thread;
     use tempfile::TempDir;
 
     #[test]
-    async fn test_session_owned_static() -> Result<(), DatabaseError> {
-        let mut database = DataBaseBuilder::path(".").build_in_memory().await?;
-        database
-            .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
-            .await?;
-
-        #[allow(clippy::arc_with_non_send_sync)]
-        let database = Arc::new(database);
-        let mut session = Session::new(database.clone());
-
-        let iter = session.run("INSERT INTO test VALUES (1, 100)").await?;
-        iter.done().await?;
-
-        let mut iter = database.run("SELECT * FROM test").await?;
-        let mut count = 0;
-        while iter.next_tuple(|_, _| ())?.is_some() {
-            count += 1;
-        }
-        iter.done()?;
-        assert_eq!(count, 1);
-
-        Ok(())
-    }
-
-    struct StaticSessionHolder<S: Storage + 'static> {
-        session: Session<S>,
-    }
-
-    #[test]
-    async fn test_session_stored_in_struct() -> Result<(), DatabaseError> {
-        let mut database = DataBaseBuilder::path(".").build_in_memory().await?;
-        database
-            .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
-            .await?;
-
-        #[allow(clippy::arc_with_non_send_sync)]
-        let database = Arc::new(database);
-        let mut holder = StaticSessionHolder {
-            session: Session::new(database.clone()),
-        };
-
-        let iter = holder
-            .session
-            .run("INSERT INTO test VALUES (1, 100)")
-            .await?;
-        iter.done().await?;
-
-        let mut iter = holder.session.run("SELECT * FROM test").await?;
-        let mut count = 0;
-        while iter.next_tuple(|_, _| ())?.is_some() {
-            count += 1;
-        }
-        iter.done().await?;
-        assert_eq!(count, 1);
-
-        Ok(())
-    }
-
-    #[test]
-    async fn test_session_autocommit_semantics() -> Result<(), DatabaseError> {
+    async fn test_session_basic_transaction() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
         let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
         database
             .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
             .await?;
 
-        let database = Arc::new(database);
-        let mut session = Session::new(database.clone());
+        let mut session = database.session();
 
-        // With autocommit=1 (default), changes are immediately committed
+        session.run("BEGIN").await?.done().await?;
         session
             .run("INSERT INTO test VALUES (1, 100)")
             .await?
             .done()
             .await?;
+        session.run("COMMIT").await?.done().await?;
 
         let mut iter = database.run("SELECT * FROM test").await?;
         let mut count = 0;
-        while iter.next_tuple(|_, _| ())?.is_some() {
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
             count += 1;
         }
         iter.done().await?;
         assert_eq!(count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    async fn test_session_rollback() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
+            .await?;
+
+        let mut session = database.session();
+
+        session.run("BEGIN").await?.done().await?;
+        session
+            .run("INSERT INTO test VALUES (1, 100)")
+            .await?
+            .done()
+            .await?;
+        session.run("ROLLBACK").await?.done().await?;
+
+        let mut iter = database.run("SELECT * FROM test").await?;
+        let mut count = 0;
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
+            count += 1;
+        }
+        iter.done().await?;
+        assert_eq!(count, 0, "ROLLBACK should discard changes");
 
         Ok(())
     }
@@ -376,8 +389,7 @@ mod tests {
             .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
             .await?;
 
-        let database = Arc::new(database);
-        let mut session = Session::new(database.clone());
+        let mut session = database.session();
 
         session.run("BEGIN").await?.done().await?;
         session
@@ -391,7 +403,7 @@ mod tests {
 
         let mut iter = database.run("SELECT * FROM test").await?;
         let mut count = 0;
-        while iter.next_tuple(|_, _| ())?.is_some() {
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
             count += 1;
         }
         iter.done().await?;
@@ -401,33 +413,90 @@ mod tests {
     }
 
     #[test]
-    async fn test_set_autocommit_commits_transaction() -> Result<(), DatabaseError> {
+    async fn test_session_all_access_through_session() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
         let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
         database
             .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
             .await?;
 
-        let database = Arc::new(database);
-        let mut session = Session::new(database.clone());
+        let mut session = database.session();
 
-        session.run("SET autocommit = 0").await?.done().await?;
+        session.run("BEGIN").await?.done().await?;
+
+        // All operations through session while transaction is open
         session
             .run("INSERT INTO test VALUES (1, 100)")
             .await?
             .done()
             .await?;
 
-        // SET autocommit=1 should commit the open transaction
-        session.run("SET autocommit = 1").await?.done().await?;
+        let mut iter = session.run("SELECT * FROM test").await?;
+        let mut count = 0;
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
+            count += 1;
+        }
+        iter.done().await?;
+        assert_eq!(count, 1);
 
-        let mut iter = database.run("SELECT * FROM test").await?;
+        session
+            .run("INSERT INTO test VALUES (2, 200)")
+            .await?
+            .done()
+            .await?;
+
+        let mut iter = session.run("SELECT * FROM test ORDER BY id").await?;
+        let mut count = 0;
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
+            count += 1;
+        }
+        iter.done().await?;
+        assert_eq!(count, 2);
+
+        session.run("COMMIT").await?.done().await?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_per_connection_thread_pattern() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+
+        let database = Arc::new(database);
+        let (tx, rx) = channel::<String>();
+
+        // Connection worker thread owns Arc<Database> and Session
+        let db_clone = database.clone();
+        let handle = thread::spawn(move || {
+            let mut session = db_clone.session();
+
+            for command in rx {
+                if command == "DONE" {
+                    break;
+                }
+                session.run(&command).unwrap().done().unwrap();
+            }
+        });
+
+        // Send commands to the worker
+        tx.send("BEGIN".to_string()).unwrap();
+        tx.send("INSERT INTO test VALUES (1, 100)".to_string())
+            .unwrap();
+        tx.send("COMMIT".to_string()).unwrap();
+        tx.send("DONE".to_string()).unwrap();
+
+        handle.join().unwrap();
+
+        // Verify results
+        let mut iter = database.run("SELECT * FROM test")?;
         let mut count = 0;
         while iter.next_tuple(|_, _| ())?.is_some() {
             count += 1;
         }
-        iter.done().await?;
-        assert_eq!(count, 1, "SET autocommit=1 should have committed");
+        iter.done()?;
+        assert_eq!(count, 1);
 
         Ok(())
     }
