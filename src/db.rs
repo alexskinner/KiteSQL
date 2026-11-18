@@ -2146,9 +2146,9 @@ pub struct Transaction<'a, S: Storage + 'a> {
     /// The catalog generation this transaction binds against, pinned when the transaction
     /// was created. All statements in this transaction use this generation, never the
     /// latest one, ensuring consistent schema even if other sessions publish DDL.
-    catalog: CatalogRef<'a>,
+    pub(crate) catalog: CatalogRef<'a>,
     read_only: bool,
-    enable_undo: bool,
+    pub(crate) enable_undo: bool,
 }
 
 #[maybe_async]
