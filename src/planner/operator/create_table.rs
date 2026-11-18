@@ -25,6 +25,8 @@ pub struct CreateTableOperator {
     /// List of columns of the table
     pub columns: Vec<ColumnCatalog>,
     pub if_not_exists: bool,
+    /// Composite unique constraints: each inner Vec contains column names for a unique constraint
+    pub unique_constraints: Vec<Vec<String>>,
 }
 
 impl fmt::Display for CreateTableOperator {
