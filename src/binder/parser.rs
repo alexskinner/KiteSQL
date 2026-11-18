@@ -3575,8 +3575,7 @@ mod tests {
             if_exists: false,
             drop_behavior: None,
         }];
-        let scala_functions = Default::default();
-        let table_functions = Default::default();
+        let function_registry = crate::function::registry::FunctionRegistry::new();
         let transaction = tables.storage.transaction()?;
         let arena = tables.table_arena.borrow();
         let mut binder = Binder::new(
@@ -3585,8 +3584,7 @@ mod tests {
                 &arena.tables,
                 &arena.views,
                 &transaction,
-                &scala_functions,
-                &table_functions,
+                &function_registry,
             ),
             &[],
             None,

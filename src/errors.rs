@@ -82,6 +82,7 @@ pub enum DatabaseError {
     DuplicateTableName(String),
     DuplicatePrimaryKey,
     DuplicateUniqueValue,
+    FunctionAlreadyExists(String),
     FunctionNotFound {
         name: String,
         span: Option<SqlErrorSpan>,
@@ -186,6 +187,9 @@ impl fmt::Display for DatabaseError {
             Self::DuplicatePrimaryKey => f.write_str("duplicate primary key"),
             Self::DuplicateUniqueValue => {
                 f.write_str("the column has been declared unique and the value already exists")
+            }
+            Self::FunctionAlreadyExists(name) => {
+                write!(f, "function: `{name}` already exists")
             }
             Self::FunctionNotFound { name, span } => {
                 write!(

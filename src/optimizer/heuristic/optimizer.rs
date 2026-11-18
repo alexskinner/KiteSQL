@@ -858,16 +858,14 @@ mod tests {
             true,
             false,
         )];
-        let scala_functions = Default::default();
-        let table_functions = Default::default();
+        let function_registry = crate::function::registry::FunctionRegistry::new();
         let mut binder = Binder::new(
             BinderContext::new(
                 database.state.names(),
                 database.state.table_cache(),
                 database.state.view_cache(),
                 &transaction,
-                &scala_functions,
-                &table_functions,
+                &function_registry,
             ),
             &[],
             None,

@@ -37,6 +37,7 @@ impl OctetLength {
             summary: FunctionSummary {
                 name: function_name.into(),
                 arg_types,
+                persistence: crate::expression::function::PersistencePolicy::Durable,
             },
         })
     }
@@ -69,7 +70,7 @@ impl ScalarFunctionImpl for OctetLength {
     }
 
     fn monotonicity(&self) -> Option<FuncMonotonicity> {
-        todo!()
+        None
     }
 
     // Must match what `eval` produces (see char_length).

@@ -37,16 +37,16 @@ impl ReferenceSerialization for ArcScalarFunctionImpl {
         arena: &mut A,
     ) -> Result<Self, DatabaseError> {
         let summary = FunctionSummary::decode(reader, context.as_deref_mut(), arena)?;
-        let Some(functions) = context
+        let Some(registry) = context
             .as_deref()
-            .and_then(ReferenceDecodeContext::scala_functions)
+            .and_then(ReferenceDecodeContext::function_registry)
         else {
             return Err(DatabaseError::InvalidValue(format!(
                 "scalar function decode context missing for {}",
                 summary.name
             )));
         };
-        let Some(function) = functions.get(&summary) else {
+        let Some(function) = registry.get_scalar(&summary) else {
             return Err(DatabaseError::InvalidValue(format!(
                 "scalar function not found when decoding: {}",
                 summary.name
@@ -73,16 +73,16 @@ impl ReferenceSerialization for ArcTableFunctionImpl {
         arena: &mut A,
     ) -> Result<Self, DatabaseError> {
         let summary = FunctionSummary::decode(reader, context.as_deref_mut(), arena)?;
-        let Some(functions) = context
+        let Some(registry) = context
             .as_deref()
-            .and_then(ReferenceDecodeContext::table_functions)
+            .and_then(ReferenceDecodeContext::function_registry)
         else {
             return Err(DatabaseError::InvalidValue(format!(
                 "table function decode context missing for {}",
                 summary.name
             )));
         };
-        let Some(function) = functions.get(&summary) else {
+        let Some(function) = registry.get_table(&summary) else {
             return Err(DatabaseError::InvalidValue(format!(
                 "table function not found when decoding: {}",
                 summary.name
@@ -98,7 +98,7 @@ impl ReferenceSerialization for ArcTableFunctionImpl {
 #[maybe_async]
 mod tests {
     use super::*;
-    use crate::db::{ScalaFunctions, TableFunctions};
+    
     use crate::planner::TableArena;
     use crate::serdes::ReferenceDecodeContext;
     use crate::storage::TestTransaction;
@@ -109,6 +109,7 @@ mod tests {
         let summary = FunctionSummary {
             name: name.into(),
             arg_types: vec![LogicalType::Integer],
+            persistence: crate::expression::function::PersistencePolicy::Durable,
         };
         let mut bytes = Vec::new();
         summary
@@ -132,9 +133,8 @@ mod tests {
             .to_string()
             .contains("scalar function decode context missing"));
 
-        let scalars = ScalaFunctions::default();
-        let table_functions = TableFunctions::default();
-        let mut context = ReferenceDecodeContext::with_functions(&scalars, &table_functions);
+        let function_registry = crate::function::registry::FunctionRegistry::new();
+        let mut context = ReferenceDecodeContext::with_functions(&function_registry);
         let err = ArcScalarFunctionImpl::decode::<TestTransaction, _, _>(
             &mut Cursor::new(&bytes),
             Some(&mut context),
@@ -159,9 +159,8 @@ mod tests {
             .to_string()
             .contains("table function decode context missing"));
 
-        let scalars = ScalaFunctions::default();
-        let table_functions = TableFunctions::default();
-        let mut context = ReferenceDecodeContext::with_functions(&scalars, &table_functions);
+        let function_registry = crate::function::registry::FunctionRegistry::new();
+        let mut context = ReferenceDecodeContext::with_functions(&function_registry);
         let err = ArcTableFunctionImpl::decode::<TestTransaction, _, _>(
             &mut Cursor::new(&bytes),
             Some(&mut context),
