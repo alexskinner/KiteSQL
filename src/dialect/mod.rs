@@ -1,11 +1,10 @@
 use crate::errors::DatabaseError;
 use sqlparser::ast::Statement;
-use sqlparser::dialect::{Dialect as SqlParserDialect, GenericDialect, MySqlDialect};
+use sqlparser::dialect::{Dialect as SqlParserDialect, GenericDialect};
 use std::fmt::Debug;
 use std::sync::Arc;
 
 pub const DIALECT_GENERIC: &str = "generic";
-pub const DIALECT_MYSQL: &str = "mysql";
 
 pub trait SqlDialect: Debug + Send + Sync + 'static {
     fn name(&self) -> &str;
@@ -16,8 +15,11 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
         Ok(())
     }
 
-    fn supports_mysql_types(&self) -> bool {
-        false
+    fn map_data_type(
+        &self,
+        _data_type: &sqlparser::ast::DataType,
+    ) -> Option<Result<crate::types::LogicalType, DatabaseError>> {
+        None
     }
 }
 
@@ -50,39 +52,6 @@ impl SqlDialect for GenericSqlDialect {
     }
 }
 
-#[derive(Debug)]
-pub struct MySqlSqlDialect {
-    parser: MySqlDialect,
-}
-
-impl MySqlSqlDialect {
-    pub fn new() -> Self {
-        Self {
-            parser: MySqlDialect {},
-        }
-    }
-}
-
-impl Default for MySqlSqlDialect {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SqlDialect for MySqlSqlDialect {
-    fn name(&self) -> &str {
-        DIALECT_MYSQL
-    }
-
-    fn parser_dialect(&self) -> &dyn SqlParserDialect {
-        &self.parser
-    }
-
-    fn supports_mysql_types(&self) -> bool {
-        true
-    }
-}
-
 #[derive(Debug, Clone)]
 pub struct DialectRegistry {
     dialects: Arc<std::collections::HashMap<String, Arc<dyn SqlDialect>>>,
@@ -95,9 +64,6 @@ impl DialectRegistry {
 
         let generic = Arc::new(GenericSqlDialect::new()) as Arc<dyn SqlDialect>;
         dialects.insert(DIALECT_GENERIC.to_string(), generic.clone());
-
-        let mysql = Arc::new(MySqlSqlDialect::new()) as Arc<dyn SqlDialect>;
-        dialects.insert(DIALECT_MYSQL.to_string(), mysql);
 
         Self {
             dialects: Arc::new(dialects),

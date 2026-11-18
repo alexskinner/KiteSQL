@@ -1841,44 +1841,8 @@ pub(crate) fn data_type_to_logical_type(
     #[cfg(feature = "parser")] dialect: &dyn crate::dialect::SqlDialect,
 ) -> Result<LogicalType, DatabaseError> {
     #[cfg(feature = "parser")]
-    if dialect.supports_mysql_types() {
-        match &data_type {
-            DataType::Bit(Some(size)) => {
-                if *size == 1 {
-                    return Ok(LogicalType::Boolean);
-                } else {
-                    return Ok(LogicalType::UBigint);
-                }
-            }
-            DataType::TinyText => {
-                return Ok(LogicalType::Varchar(None, CharLengthUnits::Characters));
-            }
-            DataType::MediumText => {
-                return Ok(LogicalType::Varchar(None, CharLengthUnits::Characters));
-            }
-            DataType::LongText => {
-                return Ok(LogicalType::Varchar(None, CharLengthUnits::Characters));
-            }
-            DataType::Custom(name, modifiers) if name.0.len() == 1 => {
-                let type_name = match &name.0[0] {
-                    ObjectNamePart::Identifier(ident) => &ident.value,
-                    _ => {
-                        return Err(DatabaseError::UnsupportedStmt(format!(
-                            "unsupported data type: {:?}",
-                            data_type
-                        )))
-                    }
-                };
-                let type_name_lower = type_name.to_lowercase();
-
-                if type_name_lower.as_str() == "serial" {
-                    // TODO: serial should also apply NOT NULL UNIQUE AUTO_INCREMENT constraints
-                    // Currently only the type mapping (BIGINT UNSIGNED) is implemented
-                    return Ok(LogicalType::UBigint);
-                }
-            }
-            _ => {}
-        }
+    if let Some(result) = dialect.map_data_type(&data_type) {
+        return result;
     }
 
     match data_type {
