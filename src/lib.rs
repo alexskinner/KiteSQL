@@ -120,6 +120,8 @@ compile_error!("feature `spill` is not supported on wasm32 targets");
 pub mod binder;
 pub mod catalog;
 pub mod db;
+#[cfg(feature = "parser")]
+pub mod dialect;
 pub mod errors;
 pub mod execution;
 pub mod expression;
@@ -146,3 +148,6 @@ pub mod wasm;
 pub use kite_sql_serde_macros::Model;
 #[cfg(feature = "orm")]
 pub use kite_sql_serde_macros::Projection;
+
+#[cfg(feature = "parser")]
+pub use dialect::Dialect;

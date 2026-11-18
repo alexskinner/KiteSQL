@@ -156,6 +156,7 @@ pub struct DataBaseBuilder {
     statistics_relative_error: Option<f64>,
     parser_recursion_limit: Option<usize>,
     transaction_isolation: Option<TransactionIsolationLevel>,
+    dialect: Option<crate::dialect::Dialect>,
     #[cfg(all(not(target_arch = "wasm32"), feature = "rocksdb"))]
     storage_config: StorageConfig,
     #[cfg(all(not(target_arch = "wasm32"), feature = "lmdb"))]
@@ -190,6 +191,7 @@ impl DataBaseBuilder {
             statistics_relative_error: None,
             parser_recursion_limit: None,
             transaction_isolation: None,
+            dialect: None,
             #[cfg(all(not(target_arch = "wasm32"), feature = "rocksdb"))]
             storage_config: Default::default(),
             #[cfg(all(not(target_arch = "wasm32"), feature = "lmdb"))]
@@ -228,6 +230,24 @@ impl DataBaseBuilder {
     #[cfg(feature = "parser")]
     pub fn parser_recursion_limit(mut self, limit: usize) -> Self {
         self.parser_recursion_limit = Some(limit);
+        self
+    }
+
+    /// Set the SQL dialect for parsing and planning.
+    ///
+    /// Defaults to [`Dialect::Generic`](crate::dialect::Dialect::Generic) for maximum compatibility.
+    ///
+    /// # Example
+    /// ```ignore
+    /// use kite_sql::db::DataBaseBuilder;
+    /// use kite_sql::Dialect;
+    ///
+    /// let db = DataBaseBuilder::path("./data")
+    ///     .dialect(Dialect::MySql)
+    ///     .build_lmdb()?;
+    /// ```
+    pub fn dialect(mut self, dialect: crate::dialect::Dialect) -> Self {
+        self.dialect = Some(dialect);
         self
     }
 
@@ -318,6 +338,10 @@ impl DataBaseBuilder {
             self.statistics_relative_error,
             self.parser_recursion_limit,
             self.transaction_isolation,
+            #[cfg(feature = "parser")]
+            self.dialect,
+            #[cfg(not(feature = "parser"))]
+            None,
         )
     }
 
@@ -333,6 +357,10 @@ impl DataBaseBuilder {
             self.statistics_relative_error,
             self.parser_recursion_limit,
             self.transaction_isolation,
+            #[cfg(feature = "parser")]
+            self.dialect,
+            #[cfg(not(feature = "parser"))]
+            None,
         )
     }
 
@@ -348,6 +376,10 @@ impl DataBaseBuilder {
             self.statistics_relative_error,
             self.parser_recursion_limit,
             self.transaction_isolation,
+            #[cfg(feature = "parser")]
+            self.dialect,
+            #[cfg(not(feature = "parser"))]
+            None,
         )
     }
 
@@ -365,6 +397,10 @@ impl DataBaseBuilder {
             self.statistics_relative_error,
             self.parser_recursion_limit,
             self.transaction_isolation,
+            #[cfg(feature = "parser")]
+            self.dialect,
+            #[cfg(not(feature = "parser"))]
+            None,
         )
     }
 
@@ -380,6 +416,10 @@ impl DataBaseBuilder {
             self.statistics_relative_error,
             self.parser_recursion_limit,
             self.transaction_isolation,
+            #[cfg(feature = "parser")]
+            self.dialect,
+            #[cfg(not(feature = "parser"))]
+            None,
         )
     }
 
@@ -396,6 +436,10 @@ impl DataBaseBuilder {
             self.statistics_relative_error,
             self.parser_recursion_limit,
             self.transaction_isolation,
+            #[cfg(feature = "parser")]
+            self.dialect,
+            #[cfg(not(feature = "parser"))]
+            None,
         )
     }
 
@@ -406,6 +450,10 @@ impl DataBaseBuilder {
         statistics_relative_error: Option<f64>,
         parser_recursion_limit: Option<usize>,
         transaction_isolation: Option<TransactionIsolationLevel>,
+        #[cfg(feature = "parser")]
+        dialect: Option<crate::dialect::Dialect>,
+        #[cfg(not(feature = "parser"))]
+        _dialect: Option<()>,
     ) -> Result<Database<T>, DatabaseError> {
         if matches!(histogram_buckets, Some(0)) {
             return Err(DatabaseError::InvalidValue(
@@ -450,6 +498,7 @@ impl DataBaseBuilder {
             hll_precision,
             statistics_relative_error: statistics_relative_error.map(OrderedFloat),
             parser_recursion_limit,
+            dialect: dialect.unwrap_or_default(),
             _p: Default::default(),
         };
 
@@ -697,6 +746,7 @@ pub(crate) struct State<S> {
     statistics_relative_error: Option<OrderedFloat<f64>>,
     #[cfg_attr(not(feature = "parser"), allow(dead_code))]
     parser_recursion_limit: Option<usize>,
+    dialect: crate::dialect::Dialect,
     _p: PhantomData<S>,
 }
 

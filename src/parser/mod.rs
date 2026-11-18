@@ -12,12 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+use crate::dialect::Dialect;
 use sqlparser::parser::ParserError;
 use sqlparser::{ast::Statement, dialect::GenericDialect, parser::Parser};
 
 const DIALECT: GenericDialect = GenericDialect {};
 
-/// Parse a string to a collection of statements.
+/// Parse a string to a collection of statements using the default (Generic) dialect.
 ///
 /// # Example
 /// ```rust
@@ -33,11 +34,32 @@ pub fn parse_sql<S: AsRef<str>>(sql: S) -> Result<Vec<Statement>, ParserError> {
     parse_sql_with_recursion_limit(sql, None)
 }
 
+/// Parse SQL using a specific dialect.
+pub fn parse_sql_with_dialect<S: AsRef<str>>(
+    sql: S,
+    dialect: Dialect,
+) -> Result<Vec<Statement>, ParserError> {
+    parse_sql_with_dialect_and_recursion_limit(sql, dialect, None)
+}
+
 pub(crate) fn parse_sql_with_recursion_limit<S: AsRef<str>>(
     sql: S,
     recursion_limit: Option<usize>,
 ) -> Result<Vec<Statement>, ParserError> {
     let mut parser = Parser::new(&DIALECT);
+    if let Some(limit) = recursion_limit {
+        parser = parser.with_recursion_limit(limit);
+    }
+    parser.try_with_sql(sql.as_ref())?.parse_statements()
+}
+
+pub(crate) fn parse_sql_with_dialect_and_recursion_limit<S: AsRef<str>>(
+    sql: S,
+    dialect: Dialect,
+    recursion_limit: Option<usize>,
+) -> Result<Vec<Statement>, ParserError> {
+    let sqlparser_dialect = dialect.sqlparser_dialect();
+    let mut parser = Parser::new(sqlparser_dialect.as_ref());
     if let Some(limit) = recursion_limit {
         parser = parser.with_recursion_limit(limit);
     }
