@@ -2534,7 +2534,7 @@ pub(crate) mod test {
                 &transaction,
                 kite_sql.state.function_registry(),
                 #[cfg(feature = "parser")]
-                kite_sql.state.dialect_name(),
+                kite_sql.state.dialect(),
             ),
             &[],
             None,
@@ -2625,7 +2625,7 @@ pub(crate) mod test {
                 &transaction,
                 kite_sql.state.function_registry(),
                 #[cfg(feature = "parser")]
-                kite_sql.state.dialect_name(),
+                kite_sql.state.dialect(),
             ),
             &[],
             None,
