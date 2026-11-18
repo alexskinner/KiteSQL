@@ -11,7 +11,9 @@ fn fixture_copy() -> tempfile::TempDir {
     let dst = tempfile::tempdir().unwrap();
     for e in std::fs::read_dir(&src).unwrap() {
         let e = e.unwrap();
-        if e.file_name() == "lock.mdb" { continue; }
+        if e.file_name() == "lock.mdb" {
+            continue;
+        }
         std::fs::copy(e.path(), dst.path().join(e.file_name())).unwrap();
     }
     dst
@@ -26,14 +28,19 @@ fn test_open_main_created_database() -> Result<(), DatabaseError> {
 
     let mut it = db.run("SELECT id, name, age FROM users ORDER BY id")?;
     let mut rows = vec![];
-    while let Some(r) = it.next_tuple(|_, t| t.iter().cloned().collect::<Vec<_>>())? { rows.push(r); }
+    while let Some(r) = it.next_tuple(|_, t| t.iter().cloned().collect::<Vec<_>>())? {
+        rows.push(r);
+    }
     it.done()?;
     assert_eq!(rows.len(), 3);
     assert_eq!(rows[1][0], DataValue::Int32(2));
     assert_eq!(rows[1][1], DataValue::from("Bob".to_string()));
 
     let mut it = db.run("SELECT id FROM users WHERE name = 'Charlie'")?;
-    assert_eq!(it.next_tuple(|_, t| t[0].clone())?.unwrap(), DataValue::Int32(3));
+    assert_eq!(
+        it.next_tuple(|_, t| t[0].clone())?.unwrap(),
+        DataValue::Int32(3)
+    );
     it.done()?;
 
     let mut it = db.run("DESCRIBE users")?;
@@ -41,7 +48,8 @@ fn test_open_main_created_database() -> Result<(), DatabaseError> {
     assert_eq!(first, "Integer");
     it.done()?;
 
-    db.run("INSERT INTO users VALUES (4, 'Dora', 41, 1.00, true)")?.done()?;
+    db.run("INSERT INTO users VALUES (4, 'Dora', 41, 1.00, true)")?
+        .done()?;
     db.ddl("ALTER TABLE users ADD COLUMN note VARCHAR(10)")?;
     Ok(())
 }
