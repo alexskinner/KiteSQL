@@ -712,10 +712,10 @@ impl<S: Storage> State<S> {
     fn table_functions(&self) -> &TableFunctions {
         &self.table_functions
     }
-    fn scala_functions_arc(&self) -> &Arc<ScalaFunctions> {
+    pub(crate) fn scala_functions_arc(&self) -> &Arc<ScalaFunctions> {
         &self.scala_functions
     }
-    fn table_functions_arc(&self) -> &Arc<TableFunctions> {
+    pub(crate) fn table_functions_arc(&self) -> &Arc<TableFunctions> {
         &self.table_functions
     }
     pub(crate) fn meta_cache(&self) -> &StatisticsMetaCache {
@@ -1012,9 +1012,9 @@ impl<S: Storage> Database<S> {
             Some(Arc::clone(self.state.table_functions_arc())),
         )?);
 
-        let state_ptr = std::ptr::from_mut(&mut self.state);
+        let state = TxnPtr::new(std::ptr::from_mut(&mut self.state));
         let (plan_arena, executor) = unsafe {
-            (&*state_ptr)
+            (&*state.get())
                 .execute_mut(&mut *transaction.get(), params, build)
                 .await
         }
@@ -1039,15 +1039,15 @@ impl<S: Storage> Database<S> {
         for apply_item in apply {
             catalog_changed |= unsafe {
                 apply_item.apply_to(
-                    &(*state_ptr).table_arena,
-                    &mut (*state_ptr).meta_cache,
+                    &(*state.get()).table_arena,
+                    &mut (*state.get()).meta_cache,
                     &mut plan_arena,
                 )
             }
             .map_err(|err| err.with_sql_context(context))?;
         }
         if catalog_changed {
-            unsafe { (&mut *state_ptr).recycle_table_arena()? };
+            unsafe { (&mut *state.get()).recycle_table_arena()? };
         }
         Ok(result)
     }
@@ -1239,10 +1239,12 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
             ) -> Result<(Executor<'s>, PlanArena<'s>), DatabaseError>
             + MaybeSend,
     {
-        let transaction = OwnedPtr::new(
-            self.storage
-                .transaction_with_isolation(self.transaction_isolation, read_only)?,
-        );
+        let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
+            self.transaction_isolation,
+            read_only,
+            Some(Arc::clone(self.state.scala_functions_arc())),
+            Some(Arc::clone(self.state.table_functions_arc())),
+        )?);
         // SAFETY: the transaction stays boxed, and so in place, until the iterator is gone.
         let tx = unsafe { &mut *transaction.get() };
         let (executor, arena) = build(&self.state, tx)?;
@@ -1262,9 +1264,12 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
             &mut PlanArena<'_>,
         ) -> Result<LogicalPlan, DatabaseError>,
     {
-        let transaction = self
-            .storage
-            .transaction_with_isolation(self.transaction_isolation, true)?;
+        let transaction = self.storage.transaction_with_functions(
+            self.transaction_isolation,
+            true,
+            Some(Arc::clone(self.state.scala_functions_arc())),
+            Some(Arc::clone(self.state.table_functions_arc())),
+        )?;
         let (plan, mut arena) = self.state.build_plan(params, &transaction, build)?;
         Ok(plan.explain(&mut arena, 0))
     }
