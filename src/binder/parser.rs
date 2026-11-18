@@ -964,7 +964,10 @@ where
             }
         }
 
-        Ok((ColumnCatalog::new(column_name, nullable, column_desc), display_type))
+        Ok((
+            ColumnCatalog::new(column_name, nullable, column_desc),
+            display_type,
+        ))
     }
 
     fn bind_constraint<F: Fn(usize, &mut ColumnDesc)>(

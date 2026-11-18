@@ -323,4 +323,3 @@ impl ColumnDesc {
         self.is_unique = true
     }
 }
-
