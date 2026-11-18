@@ -17,6 +17,7 @@ use crate::planner::MetaArena;
 use crate::planner::{fmt_table, Explain, ExprRef};
 use crate::types::LogicalType;
 use kite_sql_serde_macros::ReferenceSerialization;
+use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash, ReferenceSerialization)]
 pub enum DefaultChange {
@@ -38,6 +39,8 @@ pub struct ChangeColumnOperator {
     pub old_column_name: String,
     pub new_column_name: String,
     pub data_type: LogicalType,
+    #[reference_serialization(optional)]
+    pub display_type: Option<Arc<str>>,
     pub default_change: DefaultChange,
     pub not_null_change: NotNullChange,
 }

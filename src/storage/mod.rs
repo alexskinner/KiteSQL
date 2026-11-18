@@ -498,6 +498,7 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         old_column_name: &str,
         new_column_name: &str,
         new_data_type: &LogicalType,
+        new_display_type: &Option<std::sync::Arc<str>>,
         default_change: &DefaultChange,
         not_null_change: &NotNullChange,
     ) -> Result<TableCatalog, DatabaseError> {
@@ -519,6 +520,7 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                 found = true;
                 new_column.set_name(new_column_name.to_string());
                 new_column.desc_mut().column_datatype = new_data_type.clone();
+                new_column.desc_mut().display_type = new_display_type.clone();
                 match default_change {
                     DefaultChange::NoChange => {
                         if let Some(default_expr) = new_column.desc().default {

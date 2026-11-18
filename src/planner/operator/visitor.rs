@@ -774,6 +774,7 @@ pub(crate) mod tests {
                 old_column_name: "value".to_string(),
                 new_column_name: "value".to_string(),
                 data_type: LogicalType::Integer,
+                display_type: None,
                 default_change: DefaultChange::Set(expr(16)),
                 not_null_change: NotNullChange::NoChange,
             }),

@@ -23,6 +23,7 @@ use kite_sql_serde_macros::ReferenceSerialization;
 use std::borrow::Cow;
 use std::fmt;
 use std::hash::Hash;
+use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub struct ColumnRef {
@@ -283,6 +284,8 @@ mod tests {
 #[derive(Debug, Clone, PartialEq, Eq, Hash, ReferenceSerialization)]
 pub struct ColumnDesc {
     pub(crate) column_datatype: LogicalType,
+    #[reference_serialization(optional)]
+    pub(crate) display_type: Option<std::sync::Arc<str>>,
     primary: Option<usize>,
     is_unique: bool,
     pub(crate) default: Option<ExprRef>,
@@ -297,10 +300,20 @@ impl ColumnDesc {
     ) -> Result<ColumnDesc, DatabaseError> {
         Ok(ColumnDesc {
             column_datatype,
+            display_type: None,
             primary,
             is_unique,
             default,
         })
+    }
+
+    pub fn with_display_type(mut self, display_type: Option<std::sync::Arc<str>>) -> Self {
+        self.display_type = display_type;
+        self
+    }
+
+    pub fn display_type(&self) -> Option<&str> {
+        self.display_type.as_deref()
     }
 
     pub(crate) fn primary(&self) -> Option<usize> {

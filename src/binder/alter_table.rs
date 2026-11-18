@@ -58,12 +58,14 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         ))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn bind_change_column(
         &mut self,
         table_name: &str,
         old_column_name: String,
         new_column_name: String,
         data_type: LogicalType,
+        display_type: Option<std::sync::Arc<str>>,
         default_change: DefaultChange,
         not_null_change: NotNullChange,
     ) -> Result<LogicalPlan, DatabaseError> {
@@ -73,6 +75,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                 old_column_name,
                 new_column_name,
                 data_type,
+                display_type,
                 default_change,
                 not_null_change,
             }),

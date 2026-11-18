@@ -15,7 +15,7 @@
 //! Test that custom dialects defined in external crates can map types and change parsing.
 
 use kite_sql::db::DataBaseBuilder;
-use kite_sql::dialect::SqlDialect;
+use kite_sql::dialect::{ColumnTypeSpec, SqlDialect};
 use kite_sql::errors::DatabaseError;
 use kite_sql::types::{CharLengthUnits, LogicalType};
 use sqlparser::ast::{DataType, Ident, ObjectName, Statement};
@@ -68,12 +68,15 @@ impl SqlDialect for ToyDialect {
         &self.parser
     }
 
-    fn map_data_type(&self, data_type: &DataType) -> Option<Result<LogicalType, DatabaseError>> {
+    fn map_data_type(&self, data_type: &DataType) -> Option<Result<ColumnTypeSpec, DatabaseError>> {
         match data_type {
             DataType::Custom(name, _) if name.0.len() == 1 => {
                 if let sqlparser::ast::ObjectNamePart::Identifier(ident) = &name.0[0] {
                     if ident.value.to_lowercase() == "customtext" {
-                        return Some(Ok(LogicalType::Varchar(None, CharLengthUnits::Characters)));
+                        return Some(Ok(ColumnTypeSpec::new(LogicalType::Varchar(
+                            None,
+                            CharLengthUnits::Characters,
+                        ))));
                     }
                 }
                 None
@@ -86,14 +89,13 @@ impl SqlDialect for ToyDialect {
         // Rewrite table names that are exactly "customtable" to "rewritten_table"
         match statement {
             Statement::CreateTable(create) => {
-                if let Some(name_part) = create.name.0.first() {
-                    if let sqlparser::ast::ObjectNamePart::Identifier(ident) = name_part {
-                        if ident.value.eq_ignore_ascii_case("customtable") {
-                            create.name =
-                                ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
-                                    Ident::new("rewritten_table"),
-                                )]);
-                        }
+                if let Some(sqlparser::ast::ObjectNamePart::Identifier(ident)) =
+                    create.name.0.first()
+                {
+                    if ident.value.eq_ignore_ascii_case("customtable") {
+                        create.name = ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
+                            Ident::new("rewritten_table"),
+                        )]);
                     }
                 }
                 Ok(())
@@ -184,6 +186,44 @@ fn test_custom_dialect_parsing_and_rewrite() -> Result<(), Box<dyn std::error::E
     // 1. Rewrite AST before execution (CUSTOMTABLE -> rewritten_table)
     // 2. Map custom types (CUSTOMTEXT -> VARCHAR from type mapping test)
     // 3. Change parsing behavior (ToyParserDialect supports backtick identifiers)
+
+    Ok(())
+}
+
+#[test]
+#[cfg(feature = "parser")]
+fn test_generic_dialect_unchanged() -> Result<(), Box<dyn std::error::Error>> {
+    use kite_sql::storage::lmdb::LmdbStorage;
+
+    let temp_dir = tempfile::tempdir()?;
+    let storage = LmdbStorage::new(temp_dir.path())?;
+    let mut database = kite_sql::db::DataBaseBuilder::path(".").build_with_storage(storage)?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, name VARCHAR(50))")?;
+
+    let mut result = database.run("DESCRIBE test")?;
+
+    let id_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(
+        id_row[0],
+        kite_sql::types::value::DataValue::from("id".to_string())
+    );
+    assert_eq!(
+        id_row[1],
+        kite_sql::types::value::DataValue::from("int".to_string())
+    );
+
+    let name_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(
+        name_row[0],
+        kite_sql::types::value::DataValue::from("name".to_string())
+    );
+    assert_eq!(
+        name_row[1],
+        kite_sql::types::value::DataValue::from("varchar(50)".to_string())
+    );
+
+    result.done()?;
 
     Ok(())
 }

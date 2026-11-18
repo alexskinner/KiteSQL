@@ -72,8 +72,8 @@ insert into t3 values (1, 10), (2, 20)
 query TTTTTT
 describe t3
 ----
-id Integer 4 false PRIMARY NULL
-v Integer 4 true EMPTY NULL
+id int 4 false PRIMARY NULL
+v int 4 true EMPTY NULL
 
 statement ok
 insert into t3 values (3, 10)
@@ -107,8 +107,8 @@ select * from t3
 query TTTTTT
 describe t3
 ----
-id Integer 4 false PRIMARY NULL
-v Integer 4 true EMPTY NULL
+id int 4 false PRIMARY NULL
+v int 4 true EMPTY NULL
 
 statement error
 alter table t3 modify column v int first

@@ -129,6 +129,11 @@ fn describe_default(column: &ColumnCatalog, arena: &(dyn MetaArena + '_)) -> Str
 
 fn fill_describe_row(values: &mut Vec<DataValue>, column: &ColumnCatalog, default: String) {
     let datatype = column.datatype();
+    let display_type = column
+        .desc()
+        .display_type()
+        .map(|s| s.to_string())
+        .unwrap_or_else(|| datatype.to_string());
 
     values.push(DataValue::Utf8 {
         value: column.name().to_string().into(),
@@ -136,7 +141,7 @@ fn fill_describe_row(values: &mut Vec<DataValue>, column: &ColumnCatalog, defaul
         unit: CharLengthUnits::Characters,
     });
     values.push(DataValue::Utf8 {
-        value: datatype.to_string().into(),
+        value: display_type.into(),
         ty: Utf8Type::Variable(None),
         unit: CharLengthUnits::Characters,
     });

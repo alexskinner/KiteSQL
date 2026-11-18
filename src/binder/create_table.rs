@@ -111,6 +111,7 @@ mod tests {
                 assert_eq!(
                     op.columns[0].desc(),
                     &ColumnDesc::new(LogicalType::Integer, Some(0), false, None)?
+                        .with_display_type(Some("int".into()))
                 );
                 assert_eq!(op.columns[1].name(), "name");
                 assert!(op.columns[1].nullable());
@@ -122,6 +123,7 @@ mod tests {
                         false,
                         None
                     )?
+                    .with_display_type(Some("varchar(10)".into()))
                 );
             }
             _ => unreachable!(),

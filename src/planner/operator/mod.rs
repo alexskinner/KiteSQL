@@ -1477,6 +1477,7 @@ mod tests {
             old_column_name: "old".to_string(),
             new_column_name: "new".to_string(),
             data_type: LogicalType::Integer,
+            display_type: None,
             default_change: DefaultChange::Set(column_expr(b, 1, &mut arena)),
             not_null_change: NotNullChange::NoChange,
         });
@@ -1730,6 +1731,7 @@ mod tests {
                     old_column_name: "age".to_string(),
                     new_column_name: "age_years".to_string(),
                     data_type: LogicalType::Integer,
+                    display_type: None,
                     default_change: DefaultChange::Drop,
                     not_null_change: NotNullChange::Set,
                 }),
