@@ -1,9 +1,10 @@
 # MySQL serial type: maps to bigint unsigned not null unique
 # Note: auto-increment is not implemented, just testing the type mapping
+# SERIAL is used with PRIMARY KEY here since KiteSQL requires a primary key
 
 statement ok
 CREATE TABLE serial_test (
-    id SERIAL,
+    id SERIAL PRIMARY KEY,
     name VARCHAR(50)
 )
 

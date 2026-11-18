@@ -1797,42 +1797,38 @@ pub(crate) fn data_type_to_logical_type(
     #[cfg(feature = "parser")]
     if dialect_name == "mysql" {
         match &data_type {
-            DataType::Custom(name, _) if name.0.len() == 1 => {
+            DataType::Bit(Some(size)) => {
+                if *size == 1 {
+                    return Ok(LogicalType::Boolean);
+                } else {
+                    return Ok(LogicalType::UBigint);
+                }
+            }
+            DataType::TinyText => {
+                return Ok(LogicalType::Varchar(None, CharLengthUnits::Characters));
+            }
+            DataType::MediumText => {
+                return Ok(LogicalType::Varchar(None, CharLengthUnits::Characters));
+            }
+            DataType::LongText => {
+                return Ok(LogicalType::Varchar(None, CharLengthUnits::Characters));
+            }
+            DataType::Custom(name, modifiers) if name.0.len() == 1 => {
                 let type_name = match &name.0[0] {
                     ObjectNamePart::Identifier(ident) => &ident.value,
                     _ => return Err(DatabaseError::UnsupportedStmt(format!(
                         "unsupported data type: {:?}", data_type
                     ))),
                 };
-                match type_name.to_lowercase().as_str() {
-                    "mediumtext" | "longtext" | "tinytext" => {
-                        return Ok(LogicalType::Varchar(None, CharLengthUnits::Characters));
-                    }
+                let type_name_lower = type_name.to_lowercase();
+                
+                match type_name_lower.as_str() {
                     "serial" => {
                         // TODO: serial should also apply NOT NULL UNIQUE AUTO_INCREMENT constraints
                         // Currently only the type mapping (BIGINT UNSIGNED) is implemented
                         return Ok(LogicalType::UBigint);
                     }
                     _ => {}
-                }
-            }
-            DataType::Custom(name, modifiers) if name.0.len() == 1 && !modifiers.is_empty() => {
-                let type_name = match &name.0[0] {
-                    ObjectNamePart::Identifier(ident) => &ident.value,
-                    _ => return Err(DatabaseError::UnsupportedStmt(format!(
-                        "unsupported data type: {:?}", data_type
-                    ))),
-                };
-                if type_name.to_lowercase() == "bit" {
-                    if modifiers.len() == 1 {
-                        if let Ok(size) = modifiers[0].parse::<u32>() {
-                            if size == 1 {
-                                return Ok(LogicalType::Boolean);
-                            } else {
-                                return Ok(LogicalType::UBigint);
-                            }
-                        }
-                    }
                 }
             }
             _ => {}
