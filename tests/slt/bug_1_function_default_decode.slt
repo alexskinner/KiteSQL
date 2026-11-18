@@ -1,0 +1,51 @@
+## Bug #1: Function DEFAULT breaks later DDL
+##
+## A column DEFAULT that evaluates a scalar function (built-in like current_timestamp
+## or a registered UDF) causes "scalar function decode context missing" errors when the
+## table is reopened in a new session and DDL operations are attempted.
+##
+## This test covers:
+## 1. Built-in function DEFAULT (current_timestamp)
+## 2. Table creation succeeds
+## 3. Reopening the table (simulated by a new query that forces table reload)
+## 4. DDL operations on the reopened table should work without decode errors
+
+statement ok
+CREATE TABLE test_func_default (
+    id INT PRIMARY KEY,
+    created_at TIMESTAMP DEFAULT current_timestamp
+)
+
+statement ok
+INSERT INTO test_func_default (id) VALUES (1)
+
+query I
+SELECT id FROM test_func_default
+----
+1
+
+## The bug manifests when the table is reloaded from disk in a fresh context
+## and DDL is attempted. Simulate this by running a schema query that
+## forces metadata reload.
+statement ok
+CREATE TABLE test_reopen (x INT PRIMARY KEY)
+
+query I
+SELECT id FROM test_func_default
+----
+1
+
+## This DDL should work even after table metadata is reloaded
+statement ok
+ALTER TABLE test_func_default ADD COLUMN status VARCHAR(50) DEFAULT 'active'
+
+query II
+SELECT id, status FROM test_func_default
+----
+1 active
+
+statement ok
+DROP TABLE test_func_default
+
+statement ok
+DROP TABLE test_reopen

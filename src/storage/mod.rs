@@ -305,8 +305,10 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         column_ids: Vec<ColumnId>,
         ty: IndexType,
     ) -> Result<(TableCatalog, IndexId), DatabaseError> {
+        let scala_functions = crate::db::ScalaFunctions::default();
+        let table_functions = crate::db::TableFunctions::default();
         let mut table = self
-            .load_table(table_codec, plan_arena, table_name)
+            .load_table(table_codec, plan_arena, table_name, &scala_functions, &table_functions)
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         let index_meta = table.add_index_meta(index_name, column_ids, ty, plan_arena)?;
@@ -463,8 +465,10 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         default_change: &DefaultChange,
         not_null_change: &NotNullChange,
     ) -> Result<TableCatalog, DatabaseError> {
+        let scala_functions = ScalaFunctions::default();
+        let table_functions = TableFunctions::default();
         let table = self
-            .load_table(table_codec, plan_arena, table_name)
+            .load_table(table_codec, plan_arena, table_name, &scala_functions, &table_functions)
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         let mut column_catalogs = Vec::with_capacity(table.columns_len());
@@ -561,8 +565,10 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         column: &ColumnCatalog,
         if_not_exists: bool,
     ) -> Result<(TableCatalog, ColumnId), DatabaseError> {
+        let scala_functions = ScalaFunctions::default();
+        let table_functions = TableFunctions::default();
         let mut table = self
-            .load_table(table_codec, plan_arena, table_name)
+            .load_table(table_codec, plan_arena, table_name, &scala_functions, &table_functions)
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         if !column.nullable() && column.default_value(plan_arena)?.is_none() {
@@ -612,8 +618,10 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         table_name: &str,
         column_name: &str,
     ) -> Result<TableCatalog, DatabaseError> {
+        let scala_functions = ScalaFunctions::default();
+        let table_functions = TableFunctions::default();
         let table_catalog = self
-            .load_table(table_codec, plan_arena, table_name)
+            .load_table(table_codec, plan_arena, table_name, &scala_functions, &table_functions)
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         let column_id = {
@@ -647,7 +655,9 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
             self.remove_index_statistics(table_codec, table_id, index_meta.id)
                 .await?;
         }
-        self.load_table(table_codec, plan_arena, table_name)
+        let scala_functions = ScalaFunctions::default();
+        let table_functions = TableFunctions::default();
+        self.load_table(table_codec, plan_arena, table_name, &scala_functions, &table_functions)
             .await?
             .ok_or(DatabaseError::TableNotFound)
     }
@@ -797,8 +807,10 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         index_name: &str,
         if_exists: bool,
     ) -> Result<Option<(TableCatalog, IndexId)>, DatabaseError> {
+        let scala_functions = ScalaFunctions::default();
+        let table_functions = TableFunctions::default();
         let table = self
-            .load_table(table_codec, plan_arena, table_name)
+            .load_table(table_codec, plan_arena, table_name, &scala_functions, &table_functions)
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         let Some(index_meta_ref) = table
@@ -834,7 +846,9 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         self.remove_index_statistics(table_codec, table.id(), index_id)
             .await?;
 
-        self.load_table(table_codec, plan_arena, table_name)
+        let scala_functions = ScalaFunctions::default();
+        let table_functions = TableFunctions::default();
+        self.load_table(table_codec, plan_arena, table_name, &scala_functions, &table_functions)
             .await?
             .map(|table| (table, index_id))
             .map(Some)
@@ -985,6 +999,8 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         table_codec: &mut TableCodec,
         arena: &mut (impl MetaArena + ?Sized),
         table_name: &str,
+        scala_functions: &ScalaFunctions,
+        table_functions: &TableFunctions,
     ) -> Result<Option<TableCatalog>, DatabaseError> {
         let Some(meta) = self
             .root_table(table_codec, table_name, arena)
@@ -993,7 +1009,7 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         else {
             return Ok(None);
         };
-        self.table_collect(table_codec, meta.id, arena)
+        self.table_collect(table_codec, meta.id, scala_functions, table_functions, arena)
             .await?
             .map(|(columns, indexes)| {
                 TableCatalog::reload(
@@ -1215,6 +1231,8 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         &self,
         table_codec: &mut TableCodec,
         table_id: TableId,
+        scala_functions: &ScalaFunctions,
+        table_functions: &TableFunctions,
         arena: &mut (impl MetaArena + ?Sized),
     ) -> Result<Option<(Vec<ColumnCatalog>, Vec<IndexMeta>)>, DatabaseError> {
         table_codec
@@ -1225,12 +1243,13 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
 
                 let mut columns = Vec::new();
                 let mut index_metas = Vec::new();
+                let mut context = crate::serdes::ReferenceDecodeContext::with_functions(scala_functions, table_functions);
 
                 // Tips: only `Column`, `IndexMeta`, `TableMeta`
                 while let Some((key, value)) = column_iter.try_next().await.ok().flatten() {
                     if key.starts_with(table_min) {
                         let mut cursor = Cursor::new(value);
-                        columns.push(TableCodec::decode_column::<Self, _>(&mut cursor, arena)?);
+                        columns.push(TableCodec::decode_column::<Self, _>(&mut cursor, Some(&mut context), arena)?);
                     } else {
                         index_metas.push(TableCodec::decode_index_meta::<Self>(value, arena)?);
                     }
@@ -3029,9 +3048,11 @@ mod test {
         let mut reloaded_names = crate::storage::NameMapping::default();
         let mut reloaded_table_cache = crate::storage::TableCache::default();
         let mut table_codec = TableCodec::default();
+        let scala_functions = crate::db::ScalaFunctions::default();
+        let table_functions = crate::db::TableFunctions::default();
         let table_name = "t1".to_string();
         let table = transaction
-            .load_table(&mut table_codec, table_arena.borrow_mut(), &table_name)
+            .load_table(&mut table_codec, table_arena.borrow_mut(), &table_name, &scala_functions, &table_functions)
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         reloaded_names.insert_table(&mut reloaded_table_cache, table);
@@ -3278,9 +3299,11 @@ mod test {
         fn_assert(&mut transaction, &names, &table_cache)?;
         let mut reloaded_names = crate::storage::NameMapping::default();
         let mut reloaded_table_cache = crate::storage::TableCache::default();
+        let scala_functions = crate::db::ScalaFunctions::default();
+        let table_functions = crate::db::TableFunctions::default();
         let table_name = "t1".to_string();
         let table = transaction
-            .load_table(&mut table_codec, table_arena.borrow_mut(), &table_name)
+            .load_table(&mut table_codec, table_arena.borrow_mut(), &table_name, &scala_functions, &table_functions)
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         reloaded_names.insert_table(&mut reloaded_table_cache, table);

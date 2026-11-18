@@ -976,10 +976,11 @@ impl TableCodec {
 
     pub fn decode_column<T: StorageTransaction, R: Read>(
         reader: &mut R,
+        context: Option<&mut ReferenceDecodeContext<'_, T>>,
         arena: &mut (impl MetaArena + ?Sized),
     ) -> Result<ColumnCatalog, DatabaseError> {
-        // `TableCache` is not theoretically used in `table_collect` because `ColumnCatalog` should not depend on other Column
-        ColumnCatalog::decode::<T, R, _>(reader, None, arena)
+        // Pass through the context to allow decoding function-valued column DEFAULTs
+        ColumnCatalog::decode::<T, R, _>(reader, context, arena)
     }
 
     pub fn decode_index_statistics<T: StorageTransaction>(
@@ -1556,7 +1557,7 @@ mod tests {
             .unwrap();
         let mut cursor = Cursor::new(bytes);
         let decode_col =
-            TableCodec::decode_column::<TestTransaction, _>(&mut cursor, &mut plan_arena)?;
+            TableCodec::decode_column::<TestTransaction, _>(&mut cursor, None, &mut plan_arena)?;
 
         assert_eq!(decode_col, expected_col);
 

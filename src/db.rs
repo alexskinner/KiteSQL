@@ -1076,7 +1076,13 @@ impl<S: Storage> Database<S> {
                 )?;
                 let mut table_codec = TableCodec::default();
                 let table = transaction
-                    .load_table(&mut table_codec, self.state.table_arena.borrow_mut(), &name)
+                    .load_table(
+                        &mut table_codec,
+                        self.state.table_arena.borrow_mut(),
+                        &name,
+                        self.state.scala_functions(),
+                        self.state.table_functions(),
+                    )
                     .await?
                     .ok_or(DatabaseError::TableNotFound)?;
                 let mut indexes = Vec::new();
