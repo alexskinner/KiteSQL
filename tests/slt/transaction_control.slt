@@ -1,0 +1,113 @@
+# Transaction control through SQL
+# Tests BEGIN, COMMIT, ROLLBACK, and SET autocommit
+
+statement ok
+CREATE TABLE tx_test (id INT PRIMARY KEY, val INT)
+
+# Test basic autocommit mode
+statement ok
+INSERT INTO tx_test VALUES (1, 100)
+
+query II rowsort
+SELECT * FROM tx_test
+----
+1 100
+
+# Test explicit transaction with COMMIT
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO tx_test VALUES (2, 200)
+
+statement ok
+COMMIT
+
+query II rowsort
+SELECT * FROM tx_test
+----
+1 100
+2 200
+
+# Test START TRANSACTION (synonym for BEGIN)
+statement ok
+START TRANSACTION
+
+statement ok
+INSERT INTO tx_test VALUES (3, 300)
+
+statement ok
+COMMIT
+
+query II rowsort
+SELECT * FROM tx_test
+----
+1 100
+2 200
+3 300
+
+# Clean up
+statement ok
+DELETE FROM tx_test
+
+# Test SET autocommit = 0
+statement ok
+SET autocommit = 0
+
+statement ok
+INSERT INTO tx_test VALUES (10, 1000)
+
+statement ok
+INSERT INTO tx_test VALUES (11, 1100)
+
+statement ok
+COMMIT
+
+query II rowsort
+SELECT * FROM tx_test
+----
+10 1000
+11 1100
+
+# Test SET autocommit = 1 (commits open transaction)
+statement ok
+DELETE FROM tx_test
+
+statement ok
+SET autocommit = 0
+
+statement ok
+INSERT INTO tx_test VALUES (20, 2000)
+
+statement ok
+SET autocommit = 1
+
+query II rowsort
+SELECT * FROM tx_test
+----
+20 2000
+
+# Test BEGIN implicitly commits previous transaction
+statement ok
+DELETE FROM tx_test
+
+statement ok
+BEGIN
+
+statement ok
+INSERT INTO tx_test VALUES (30, 3000)
+
+statement ok
+BEGIN
+
+query II rowsort
+SELECT * FROM tx_test
+----
+30 3000
+
+statement ok
+COMMIT
+
+# Clean up
+statement ok
+DROP TABLE tx_test

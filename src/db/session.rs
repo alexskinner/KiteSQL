@@ -106,13 +106,52 @@ impl<'db, S: Storage> Session<'db, S> {
         Ok(())
     }
 
-    fn is_set_autocommit(_statement: &Statement) -> bool {
+    fn is_set_autocommit(statement: &Statement) -> bool {
+        if let Statement::Set(set) = statement {
+            if let sqlparser::ast::Set::SingleAssignment {
+                variable, values, ..
+            } = set
+            {
+                let var_name = variable.to_string();
+
+                if var_name.eq_ignore_ascii_case("autocommit") && values.len() == 1 {
+                    return matches!(
+                        &values[0],
+                        sqlparser::ast::Expr::Value(sqlparser::ast::ValueWithSpan { value: sqlparser::ast::Value::Number(n, _), .. }) if n == "0" || n == "1"
+                    );
+                }
+            }
+        }
         false
     }
 
-    async fn handle_set_autocommit(&mut self, _statement: &Statement) -> Result<(), DatabaseError> {
+    async fn handle_set_autocommit(&mut self, statement: &Statement) -> Result<(), DatabaseError> {
+        if let Statement::Set(set) = statement {
+            if let sqlparser::ast::Set::SingleAssignment { values, .. } = set {
+                let new_value = match &values[0] {
+                    sqlparser::ast::Expr::Value(sqlparser::ast::ValueWithSpan {
+                        value: sqlparser::ast::Value::Number(n, _),
+                        ..
+                    }) => n == "1",
+                    _ => {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "autocommit must be 0 or 1".to_string(),
+                        ))
+                    }
+                };
+
+                if new_value && !self.autocommit {
+                    if let Some(txn) = self.active_transaction.take() {
+                        txn.commit().await?;
+                    }
+                }
+
+                self.autocommit = new_value;
+                return Ok(());
+            }
+        }
         Err(DatabaseError::UnsupportedStmt(
-            "SET autocommit not fully implemented yet".to_string(),
+            "Invalid SET statement".to_string(),
         ))
     }
 
@@ -305,6 +344,133 @@ mod tests {
         }
         iter.done().await?;
         assert_eq!(count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    async fn test_session_set_autocommit_off() -> Result<(), DatabaseError> {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
+            .await?;
+
+        let mut session = Session::new(&database);
+        assert!(session.autocommit());
+
+        session.execute("SET autocommit = 0").await?;
+        assert!(!session.autocommit());
+        assert!(!session.in_transaction());
+
+        session.execute("INSERT INTO test VALUES (1, 100)").await?;
+        assert!(session.in_transaction());
+
+        session.execute("INSERT INTO test VALUES (2, 200)").await?;
+        assert!(session.in_transaction());
+
+        let mut iter = database.run("SELECT * FROM test").await?;
+        let mut count = 0;
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
+            count += 1;
+        }
+        iter.done().await?;
+        assert_eq!(count, 0);
+
+        session.execute("COMMIT").await?;
+        assert!(!session.in_transaction());
+
+        let mut iter = database.run("SELECT * FROM test").await?;
+        let mut count = 0;
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
+            count += 1;
+        }
+        iter.done().await?;
+        assert_eq!(count, 2);
+
+        Ok(())
+    }
+
+    #[test]
+    async fn test_session_set_autocommit_on_commits() -> Result<(), DatabaseError> {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
+            .await?;
+
+        let mut session = Session::new(&database);
+        session.execute("SET autocommit = 0").await?;
+        session.execute("INSERT INTO test VALUES (1, 100)").await?;
+        assert!(session.in_transaction());
+
+        session.execute("SET autocommit = 1").await?;
+        assert!(session.autocommit());
+        assert!(!session.in_transaction());
+
+        let mut iter = database.run("SELECT * FROM test").await?;
+        let mut count = 0;
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
+            count += 1;
+        }
+        iter.done().await?;
+        assert_eq!(count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    async fn test_session_autocommit_off_rollback() -> Result<(), DatabaseError> {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
+            .await?;
+
+        let mut session = Session::new(&database);
+        session.execute("SET autocommit = 0").await?;
+        session.execute("INSERT INTO test VALUES (1, 100)").await?;
+        session.execute("ROLLBACK").await?;
+
+        assert!(!session.in_transaction());
+
+        let mut iter = database.run("SELECT * FROM test").await?;
+        let mut count = 0;
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
+            count += 1;
+        }
+        iter.done().await?;
+        assert_eq!(count, 0);
+
+        Ok(())
+    }
+
+    #[test]
+    async fn test_memory_storage_no_rollback() -> Result<(), DatabaseError> {
+        let mut database = DataBaseBuilder::path(".").build_in_memory().await?;
+        database
+            .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
+            .await?;
+
+        let mut session = Session::new(&database);
+        session.execute("BEGIN").await?;
+        session.execute("INSERT INTO test VALUES (1, 100)").await?;
+        session.execute("ROLLBACK").await?;
+
+        let mut iter = database.run("SELECT * FROM test").await?;
+        let mut count = 0;
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
+            count += 1;
+        }
+        iter.done().await?;
+
+        assert_eq!(
+            count, 1,
+            "MemoryStorage does not support rollback - changes are immediately visible"
+        );
 
         Ok(())
     }
