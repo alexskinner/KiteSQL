@@ -305,8 +305,15 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         column_ids: Vec<ColumnId>,
         ty: IndexType,
     ) -> Result<(TableCatalog, IndexId), DatabaseError> {
+        static EMPTY_SCALA: std::sync::LazyLock<ScalaFunctions> = std::sync::LazyLock::new(ScalaFunctions::default);
+        static EMPTY_TABLE: std::sync::LazyLock<TableFunctions> = std::sync::LazyLock::new(TableFunctions::default);
+        
+        let (sf_ptr, tf_ptr) = table_codec.get_function_ptrs();
+        let scala_functions = sf_ptr.map(|p| unsafe { &*p }).unwrap_or(&*EMPTY_SCALA);
+        let table_functions = tf_ptr.map(|p| unsafe { &*p }).unwrap_or(&*EMPTY_TABLE);
+        
         let mut table = self
-            .load_table(table_codec, plan_arena, table_name, &ScalaFunctions::default(), &TableFunctions::default())
+            .load_table(table_codec, plan_arena, table_name, scala_functions, table_functions)
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         let index_meta = table.add_index_meta(index_name, column_ids, ty, plan_arena)?;
@@ -463,8 +470,15 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         default_change: &DefaultChange,
         not_null_change: &NotNullChange,
     ) -> Result<TableCatalog, DatabaseError> {
+        static EMPTY_SCALA: std::sync::LazyLock<ScalaFunctions> = std::sync::LazyLock::new(ScalaFunctions::default);
+        static EMPTY_TABLE: std::sync::LazyLock<TableFunctions> = std::sync::LazyLock::new(TableFunctions::default);
+        
+        let (sf_ptr, tf_ptr) = table_codec.get_function_ptrs();
+        let scala_functions = sf_ptr.map(|p| unsafe { &*p }).unwrap_or(&*EMPTY_SCALA);
+        let table_functions = tf_ptr.map(|p| unsafe { &*p }).unwrap_or(&*EMPTY_TABLE);
+        
         let table = self
-            .load_table(table_codec, plan_arena, table_name, &ScalaFunctions::default(), &TableFunctions::default())
+            .load_table(table_codec, plan_arena, table_name, scala_functions, table_functions)
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         let mut column_catalogs = Vec::with_capacity(table.columns_len());
@@ -561,8 +575,15 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         column: &ColumnCatalog,
         if_not_exists: bool,
     ) -> Result<(TableCatalog, ColumnId), DatabaseError> {
+        static EMPTY_SCALA: std::sync::LazyLock<ScalaFunctions> = std::sync::LazyLock::new(ScalaFunctions::default);
+        static EMPTY_TABLE: std::sync::LazyLock<TableFunctions> = std::sync::LazyLock::new(TableFunctions::default);
+        
+        let (sf_ptr, tf_ptr) = table_codec.get_function_ptrs();
+        let scala_functions = sf_ptr.map(|p| unsafe { &*p }).unwrap_or(&*EMPTY_SCALA);
+        let table_functions = tf_ptr.map(|p| unsafe { &*p }).unwrap_or(&*EMPTY_TABLE);
+        
         let mut table = self
-            .load_table(table_codec, plan_arena, table_name, &ScalaFunctions::default(), &TableFunctions::default())
+            .load_table(table_codec, plan_arena, table_name, scala_functions, table_functions)
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         if !column.nullable() && column.default_value(plan_arena)?.is_none() {
@@ -612,8 +633,15 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         table_name: &str,
         column_name: &str,
     ) -> Result<TableCatalog, DatabaseError> {
+        static EMPTY_SCALA: std::sync::LazyLock<ScalaFunctions> = std::sync::LazyLock::new(ScalaFunctions::default);
+        static EMPTY_TABLE: std::sync::LazyLock<TableFunctions> = std::sync::LazyLock::new(TableFunctions::default);
+        
+        let (sf_ptr, tf_ptr) = table_codec.get_function_ptrs();
+        let scala_functions = sf_ptr.map(|p| unsafe { &*p }).unwrap_or(&*EMPTY_SCALA);
+        let table_functions = tf_ptr.map(|p| unsafe { &*p }).unwrap_or(&*EMPTY_TABLE);
+        
         let table_catalog = self
-            .load_table(table_codec, plan_arena, table_name, &ScalaFunctions::default(), &TableFunctions::default())
+            .load_table(table_codec, plan_arena, table_name, scala_functions, table_functions)
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         let column_id = {
@@ -797,8 +825,15 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         index_name: &str,
         if_exists: bool,
     ) -> Result<Option<(TableCatalog, IndexId)>, DatabaseError> {
+        static EMPTY_SCALA: std::sync::LazyLock<ScalaFunctions> = std::sync::LazyLock::new(ScalaFunctions::default);
+        static EMPTY_TABLE: std::sync::LazyLock<TableFunctions> = std::sync::LazyLock::new(TableFunctions::default);
+        
+        let (sf_ptr, tf_ptr) = table_codec.get_function_ptrs();
+        let scala_functions = sf_ptr.map(|p| unsafe { &*p }).unwrap_or(&*EMPTY_SCALA);
+        let table_functions = tf_ptr.map(|p| unsafe { &*p }).unwrap_or(&*EMPTY_TABLE);
+        
         let table = self
-            .load_table(table_codec, plan_arena, table_name, &ScalaFunctions::default(), &TableFunctions::default())
+            .load_table(table_codec, plan_arena, table_name, scala_functions, table_functions)
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         let Some(index_meta_ref) = table
@@ -3243,6 +3278,8 @@ mod test {
         let table = table.transplant_to_table_arena(&plan_arena)?;
         names.insert_table(&mut table_cache, table);
         let mut plan_arena = PlanArena::new(&table_arena);
+        let scala_functions = crate::db::ScalaFunctions::default();
+        let table_functions = crate::db::TableFunctions::default();
         let (table, _) = transaction
             .add_index_meta(
                 &mut table_codec,
@@ -3251,8 +3288,6 @@ mod test {
                 "i2".to_string(),
                 vec![c3_column_id, c2_column_id],
                 IndexType::Composite,
-                &scala_functions,
-                &table_functions,
             )
             .await?;
         let table = table.transplant_to_table_arena(&plan_arena)?;
@@ -3314,14 +3349,14 @@ mod test {
             assert!(iter.try_next().await?.is_none());
         }
         match transaction
-            .drop_index(&mut table_codec, &mut plan_arena, "t1", "pk_index", false, &scala_functions, &table_functions)
+            .drop_index(&mut table_codec, &mut plan_arena, "t1", "pk_index", false)
             .await
         {
             Err(DatabaseError::InvalidIndex) => (),
             _ => unreachable!(),
         }
         if let Some((table, _)) = transaction
-            .drop_index(&mut table_codec, &mut plan_arena, "t1", "i1", false, &scala_functions, &table_functions)
+            .drop_index(&mut table_codec, &mut plan_arena, "t1", "i1", false)
             .await?
         {
             let table = table.transplant_to_table_arena(&plan_arena)?;
@@ -3667,8 +3702,6 @@ mod test {
                 &table_name,
                 &new_column,
                 false,
-                &scala_functions,
-                &table_functions,
             )
             .await?;
         let table = table.transplant_to_table_arena(&plan_arena)?;
@@ -3682,8 +3715,6 @@ mod test {
                     &table_name,
                     &new_column,
                     false,
-                    &scala_functions,
-                    &table_functions,
                 )
                 .await
                 .is_err());
@@ -3696,8 +3727,6 @@ mod test {
                         &table_name,
                         &new_column,
                         true,
-                        &scala_functions,
-                        &table_functions,
                     )
                     .await?
                     .1
@@ -3722,7 +3751,7 @@ mod test {
             assert_eq!(table_arena.borrow().column(column), &new_column);
         }
         let table = transaction
-            .drop_column(&mut table_codec, &mut plan_arena, &table_name, "c4", &scala_functions, &table_functions)
+            .drop_column(&mut table_codec, &mut plan_arena, &table_name, "c4")
             .await?;
         let table = table.transplant_to_table_arena(&plan_arena)?;
         names.insert_table(&mut table_cache, table);

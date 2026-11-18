@@ -694,7 +694,9 @@ mod tests {
         let (table_cache, _temp_dir, storage) = build_test_storage().await?;
         let transaction = storage.transaction()?;
         let mut exec_buffer = crate::execution::ExecBuffer::default();
-        let mut exec_arena = crate::execution::ExecArena::new(&table_cache, &transaction);
+        let scala_functions: &'static crate::db::ScalaFunctions = Box::leak(Box::new(crate::db::ScalaFunctions::default()));
+        let table_functions: &'static crate::db::TableFunctions = Box::leak(Box::new(crate::db::TableFunctions::default()));
+        let mut exec_arena = crate::execution::ExecArena::new(&table_cache, scala_functions, table_functions, &transaction);
         let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
 
         let right_root = build_read(&mut arena, &plan_arena, &right);
@@ -750,7 +752,9 @@ mod tests {
         let (table_cache, _temp_dir, storage) = build_test_storage().await?;
         let transaction = storage.transaction()?;
         let mut exec_buffer = crate::execution::ExecBuffer::default();
-        let mut exec_arena = crate::execution::ExecArena::new(&table_cache, &transaction);
+        let scala_functions: &'static crate::db::ScalaFunctions = Box::leak(Box::new(crate::db::ScalaFunctions::default()));
+        let table_functions: &'static crate::db::TableFunctions = Box::leak(Box::new(crate::db::TableFunctions::default()));
+        let mut exec_arena = crate::execution::ExecArena::new(&table_cache, scala_functions, table_functions, &transaction);
         let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
 
         let right_root = build_read(&mut arena, &plan_arena, &right);
@@ -805,7 +809,9 @@ mod tests {
         let (table_cache, _temp_dir, storage) = build_test_storage().await?;
         let transaction = storage.transaction()?;
         let mut exec_buffer = crate::execution::ExecBuffer::default();
-        let mut exec_arena = crate::execution::ExecArena::new(&table_cache, &transaction);
+        let scala_functions: &'static crate::db::ScalaFunctions = Box::leak(Box::new(crate::db::ScalaFunctions::default()));
+        let table_functions: &'static crate::db::TableFunctions = Box::leak(Box::new(crate::db::TableFunctions::default()));
+        let mut exec_arena = crate::execution::ExecArena::new(&table_cache, scala_functions, table_functions, &transaction);
         let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
 
         let right_root = build_read(&mut arena, &plan_arena, &right);

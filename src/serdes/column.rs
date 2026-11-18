@@ -186,7 +186,7 @@ pub(crate) mod test {
             let scala_functions = crate::db::ScalaFunctions::default();
             let table_functions = crate::db::TableFunctions::default();
             let table = transaction
-                .drop_column(&mut table_codec, &mut plan_arena, &table_name, "c3", &scala_functions, &table_functions)
+                .drop_column(&mut table_codec, &mut plan_arena, &table_name, "c3")
                 .await?;
             let table = table.transplant_to_table_arena(&plan_arena)?;
             names.insert_table(&mut table_cache, table);

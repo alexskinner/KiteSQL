@@ -162,6 +162,10 @@ impl TableCodec {
         }
     }
 
+    pub(crate) fn get_function_ptrs(&self) -> (Option<*const crate::db::ScalaFunctions>, Option<*const crate::db::TableFunctions>) {
+        (self.scala_functions, self.table_functions)
+    }
+
     pub(crate) fn set_stamp(&mut self, stamp: u64) {
         self.stamp = stamp;
     }
