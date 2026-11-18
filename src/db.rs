@@ -14,6 +14,8 @@
 
 mod program;
 #[cfg(feature = "parser")]
+mod session;
+#[cfg(feature = "parser")]
 pub use crate::binder::Statement;
 use crate::binder::{Binder, BinderContext};
 use crate::errors::DatabaseError;
@@ -53,6 +55,8 @@ use crate::types::value::DataValue;
 use crate::types::LogicalType;
 use ordered_float::OrderedFloat;
 pub use program::{Param, Program, ProgramIter};
+#[cfg(feature = "parser")]
+pub use session::Session;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
@@ -1392,6 +1396,15 @@ impl<S: Storage> Database<S> {
     #[inline]
     pub fn transaction_isolation(&self) -> TransactionIsolationLevel {
         self.transaction_isolation
+    }
+
+    /// Creates a session for SQL transaction control.
+    ///
+    /// The session borrows the database and provides BEGIN, COMMIT, ROLLBACK,
+    /// and SET autocommit control. See [`crate::db::session::Session`] for usage patterns.
+    #[cfg(feature = "parser")]
+    pub fn session(&self) -> crate::db::session::Session<'_, S> {
+        crate::db::session::Session::new(self)
     }
 }
 
