@@ -65,13 +65,13 @@ impl FunctionRegistry {
         // Allow overriding built-ins, but not user-registered functions
         let is_builtin = self.builtin_functions.contains(&key);
         let exists = self.scalar_functions.contains_key(&summary);
-        
+
         if exists && !is_builtin {
             return Err(DatabaseError::FunctionAlreadyExists(
                 summary.name.to_string(),
             ));
         }
-        
+
         self.scalar_functions.insert(summary, function);
         Ok(())
     }
@@ -520,7 +520,7 @@ mod tests {
         assert_eq!(tuple[0], DataValue::Int32(42));
         iter.done()?;
 
-        // Test Bigint overload  
+        // Test Bigint overload
         let mut iter = database.run("select add_one(CAST(41 AS BIGINT))")?;
         let tuple = next_tuple_owned(&mut iter)?.unwrap();
         assert_eq!(tuple[0], DataValue::Int64(42));
