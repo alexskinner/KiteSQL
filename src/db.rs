@@ -807,7 +807,6 @@ fn statement_stamp<T: StorageTransaction>(
 }
 
 #[maybe_async]
-#[maybe_async]
 async fn start_execution<'a, 'p, T: StorageTransaction + 'p, A: MetaArena + 'p>(
     table_cache: &'p TableCache,
     transaction: &'a mut T,
@@ -1377,13 +1376,34 @@ impl<S: Storage> Database<S> {
     /// transactional context until [`Transaction::commit`] is called.
     /// A `read_only` transaction rejects statements that write; on LMDB it runs
     /// alongside the single writer instead of waiting for it.
-    /// Creates a new transaction.
+    /// Creates a new transaction with statement-level atomicity.
+    ///
+    /// When a DML statement fails partway through, only that statement's changes
+    /// are rolled back while the transaction remains open. This matches MySQL
+    /// semantics and is the default for explicit transactions.
+    ///
+    /// For read-only transactions, statement undo is skipped as an optimization.
+    pub fn new_transaction(&self, read_only: bool) -> Result<Transaction<'_, S>, DatabaseError> {
+        self.new_transaction_with_undo(read_only, !read_only)
+    }
+
+    /// Creates a new transaction without statement-level undo.
+    ///
+    /// Use this for implicit autocommit-style patterns where the entire transaction
+    /// is dropped on failure. Skips undo recording for performance.
+    pub fn new_transaction_without_undo(
+        &self,
+        read_only: bool,
+    ) -> Result<Transaction<'_, S>, DatabaseError> {
+        self.new_transaction_with_undo(read_only, false)
+    }
+
+    /// Creates a new transaction with explicit undo control.
     ///
     /// `enable_undo`: Whether to enable statement-level undo for this transaction.
-    /// Should be true for explicit transactions (BEGIN/autocommit=0) to allow
-    /// statements to be rolled back individually while keeping the transaction open.
-    /// Should be false for implicit autocommit transactions where the entire
-    /// transaction is dropped on failure.
+    /// Should be true for explicit transactions to allow statements to be rolled back
+    /// individually while keeping the transaction open. Should be false for implicit
+    /// autocommit transactions where the entire transaction is dropped on failure.
     pub fn new_transaction_with_undo(
         &self,
         read_only: bool,
@@ -1402,11 +1422,6 @@ impl<S: Storage> Database<S> {
             read_only,
             enable_undo,
         })
-    }
-
-    /// Creates a new transaction without statement-level undo (for backwards compatibility).
-    pub fn new_transaction(&self, read_only: bool) -> Result<Transaction<'_, S>, DatabaseError> {
-        self.new_transaction_with_undo(read_only, false)
     }
 
     /// Returns storage-engine-specific metrics when supported.
@@ -2031,18 +2046,16 @@ impl<'p, T: StorageTransaction + 'p> TransactionGuard<'_, 'p, T> {
                     let (transaction, table_codec) = state.transaction_codec_mut();
                     undo_log.rollback(transaction, table_codec).await
                 };
+                
+                // Mark guard as inactive (iters already recycled above)
+                self.active = false;
+                
                 match rollback_result {
-                    Ok(()) => {
-                        self.finish(None);
-                        Err(original_err)
-                    }
-                    Err(rollback_err) => {
-                        self.finish(None);
-                        Err(DatabaseError::StatementRollbackFailed {
-                            statement_error: original_err.to_string(),
-                            rollback_error: rollback_err.to_string(),
-                        })
-                    }
+                    Ok(()) => Err(original_err),
+                    Err(rollback_err) => Err(DatabaseError::StatementRollbackFailed {
+                        statement_error: original_err.to_string(),
+                        rollback_error: rollback_err.to_string(),
+                    }),
                 }
             }
         }

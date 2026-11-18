@@ -148,13 +148,12 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                 transaction
                     .remove_tuple(table_codec, table.table_id, &old_pk)
                     .await?;
-                if let Some(ref old_tuple) = old_tuple {
+                if let (Some(ref old_tuple), Some(ref serializers)) = (&old_tuple, &serializers_arc)
+                {
                     arena.undo_log().record_append_tuple(
                         table.table_id,
                         old_tuple.clone(),
-                        serializers_arc
-                            .clone()
-                            .expect("serializers_arc must be Some when old_tuple is Some"),
+                        Arc::clone(serializers),
                     );
                 }
             }
@@ -208,7 +207,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                 .await?;
 
             // Record how to undo the append
-            if let Some(old_tuple) = old_tuple {
+            if let (Some(old_tuple), Some(ref serializers)) = (old_tuple, &serializers_arc) {
                 if primary_key_changed {
                     arena
                         .undo_log()
@@ -217,9 +216,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                     arena.undo_log().record_append_tuple_overwrite(
                         table.table_id,
                         old_tuple,
-                        serializers_arc
-                            .clone()
-                            .expect("serializers_arc must be Some when old_tuple is Some"),
+                        Arc::clone(serializers),
                     );
                 }
             }
