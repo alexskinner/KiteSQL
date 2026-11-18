@@ -990,9 +990,11 @@ impl<S: Storage> State<S> {
     pub(crate) fn meta_cache(&self) -> &StatisticsMetaCache {
         self.catalog().meta
     }
+    #[allow(dead_code)]
     pub(crate) fn names(&self) -> &NameMapping {
         &self.catalog().arena.borrow().names
     }
+    #[allow(dead_code)]
     pub(crate) fn table_cache(&self) -> &TableCache {
         &self.catalog().arena.borrow().tables
     }
