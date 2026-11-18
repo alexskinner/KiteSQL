@@ -24,7 +24,14 @@ pub(crate) mod numbers;
 pub(crate) mod octet_length;
 pub mod pack;
 pub mod registry;
+<<<<<<< HEAD
 pub mod builtin_aggregates;
 #[cfg(test)]
 mod aggregate_tests;
+=======
+#[cfg(test)]
+mod registry_tests;
+#[cfg(test)]
+mod persistence_tests;
+>>>>>>> cursor/w2-pr6-eliminate-dual-state-2064
 pub(crate) mod upper;
