@@ -52,6 +52,7 @@ use std::io::Cursor;
 use std::mem;
 use std::ops::SubAssign;
 use std::path::Path;
+use std::sync::Arc;
 
 pub type KeyValueRef<'a> = (&'a [u8], &'a [u8]);
 
@@ -179,17 +180,25 @@ pub trait Storage: Clone + MaybeSend + MaybeSync {
     ) -> Result<Self::TransactionType<'_>, DatabaseError>;
 
     /// Creates a transaction with function context for decoding column defaults.
-    /// The default implementation just calls `transaction_with_isolation` and ignores
-    /// the function context. Storage implementations that support function context in
-    /// column defaults should override this to store the context and return it from
-    /// the transaction's `scala_functions()` and `table_functions()` trait methods.
-    fn transaction_with_functions<'a>(
-        &'a self,
+    /// 
+    /// # Important
+    /// 
+    /// The default implementation **silently ignores** the function context arguments
+    /// and returns a transaction without function support. This will cause DDL operations
+    /// (CREATE INDEX, ALTER TABLE, etc.) on tables with function DEFAULT expressions to
+    /// fail with "scalar function decode context missing" errors.
+    /// 
+    /// **All Storage implementations must override this method** to store the function
+    /// context and return it from the transaction's `scala_functions()` and 
+    /// `table_functions()` methods. The default is provided only for temporary
+    /// backward compatibility during migration.
+    fn transaction_with_functions(
+        &self,
         isolation: TransactionIsolationLevel,
         read_only: bool,
-        _scala_functions: Option<&'a ScalaFunctions>,
-        _table_functions: Option<&'a TableFunctions>,
-    ) -> Result<Self::TransactionType<'a>, DatabaseError> {
+        _scala_functions: Option<Arc<ScalaFunctions>>,
+        _table_functions: Option<Arc<TableFunctions>>,
+    ) -> Result<Self::TransactionType<'_>, DatabaseError> {
         self.transaction_with_isolation(isolation, read_only)
     }
 
@@ -2802,7 +2811,7 @@ pub(crate) async fn check_explicit_transaction_does_not_rescan_own_writes<S: Sto
 pub(crate) type TestStorage = crate::storage::memory::MemoryStorage;
 
 #[cfg(all(test, not(feature = "async")))]
-pub(crate) type TestTransaction<'a> = crate::storage::memory::MemoryTransaction<'a>;
+pub(crate) type TestTransaction = crate::storage::memory::MemoryTransaction;
 
 #[cfg(all(test, feature = "async"))]
 pub(crate) type TestStorage = crate::storage::slatedb::SlateDbStorage;
@@ -3421,7 +3430,7 @@ mod test {
             table_cache: &'a TableCache,
             plan_arena: &'a PlanArena<'a>,
             deserializers: &'a TupleDeserializers,
-        ) -> Result<IndexIter<'a, TestTransaction<'a>>, DatabaseError> {
+        ) -> Result<IndexIter<'a, TestTransaction>, DatabaseError> {
             let table_name: crate::catalog::TableName = "t1".to_string();
             let index_meta = names
                 .table(table_cache, &table_name)

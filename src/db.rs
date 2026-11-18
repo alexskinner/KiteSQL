@@ -441,8 +441,8 @@ impl DataBaseBuilder {
         let table_arena = TableArenaCell::default();
 
         let mut state = State {
-            scala_functions: Default::default(),
-            table_functions: Default::default(),
+            scala_functions: Arc::new(Default::default()),
+            table_functions: Arc::new(Default::default()),
             meta_cache,
             table_arena,
             optimizer_pipeline: optimizer_pipeline(),
@@ -687,8 +687,8 @@ where
 }
 
 pub(crate) struct State<S> {
-    scala_functions: ScalaFunctions,
-    table_functions: TableFunctions,
+    scala_functions: Arc<ScalaFunctions>,
+    table_functions: Arc<TableFunctions>,
     meta_cache: StatisticsMetaCache,
     table_arena: TableArenaCell,
     optimizer_pipeline: HepOptimizerPipeline,
@@ -712,6 +712,12 @@ impl<S: Storage> State<S> {
     fn table_functions(&self) -> &TableFunctions {
         &self.table_functions
     }
+    fn scala_functions_arc(&self) -> &Arc<ScalaFunctions> {
+        &self.scala_functions
+    }
+    fn table_functions_arc(&self) -> &Arc<TableFunctions> {
+        &self.table_functions
+    }
     pub(crate) fn meta_cache(&self) -> &StatisticsMetaCache {
         &self.meta_cache
     }
@@ -729,8 +735,7 @@ impl<S: Storage> State<S> {
     }
 
     fn load_scalar_function(&mut self, function: Arc<dyn ScalarFunctionImpl>) {
-        self.scala_functions
-            .insert(function.summary().clone(), function);
+        Arc::make_mut(&mut self.scala_functions).insert(function.summary().clone(), function);
     }
 
     fn load_table_function(
@@ -740,7 +745,7 @@ impl<S: Storage> State<S> {
         let summary = function.summary().clone();
         let mut schema = Schema::new();
         function.output_schema_into(self.table_arena.borrow_mut(), &mut schema);
-        self.table_functions.insert(
+        Arc::make_mut(&mut self.table_functions).insert(
             summary,
             TableFunctionCatalog {
                 schema,
@@ -1009,51 +1014,29 @@ impl<S: Storage> Database<S> {
         ) -> Result<LogicalPlan, DatabaseError>,
         C: ConsumeMut<S>,
     {
-        let (scala_functions, table_functions) = unsafe {
-            let state_ptr = std::ptr::from_ref(&self.state);
-            (
-                Some((*state_ptr).scala_functions()),
-                Some((*state_ptr).table_functions()),
-            )
-        };
-        let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
+        let mut transaction = self.storage.transaction_with_functions(
             self.transaction_isolation,
             false,
-            scala_functions,
-            table_functions,
-        )?);
-        let state = TxnPtr::new(std::ptr::from_mut(&mut self.state));
-        let (plan_arena, executor) = match unsafe {
-            (&mut *state.get())
-                .execute_mut(&mut *transaction.get(), params, build)
-                .await
-        } {
-            Ok(result) => result,
-            Err(err) => return Err(err.with_sql_context(context)),
-        };
-        let (result, mut plan_arena, apply) = match async {
-            let mut iter = TransactionIter::new(plan_arena, executor);
-            let result = consume.consume(&mut iter).await?;
-            let (arena, apply) = iter.done_with_ddl_apply().await?;
-            Ok::<_, DatabaseError>((result, arena, apply))
-        }
-        .await
-        {
-            Ok(result) => result,
-            Err(err) => return Err(err.with_sql_context(context)),
-        };
-
-        if let Err(err) = unsafe { transaction.into_inner() }.commit().await {
-            return Err(err.with_sql_context(context));
-        }
+            Some(Arc::clone(self.state.scala_functions_arc())),
+            Some(Arc::clone(self.state.table_functions_arc())),
+        )?;
+        let (plan_arena, executor) = self.state.execute_mut(&mut transaction, params, build).await.map_err(|err| err.with_sql_context(context))?;
+        
+        let mut iter = TransactionIter::new(plan_arena, executor);
+        let result = consume.consume(&mut iter).await.map_err(|err| err.with_sql_context(context))?;
+        let (mut plan_arena, apply) = iter.done_with_ddl_apply().await.map_err(|err| err.with_sql_context(context))?;
+        
+        transaction.commit().await.map_err(|err| err.with_sql_context(context))?;
+        drop(transaction);
 
         let mut catalog_changed = false;
-        for apply in apply {
-            catalog_changed |= unsafe { apply.apply_to(&mut *state.get(), &mut plan_arena) }
+        for apply_item in apply {
+            catalog_changed |= apply_item
+                .apply_to(&mut self.state, &mut plan_arena)
                 .map_err(|err| err.with_sql_context(context))?;
         }
         if catalog_changed {
-            unsafe { (&mut *state.get()).recycle_table_arena() }?;
+            self.state.recycle_table_arena()?;
         }
         Ok(result)
     }
@@ -1082,8 +1065,8 @@ impl<S: Storage> Database<S> {
                 let transaction = self.storage.transaction_with_functions(
                     self.storage.default_transaction_isolation(),
                     true,
-                    Some(self.state.scala_functions()),
-                    Some(self.state.table_functions()),
+                    Some(Arc::clone(self.state.scala_functions_arc())),
+                    Some(Arc::clone(self.state.table_functions_arc())),
                 )?;
                 let mut table_codec = TableCodec::default();
                 let table = transaction
@@ -1145,8 +1128,8 @@ impl<S: Storage> Database<S> {
                 let transaction = self.storage.transaction_with_functions(
                     self.storage.default_transaction_isolation(),
                     true,
-                    Some(self.state.scala_functions()),
-                    Some(self.state.table_functions()),
+                    Some(Arc::clone(self.state.scala_functions_arc())),
+                    Some(Arc::clone(self.state.table_functions_arc())),
                 )?;
                 let mut table_codec = TableCodec::default();
                 let (view_id, view) = transaction
@@ -1177,9 +1160,12 @@ impl<S: Storage> Database<S> {
     /// A `read_only` transaction rejects statements that write; on LMDB it runs
     /// alongside the single writer instead of waiting for it.
     pub fn new_transaction(&self, read_only: bool) -> Result<Transaction<'_, S>, DatabaseError> {
-        let transaction = self
-            .storage
-            .transaction_with_isolation(self.transaction_isolation, read_only)?;
+        let transaction = self.storage.transaction_with_functions(
+            self.transaction_isolation,
+            read_only,
+            Some(Arc::clone(self.state.scala_functions_arc())),
+            Some(Arc::clone(self.state.table_functions_arc())),
+        )?;
 
         Ok(Transaction {
             inner: transaction,
@@ -3453,9 +3439,19 @@ pub(crate) mod test {
         kite_sql.load(CatalogKind::ScalarFunction(my_udf))?;
 
         kite_sql.ddl("CREATE TABLE t_udf (id int primary key, val int default my_udf(), v int)")?;
+        
         kite_sql
             .run("INSERT INTO t_udf (id, v) VALUES (1, 10)")?
             .done()?;
+
+        let mut found_val = None;
+        kite_sql
+            .run("SELECT val FROM t_udf WHERE id = 1")?
+            .done(|row| {
+                found_val = row.get(0).cloned();
+                Ok(())
+            })?;
+        assert_eq!(found_val, Some(DataValue::Int32(42)));
 
         kite_sql.ddl("CREATE INDEX ix_v ON t_udf (v)")?;
         kite_sql.ddl("DROP INDEX ix_v ON t_udf")?;
@@ -3487,9 +3483,66 @@ pub(crate) mod test {
             kite_sql.ddl("CREATE INDEX ix_v ON t_persist (v)")?;
             kite_sql
                 .ddl("ALTER TABLE t_persist ADD COLUMN d2 timestamp default current_timestamp")?;
+
             kite_sql
-                .run("SELECT id FROM t_persist WHERE v = 100)")?
+                .run("INSERT INTO t_persist (id, v) VALUES (2, 200)")?
                 .done()?;
+
+            let mut found_rows = Vec::new();
+            kite_sql
+                .run("SELECT id, v, d, d2 FROM t_persist ORDER BY id")?
+                .done(|row| {
+                    let id = row.get(0).cloned();
+                    let v = row.get(1).cloned();
+                    let d = row.get(2).cloned();
+                    let d2 = row.get(3).cloned();
+                    found_rows.push((id, v, d, d2));
+                    Ok(())
+                })?;
+
+            assert_eq!(found_rows.len(), 2);
+            
+            assert_eq!(found_rows[0].0, Some(DataValue::Int32(1)));
+            assert_eq!(found_rows[0].1, Some(DataValue::Int32(100)));
+            assert!(matches!(found_rows[0].2, Some(DataValue::Date64(_))));
+            assert_eq!(found_rows[0].3, Some(DataValue::Null));
+            
+            assert_eq!(found_rows[1].0, Some(DataValue::Int32(2)));
+            assert_eq!(found_rows[1].1, Some(DataValue::Int32(200)));
+            assert!(matches!(found_rows[1].2, Some(DataValue::Date64(_))));
+            assert!(matches!(found_rows[1].3, Some(DataValue::Date64(_))));
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "lmdb")]
+    #[test]
+    fn test_function_default_cold_cache() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let db_path = temp_dir.path();
+
+        {
+            let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
+            kite_sql.ddl(
+                "CREATE TABLE t_cold (id int primary key, d timestamp default current_timestamp, v int)",
+            )?;
+            kite_sql
+                .run("INSERT INTO t_cold (id, v) VALUES (1, 10)")?
+                .done()?;
+        }
+
+        {
+            let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
+            
+            let mut found_val = None;
+            kite_sql
+                .run("SELECT v FROM t_cold WHERE id = 1")?
+                .done(|row| {
+                    found_val = row.get(0).cloned();
+                    Ok(())
+                })?;
+            assert_eq!(found_val, Some(DataValue::Int32(10)));
         }
 
         Ok(())

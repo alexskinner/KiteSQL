@@ -153,13 +153,13 @@ impl Storage for LmdbStorage {
         })
     }
 
-    fn transaction_with_functions<'a>(
-        &'a self,
+    fn transaction_with_functions(
+        &self,
         isolation: TransactionIsolationLevel,
         read_only: bool,
-        scala_functions: Option<&'a crate::db::ScalaFunctions>,
-        table_functions: Option<&'a crate::db::TableFunctions>,
-    ) -> Result<Self::TransactionType<'a>, DatabaseError> {
+        scala_functions: Option<std::sync::Arc<crate::db::ScalaFunctions>>,
+        table_functions: Option<std::sync::Arc<crate::db::TableFunctions>>,
+    ) -> Result<Self::TransactionType<'_>, DatabaseError> {
         self.validate_transaction_isolation(isolation)?;
         let (tx, mapped) = if read_only {
             let mapped = unsafe { MappedScope::new() };
@@ -205,8 +205,8 @@ pub struct LmdbTransaction<'env> {
     tx: LmdbTxn<'env>,
     db: Database,
     statements: u64,
-    scala_functions: Option<&'env crate::db::ScalaFunctions>,
-    table_functions: Option<&'env crate::db::TableFunctions>,
+    scala_functions: Option<std::sync::Arc<crate::db::ScalaFunctions>>,
+    table_functions: Option<std::sync::Arc<crate::db::TableFunctions>>,
 }
 
 /// Read transactions do not take LMDB's single-writer lock.
@@ -419,11 +419,11 @@ impl StorageTransaction for LmdbTransaction<'_> {
     }
 
     fn scala_functions(&self) -> Option<&crate::db::ScalaFunctions> {
-        self.scala_functions
+        self.scala_functions.as_deref()
     }
 
     fn table_functions(&self) -> Option<&crate::db::TableFunctions> {
-        self.table_functions
+        self.table_functions.as_deref()
     }
 
     fn point_cursor(&self) -> Result<Self::PointCursor<'_>, DatabaseError> {

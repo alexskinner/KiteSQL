@@ -39,7 +39,7 @@ impl Storage for MemoryStorage {
     type Metrics = EmptyStorageMetrics;
 
     type TransactionType<'a>
-        = MemoryTransaction<'a>
+        = MemoryTransaction
     where
         Self: 'a;
 
@@ -57,13 +57,13 @@ impl Storage for MemoryStorage {
         })
     }
 
-    fn transaction_with_functions<'a>(
-        &'a self,
+    fn transaction_with_functions(
+        &self,
         isolation: TransactionIsolationLevel,
         _read_only: bool,
-        scala_functions: Option<&'a crate::db::ScalaFunctions>,
-        table_functions: Option<&'a crate::db::TableFunctions>,
-    ) -> Result<Self::TransactionType<'a>, DatabaseError> {
+        scala_functions: Option<std::sync::Arc<crate::db::ScalaFunctions>>,
+        table_functions: Option<std::sync::Arc<crate::db::TableFunctions>>,
+    ) -> Result<Self::TransactionType<'_>, DatabaseError> {
         self.validate_transaction_isolation(isolation)?;
         Ok(MemoryTransaction {
             inner: self.inner.clone(),
@@ -74,11 +74,11 @@ impl Storage for MemoryStorage {
     }
 }
 
-pub struct MemoryTransaction<'a> {
+pub struct MemoryTransaction {
     inner: Rc<RefCell<BTreeMap<Vec<u8>, Vec<u8>>>>,
     statements: Rc<Cell<u64>>,
-    scala_functions: Option<&'a crate::db::ScalaFunctions>,
-    table_functions: Option<&'a crate::db::TableFunctions>,
+    scala_functions: Option<std::sync::Arc<crate::db::ScalaFunctions>>,
+    table_functions: Option<std::sync::Arc<crate::db::TableFunctions>>,
 }
 
 pub struct MemoryIter<'txn> {
@@ -179,7 +179,7 @@ impl InnerIter for MemoryIter<'_> {
     }
 }
 
-impl StorageTransaction for MemoryTransaction<'_> {
+impl StorageTransaction for MemoryTransaction {
     type BorrowedBytes<'a>
         = MemoryValue<'a>
     where
@@ -211,11 +211,11 @@ impl StorageTransaction for MemoryTransaction<'_> {
     }
 
     fn scala_functions(&self) -> Option<&crate::db::ScalaFunctions> {
-        self.scala_functions
+        self.scala_functions.as_deref()
     }
 
     fn table_functions(&self) -> Option<&crate::db::TableFunctions> {
-        self.table_functions
+        self.table_functions.as_deref()
     }
 
     fn get_borrowed<'a>(
