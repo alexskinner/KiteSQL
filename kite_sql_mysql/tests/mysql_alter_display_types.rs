@@ -7,16 +7,15 @@
 //! 4. Display types are preserved with column rename (CHANGE)
 //! 5. Cache is properly refreshed after ALTER operations
 
-#[cfg(all(feature = "lmdb", feature = "parser"))]
-mod mysql_alter_tests {
-    use kite_sql::db::DataBaseBuilder;
-    use kite_sql::errors::DatabaseError;
-    use kite_sql::storage::lmdb::LmdbStorage;
-    use kite_sql::types::value::DataValue;
-    use tempfile::TempDir;
+use kite_sql::db::DataBaseBuilder;
+use kite_sql::errors::DatabaseError;
+use kite_sql::storage::lmdb::LmdbStorage;
+use kite_sql::types::value::DataValue;
+use kite_sql_mysql::MySqlBuilderExt;
+use tempfile::TempDir;
 
-    #[test]
-    fn test_mysql_alter_display_types() -> Result<(), DatabaseError> {
+#[test]
+fn test_mysql_alter_display_types() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let storage = LmdbStorage::new(temp_dir.path())?;
         let mut database = DataBaseBuilder::path(".")
@@ -161,6 +160,5 @@ mod mysql_alter_tests {
         assert_eq!(desc2_row[0], DataValue::from("desc2".to_string()));
         assert_eq!(desc2_row[1], DataValue::from("longtext".to_string()));
 
-        Ok(())
-    }
+    Ok(())
 }
