@@ -18,283 +18,297 @@ use crate::errors::DatabaseError;
 use crate::storage::Storage;
 
 pub struct Session<'db, S: Storage> {
-	database: &'db Database<S>,
-	active_transaction: Option<Transaction<'db, S>>,
-	autocommit: bool,
+    database: &'db Database<S>,
+    active_transaction: Option<Transaction<'db, S>>,
+    autocommit: bool,
 }
 
 #[maybe_async]
 impl<'db, S: Storage> Session<'db, S> {
-	pub fn new(database: &'db Database<S>) -> Self {
-		Self {
-			database,
-			active_transaction: None,
-			autocommit: true,
-		}
-	}
+    pub fn new(database: &'db Database<S>) -> Self {
+        Self {
+            database,
+            active_transaction: None,
+            autocommit: true,
+        }
+    }
 
-	pub async fn execute(&mut self, sql: &str) -> Result<(), DatabaseError> {
-		let statements = self.database.prepare_all(sql)?;
+    pub async fn execute(&mut self, sql: &str) -> Result<(), DatabaseError> {
+        let statements = self.database.prepare_all(sql)?;
 
-		if statements.is_empty() {
-			return Ok(());
-		}
+        if statements.is_empty() {
+            return Ok(());
+        }
 
-		if statements.len() > 1 {
-			return Err(DatabaseError::UnsupportedStmt(
-				"Multiple statements not supported in session".to_string(),
-			));
-		}
+        if statements.len() > 1 {
+            return Err(DatabaseError::UnsupportedStmt(
+                "Multiple statements not supported in session".to_string(),
+            ));
+        }
 
-		let statement = statements.into_iter().next().unwrap();
-		self.execute_statement(statement).await
-	}
+        let statement = statements.into_iter().next().unwrap();
+        self.execute_statement(statement).await
+    }
 
-	pub async fn run(&mut self, sql: &str) -> Result<(), DatabaseError> {
-		self.execute(sql).await
-	}
+    pub async fn run(&mut self, sql: &str) -> Result<(), DatabaseError> {
+        self.execute(sql).await
+    }
 
-	async fn execute_statement(&mut self, statement: Statement) -> Result<(), DatabaseError> {
-		match statement {
-			Statement::StartTransaction { modes, .. } => {
-				if !modes.is_empty() {
-					return Err(DatabaseError::UnsupportedStmt(
-						"Transaction modes (isolation level) not supported yet".to_string(),
-					));
-				}
-				self.begin_transaction().await
-			}
-			Statement::Commit { .. } => self.commit_transaction().await,
-			Statement::Rollback { .. } => self.rollback_transaction().await,
-			Statement::Savepoint { .. } => Err(DatabaseError::UnsupportedStmt(
-				"SAVEPOINT not supported yet".to_string(),
-			)),
-			_ => {
-				if Self::is_set_autocommit(&statement) {
-					self.handle_set_autocommit(&statement).await
-				} else {
-					self.execute_regular_statement(statement).await
-				}
-			}
-		}
-	}
+    async fn execute_statement(&mut self, statement: Statement) -> Result<(), DatabaseError> {
+        match statement {
+            Statement::StartTransaction { modes, .. } => {
+                if !modes.is_empty() {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "Transaction modes (isolation level) not supported yet".to_string(),
+                    ));
+                }
+                self.begin_transaction().await
+            }
+            Statement::Commit { .. } => self.commit_transaction().await,
+            Statement::Rollback { .. } => self.rollback_transaction().await,
+            Statement::Savepoint { .. } => Err(DatabaseError::UnsupportedStmt(
+                "SAVEPOINT not supported yet".to_string(),
+            )),
+            _ => {
+                if Self::is_set_autocommit(&statement) {
+                    self.handle_set_autocommit(&statement).await
+                } else {
+                    self.execute_regular_statement(statement).await
+                }
+            }
+        }
+    }
 
-	async fn begin_transaction(&mut self) -> Result<(), DatabaseError> {
-		if let Some(txn) = self.active_transaction.take() {
-			txn.commit().await?;
-		}
+    async fn begin_transaction(&mut self) -> Result<(), DatabaseError> {
+        if let Some(txn) = self.active_transaction.take() {
+            txn.commit().await?;
+        }
 
-		let txn = self.database.new_transaction(false)?;
-		self.active_transaction = Some(txn);
+        let txn = self.database.new_transaction(false)?;
+        self.active_transaction = Some(txn);
 
-		Ok(())
-	}
+        Ok(())
+    }
 
-	async fn commit_transaction(&mut self) -> Result<(), DatabaseError> {
-		if let Some(txn) = self.active_transaction.take() {
-			txn.commit().await?;
-		}
+    async fn commit_transaction(&mut self) -> Result<(), DatabaseError> {
+        if let Some(txn) = self.active_transaction.take() {
+            txn.commit().await?;
+        }
 
-		Ok(())
-	}
+        Ok(())
+    }
 
-	async fn rollback_transaction(&mut self) -> Result<(), DatabaseError> {
-		if let Some(_txn) = self.active_transaction.take() {
-			drop(_txn);
-		}
+    async fn rollback_transaction(&mut self) -> Result<(), DatabaseError> {
+        if let Some(_txn) = self.active_transaction.take() {
+            drop(_txn);
+        }
 
-		Ok(())
-	}
+        Ok(())
+    }
 
-	fn is_set_autocommit(statement: &Statement) -> bool {
-		match statement {
-			_ => false,
-		}
-	}
+    fn is_set_autocommit(statement: &Statement) -> bool {
+        match statement {
+            _ => false,
+        }
+    }
 
-	async fn handle_set_autocommit(&mut self, _statement: &Statement) -> Result<(), DatabaseError> {
-		Err(DatabaseError::UnsupportedStmt(
-			"SET autocommit not fully implemented yet".to_string(),
-		))
-	}
+    async fn handle_set_autocommit(&mut self, _statement: &Statement) -> Result<(), DatabaseError> {
+        Err(DatabaseError::UnsupportedStmt(
+            "SET autocommit not fully implemented yet".to_string(),
+        ))
+    }
 
-	async fn execute_regular_statement(&mut self, statement: Statement) -> Result<(), DatabaseError> {
-		if self.active_transaction.is_some() {
-			let txn = self.active_transaction.as_mut().unwrap();
-			Self::execute_in_transaction_and_drain(txn, &statement).await
-		} else if self.autocommit {
-			let mut txn = self.database.new_transaction(false)?;
-			Self::execute_in_transaction_and_drain(&mut txn, &statement).await?;
-			txn.commit().await?;
-			Ok(())
-		} else {
-			let txn = self.database.new_transaction(false)?;
-			self.active_transaction = Some(txn);
-			self.execute_regular_statement(statement).await
-		}
-	}
+    async fn execute_regular_statement(
+        &mut self,
+        statement: Statement,
+    ) -> Result<(), DatabaseError> {
+        if self.active_transaction.is_some() {
+            let txn = self.active_transaction.as_mut().unwrap();
+            Self::execute_in_transaction_and_drain(txn, &statement).await
+        } else if self.autocommit {
+            let mut txn = self.database.new_transaction(false)?;
+            Self::execute_in_transaction_and_drain(&mut txn, &statement).await?;
+            txn.commit().await?;
+            Ok(())
+        } else {
+            let txn = self.database.new_transaction(false)?;
+            self.active_transaction = Some(txn);
+            self.execute_regular_statement(statement).await
+        }
+    }
 
-	async fn execute_in_transaction_and_drain(
-		txn: &mut Transaction<'_, S>,
-		statement: &Statement,
-	) -> Result<(), DatabaseError> {
-		use crate::binder::Binder;
-		use crate::execution::Executor;
+    async fn execute_in_transaction_and_drain(
+        txn: &mut Transaction<'_, S>,
+        statement: &Statement,
+    ) -> Result<(), DatabaseError> {
+        use crate::binder::Binder;
+        use crate::execution::Executor;
 
-		let iter = txn.execute(false, |state, transaction| {
-			let (plan, arena) =
-				state.build_plan(&[], transaction, |binder: &mut Binder<'_, '_, _, _>, arena| {
-					binder.bind(statement, arena)
-				})?;
-			let executor = Executor::new(plan, &arena);
-			Ok((executor, arena))
-		})?;
+        let iter = txn.execute(false, |state, transaction| {
+            let (plan, arena) = state.build_plan(
+                &[],
+                transaction,
+                |binder: &mut Binder<'_, '_, _, _>, arena| binder.bind(statement, arena),
+            )?;
+            let executor = Executor::new(plan, &arena);
+            Ok((executor, arena))
+        })?;
 
-		iter.done().await
-	}
+        iter.done().await
+    }
 
-	pub fn autocommit(&self) -> bool {
-		self.autocommit
-	}
+    pub fn autocommit(&self) -> bool {
+        self.autocommit
+    }
 
-	pub fn in_transaction(&self) -> bool {
-		self.active_transaction.is_some()
-	}
+    pub fn in_transaction(&self) -> bool {
+        self.active_transaction.is_some()
+    }
 }
 
 #[maybe_async]
 #[cfg(test)]
 mod tests {
-	use super::*;
-	use crate::db::DataBaseBuilder;
-	use crate::errors::DatabaseError;
+    use super::*;
+    use crate::db::DataBaseBuilder;
+    use crate::errors::DatabaseError;
 
-	#[test]
-	async fn test_session_begin_commit() -> Result<(), DatabaseError> {
-		let mut database = DataBaseBuilder::path(".").build_in_memory().await?;
-		database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)").await?;
-		
-		let mut session = Session::new(&database);
+    #[test]
+    async fn test_session_begin_commit() -> Result<(), DatabaseError> {
+        let mut database = DataBaseBuilder::path(".").build_in_memory().await?;
+        database
+            .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
+            .await?;
 
-		assert!(!session.in_transaction());
-		assert!(session.autocommit());
+        let mut session = Session::new(&database);
 
-		session.execute("BEGIN").await?;
-		assert!(session.in_transaction());
+        assert!(!session.in_transaction());
+        assert!(session.autocommit());
 
-		session.execute("INSERT INTO test VALUES (1, 100)").await?;
-		assert!(session.in_transaction());
+        session.execute("BEGIN").await?;
+        assert!(session.in_transaction());
 
-		session.execute("COMMIT").await?;
-		assert!(!session.in_transaction());
+        session.execute("INSERT INTO test VALUES (1, 100)").await?;
+        assert!(session.in_transaction());
 
-		let mut iter = database.run("SELECT * FROM test").await?;
-		let mut count = 0;
-		while iter.next_tuple(|_, _| ()).await?.is_some() {
-			count += 1;
-		}
-		iter.done().await?;
-		assert_eq!(count, 1);
+        session.execute("COMMIT").await?;
+        assert!(!session.in_transaction());
 
-		Ok(())
-	}
+        let mut iter = database.run("SELECT * FROM test").await?;
+        let mut count = 0;
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
+            count += 1;
+        }
+        iter.done().await?;
+        assert_eq!(count, 1);
 
-	#[test]
-	async fn test_session_begin_rollback() -> Result<(), DatabaseError> {
-		use tempfile::TempDir;
-		let temp_dir = TempDir::new().unwrap();
-		let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
-		database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)").await?;
-		
-		let mut session = Session::new(&database);
-		session.execute("BEGIN").await?;
-		session.execute("INSERT INTO test VALUES (1, 100)").await?;
-		session.execute("ROLLBACK").await?;
+        Ok(())
+    }
 
-		assert!(!session.in_transaction());
+    #[test]
+    async fn test_session_begin_rollback() -> Result<(), DatabaseError> {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
+            .await?;
 
-		let mut iter = database.run("SELECT * FROM test").await?;
-		let mut count = 0;
-		while iter.next_tuple(|_, _| ()).await?.is_some() {
-			count += 1;
-		}
-		iter.done().await?;
-		assert_eq!(count, 0);
+        let mut session = Session::new(&database);
+        session.execute("BEGIN").await?;
+        session.execute("INSERT INTO test VALUES (1, 100)").await?;
+        session.execute("ROLLBACK").await?;
 
-		Ok(())
-	}
+        assert!(!session.in_transaction());
 
-	#[test]
-	async fn test_session_error_in_transaction_keeps_it_open() -> Result<(), DatabaseError> {
-		use tempfile::TempDir;
-		let temp_dir = TempDir::new().unwrap();
-		let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
-		database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)").await?;
-		
-		let mut session = Session::new(&database);
-		session.execute("BEGIN").await?;
-		session.execute("INSERT INTO test VALUES (1, 100)").await?;
-		
-		let result = session.execute("INSERT INTO test VALUES (1, 200)").await;
-		assert!(result.is_err());
-		
-		assert!(session.in_transaction());
-		
-		session.execute("INSERT INTO test VALUES (2, 200)").await?;
-		session.execute("COMMIT").await?;
+        let mut iter = database.run("SELECT * FROM test").await?;
+        let mut count = 0;
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
+            count += 1;
+        }
+        iter.done().await?;
+        assert_eq!(count, 0);
 
-		let mut iter = database.run("SELECT * FROM test ORDER BY id").await?;
-		let mut count = 0;
-		while iter.next_tuple(|_, _| ()).await?.is_some() {
-			count += 1;
-		}
-		iter.done().await?;
-		assert_eq!(count, 2);
+        Ok(())
+    }
 
-		Ok(())
-	}
+    #[test]
+    async fn test_session_error_in_transaction_keeps_it_open() -> Result<(), DatabaseError> {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
+            .await?;
 
-	#[test]
-	async fn test_session_autocommit_mode() -> Result<(), DatabaseError> {
-		let mut database = DataBaseBuilder::path(".").build_in_memory().await?;
-		database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)").await?;
-		
-		let mut session = Session::new(&database);
-		session.execute("INSERT INTO test VALUES (1, 100)").await?;
+        let mut session = Session::new(&database);
+        session.execute("BEGIN").await?;
+        session.execute("INSERT INTO test VALUES (1, 100)").await?;
 
-		assert!(!session.in_transaction());
+        let result = session.execute("INSERT INTO test VALUES (1, 200)").await;
+        assert!(result.is_err());
 
-		let mut iter = database.run("SELECT * FROM test").await?;
-		let mut count = 0;
-		while iter.next_tuple(|_, _| ()).await?.is_some() {
-			count += 1;
-		}
-		iter.done().await?;
-		assert_eq!(count, 1);
+        assert!(session.in_transaction());
 
-		Ok(())
-	}
+        session.execute("INSERT INTO test VALUES (2, 200)").await?;
+        session.execute("COMMIT").await?;
 
-	#[test]
-	async fn test_session_begin_implicitly_commits_previous() -> Result<(), DatabaseError> {
-		let mut database = DataBaseBuilder::path(".").build_in_memory().await?;
-		database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)").await?;
-		
-		let mut session = Session::new(&database);
-		session.execute("BEGIN").await?;
-		session.execute("INSERT INTO test VALUES (1, 100)").await?;
+        let mut iter = database.run("SELECT * FROM test ORDER BY id").await?;
+        let mut count = 0;
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
+            count += 1;
+        }
+        iter.done().await?;
+        assert_eq!(count, 2);
 
-		session.execute("BEGIN").await?;
-		assert!(session.in_transaction());
+        Ok(())
+    }
 
-		let mut iter = database.run("SELECT * FROM test").await?;
-		let mut count = 0;
-		while iter.next_tuple(|_, _| ()).await?.is_some() {
-			count += 1;
-		}
-		iter.done().await?;
-		assert_eq!(count, 1);
+    #[test]
+    async fn test_session_autocommit_mode() -> Result<(), DatabaseError> {
+        let mut database = DataBaseBuilder::path(".").build_in_memory().await?;
+        database
+            .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
+            .await?;
 
-		Ok(())
-	}
+        let mut session = Session::new(&database);
+        session.execute("INSERT INTO test VALUES (1, 100)").await?;
+
+        assert!(!session.in_transaction());
+
+        let mut iter = database.run("SELECT * FROM test").await?;
+        let mut count = 0;
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
+            count += 1;
+        }
+        iter.done().await?;
+        assert_eq!(count, 1);
+
+        Ok(())
+    }
+
+    #[test]
+    async fn test_session_begin_implicitly_commits_previous() -> Result<(), DatabaseError> {
+        let mut database = DataBaseBuilder::path(".").build_in_memory().await?;
+        database
+            .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
+            .await?;
+
+        let mut session = Session::new(&database);
+        session.execute("BEGIN").await?;
+        session.execute("INSERT INTO test VALUES (1, 100)").await?;
+
+        session.execute("BEGIN").await?;
+        assert!(session.in_transaction());
+
+        let mut iter = database.run("SELECT * FROM test").await?;
+        let mut count = 0;
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
+            count += 1;
+        }
+        iter.done().await?;
+        assert_eq!(count, 1);
+
+        Ok(())
+    }
 }

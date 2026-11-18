@@ -17,8 +17,6 @@ mod program;
 mod session;
 #[cfg(feature = "parser")]
 pub use crate::binder::Statement;
-#[cfg(feature = "parser")]
-pub use session::Session;
 use crate::binder::{Binder, BinderContext};
 use crate::errors::DatabaseError;
 pub use crate::execution::Executor;
@@ -57,6 +55,8 @@ use crate::types::value::DataValue;
 use crate::types::LogicalType;
 use ordered_float::OrderedFloat;
 pub use program::{Param, Program, ProgramIter};
+#[cfg(feature = "parser")]
+pub use session::Session;
 use std::borrow::Cow;
 use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
