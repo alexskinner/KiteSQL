@@ -162,8 +162,4 @@ impl StatementUndoLog {
     pub(crate) fn clear(&mut self) {
         self.ops.clear();
     }
-
-    pub(crate) fn is_empty(&self) -> bool {
-        self.ops.is_empty()
-    }
 }

@@ -221,17 +221,13 @@ fn test_statement_atomicity_delete() -> Result<(), DatabaseError> {
     let mut session = database.session();
     session.run("BEGIN")?.done()?;
 
-    let result = session.run("DELETE FROM test WHERE val / (id - 2) > 0");
-
-    match result {
-        Ok(iter) => {
-            let done_result = iter.done();
-            assert!(
-                done_result.is_err(),
-                "DELETE with division by zero should fail"
-            );
-        }
-        Err(_) => {}
+    {
+        let result = session.run("DELETE FROM test WHERE val / (id - 2) > 0");
+        let failed = match result {
+            Ok(iter) => iter.done().is_err(),
+            Err(_) => true,
+        };
+        assert!(failed, "DELETE with division by zero should fail");
     }
 
     assert!(session.in_transaction(), "Transaction should still be open");
