@@ -610,7 +610,8 @@ mod tests {
             .register_table_function(RangeTableFunction::new())
             .build_in_memory()?;
 
-        let mut iter = database.run("select * from range()")?;
+        // Use TABLE keyword for table function calls
+        let mut iter = database.run("select * from table(range())")?;
         let mut count = 0;
         while let Some(tuple) = next_tuple_owned(&mut iter)? {
             assert_eq!(tuple[0], DataValue::Int32(count));
