@@ -2159,53 +2159,6 @@ impl<'txn, S: Storage> Transaction<'txn, S> {
 
         Ok(())
     }
-
-    /// Executes SQL within this transaction, using the transaction's pinned catalog generation.
-    #[cfg(feature = "parser")]
-    pub async fn run(
-        &mut self,
-        sql: &str,
-    ) -> Result<TransactionIter<'_, 'txn, S::TransactionType<'txn>>, DatabaseError> {
-        let statements = self
-            .state
-            .prepare_all(sql)
-            .map_err(|err| err.with_sql_context(sql))?;
-        if statements.is_empty() {
-            return Err(DatabaseError::EmptyStatement);
-        }
-        if statements.len() > 1 {
-            return Err(DatabaseError::UnsupportedStmt(
-                "Transaction::run expects a single statement".into(),
-            ));
-        }
-        let statement = statements.into_iter().next().unwrap();
-        let has_mutation =
-            crate::binder::parser::statement_mutates_catalog_or_statistics(&statement)?;
-        if has_mutation {
-            return Err(DatabaseError::UnsupportedStmt(
-                "Transaction::run does not allow DDL; use a Session for DDL in transactions".into(),
-            ));
-        }
-
-        let (plan, arena) =
-            self.state
-                .build_plan_in(self.catalog, &[], &self.inner, |binder, arena| {
-                    binder.bind(&statement, arena)
-                })?;
-        let executor = crate::execution::Executor::new(plan, &arena);
-
-        if self.read_only && !executor.plan().operator.command_type().is_read_only() {
-            return Err(DatabaseError::UnsupportedStmt(
-                "cannot write in a read-only transaction".into(),
-            ));
-        }
-
-        let (arena, executor) = self
-            .state
-            .execute(&mut self.inner, executor, arena, self.enable_undo)
-            .await?;
-        Ok(TransactionIter::new(arena, executor))
-    }
 }
 
 #[maybe_async]
