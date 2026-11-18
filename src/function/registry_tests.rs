@@ -104,4 +104,52 @@ mod tests {
 
         Ok(())
     }
+
+    #[test]
+    fn test_resolve_scalar_variadic() {
+        let mut registry = FunctionRegistry::new();
+        
+        // Register a function that takes 1 argument
+        let fn1 = CharLength::new("char_length".to_string());
+        registry.register_scalar(fn1).unwrap();
+        
+        // Single argument: should succeed
+        let arg_types = vec![LogicalType::Varchar(None, crate::types::CharLengthUnits::Characters)];
+        assert!(registry.resolve_scalar("char_length", &arg_types).is_ok());
+        
+        // Two arguments: should fail (wrong arity)
+        let arg_types_two = vec![
+            LogicalType::Varchar(None, crate::types::CharLengthUnits::Characters),
+            LogicalType::Varchar(None, crate::types::CharLengthUnits::Characters),
+        ];
+        let result = registry.resolve_scalar("char_length", &arg_types_two);
+        assert!(result.is_err());
+    }
+
+    #[test]
+    fn test_resolve_scalar_ambiguity() {
+        let mut registry = FunctionRegistry::new();
+        
+        // Register two overloads with same score potential
+        let abs_int = Abs::new(LogicalType::Integer);
+        registry.register_scalar(abs_int).unwrap();
+        
+        let abs_bigint = Abs::new(LogicalType::Bigint);
+        registry.register_scalar(abs_bigint).unwrap();
+        
+        // Exact match: no ambiguity
+        let arg_types_int = vec![LogicalType::Integer];
+        let result = registry.resolve_scalar("abs", &arg_types_int);
+        assert!(result.is_ok());
+        let func = result.unwrap();
+        assert_eq!(func.summary().arg_types, vec![LogicalType::Integer]);
+        
+        // With widening cast: Tinyint can cast to both Integer and Bigint with same score
+        // The registry should pick the first registered one (Integer)
+        let arg_types_tiny = vec![LogicalType::Tinyint];
+        let result = registry.resolve_scalar("abs", &arg_types_tiny);
+        assert!(result.is_ok());
+        let func = result.unwrap();
+        assert_eq!(func.summary().arg_types, vec![LogicalType::Integer]);
+    }
 }
