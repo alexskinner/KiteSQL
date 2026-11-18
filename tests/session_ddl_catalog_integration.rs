@@ -342,7 +342,10 @@ fn orm_in_read_only_transaction_pins_catalog() -> Result<(), DatabaseError> {
     );
 
     let new = tx.get::<PersonNew>(&1);
-    println!("NEWSTRUCT {:?}", new.as_ref().map(|_| ()).map_err(|e| format!("{e:?} / {e}")));
+    println!(
+        "NEWSTRUCT {:?}",
+        new.as_ref().map(|_| ()).map_err(|e| format!("{e:?} / {e}"))
+    );
     assert!(matches!(new, Err(ref e) if !matches!(e, DatabaseError::IO(_))));
     tx.commit()?;
     Ok(())
