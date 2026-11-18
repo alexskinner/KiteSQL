@@ -474,7 +474,12 @@ mod tests {
             let mut exec_buffer = crate::execution::ExecBuffer::default();
             let scala_functions = crate::db::ScalaFunctions::default();
             let table_functions = crate::db::TableFunctions::default();
-            let mut exec_arena = crate::execution::ExecArena::new(context, &scala_functions, &table_functions, &transaction);
+            let mut exec_arena = crate::execution::ExecArena::new(
+                context,
+                &scala_functions,
+                &table_functions,
+                &transaction,
+            );
             let mut execution_arena =
                 crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
             let mut ranges = Cow::Owned(Range::Dummy);
@@ -886,9 +891,16 @@ mod tests {
         let storage = crate::storage::new_test_storage().await;
         let transaction = storage.transaction()?;
         let mut exec_buffer = crate::execution::ExecBuffer::default();
-        let scala_functions: &'static crate::db::ScalaFunctions = Box::leak(Box::new(crate::db::ScalaFunctions::default()));
-        let table_functions: &'static crate::db::TableFunctions = Box::leak(Box::new(crate::db::TableFunctions::default()));
-        let mut exec_arena = crate::execution::ExecArena::new(context, scala_functions, table_functions, &transaction);
+        let scala_functions: &'static crate::db::ScalaFunctions =
+            Box::leak(Box::new(crate::db::ScalaFunctions::default()));
+        let table_functions: &'static crate::db::TableFunctions =
+            Box::leak(Box::new(crate::db::TableFunctions::default()));
+        let mut exec_arena = crate::execution::ExecArena::new(
+            context,
+            scala_functions,
+            table_functions,
+            &transaction,
+        );
         let mut execution_arena =
             crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
         let mut ranges = Cow::Owned(Range::Dummy);

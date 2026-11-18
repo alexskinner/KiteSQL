@@ -155,6 +155,7 @@ impl TableCodec {
         self.table_functions = Some(table_functions as *const _);
     }
 
+    #[allow(dead_code)]
     fn get_functions(&self) -> Option<(&crate::db::ScalaFunctions, &crate::db::TableFunctions)> {
         match (self.scala_functions, self.table_functions) {
             (Some(sf), Some(tf)) => unsafe { Some((&*sf, &*tf)) },
@@ -162,7 +163,12 @@ impl TableCodec {
         }
     }
 
-    pub(crate) fn get_function_ptrs(&self) -> (Option<*const crate::db::ScalaFunctions>, Option<*const crate::db::TableFunctions>) {
+    pub(crate) fn get_function_ptrs(
+        &self,
+    ) -> (
+        Option<*const crate::db::ScalaFunctions>,
+        Option<*const crate::db::TableFunctions>,
+    ) {
         (self.scala_functions, self.table_functions)
     }
 
@@ -1584,8 +1590,12 @@ mod tests {
             })
             .unwrap();
         let mut cursor = Cursor::new(bytes);
-        let decode_col =
-            TableCodec::decode_column::<TestTransaction, _>(&mut cursor, &mut plan_arena, None, None)?;
+        let decode_col = TableCodec::decode_column::<TestTransaction, _>(
+            &mut cursor,
+            &mut plan_arena,
+            None,
+            None,
+        )?;
 
         assert_eq!(decode_col, expected_col);
 

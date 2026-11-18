@@ -237,7 +237,12 @@ mod tests {
             let mut exec_buffer = crate::execution::ExecBuffer::default();
             let scala_functions = crate::db::ScalaFunctions::default();
             let table_functions = crate::db::TableFunctions::default();
-            let mut exec_arena = crate::execution::ExecArena::new(cache, &scala_functions, &table_functions, &transaction);
+            let mut exec_arena = crate::execution::ExecArena::new(
+                cache,
+                &scala_functions,
+                &table_functions,
+                &transaction,
+            );
             let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
             let mut first_root = build_read(&mut arena, &metadata, &first);
             let mut duplicate_root = build_read(&mut arena, &metadata, &duplicate);

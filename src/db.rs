@@ -663,8 +663,15 @@ where
     'p: 'a,
 {
     let mut plan_arena = ExecMetaArena::new(plan_arena);
-    let arena =
-        start_execution_inner(table_cache, scala_functions, table_functions, transaction, &mut executor, &mut plan_arena).await?;
+    let arena = start_execution_inner(
+        table_cache,
+        scala_functions,
+        table_functions,
+        transaction,
+        &mut executor,
+        &mut plan_arena,
+    )
+    .await?;
 
     Ok((plan_arena, (executor, arena)))
 }
@@ -683,7 +690,8 @@ where
 {
     let stamp = statement_stamp(transaction, executor.plan())?;
     let iters = executor.buffer.iter_slots(executor.iters());
-    let mut arena = ExecArena::new(table_cache, scala_functions, table_functions, transaction).with_iters(iters);
+    let mut arena = ExecArena::new(table_cache, scala_functions, table_functions, transaction)
+        .with_iters(iters);
     executor.buffer.set_statement_stamp(stamp);
     executor.start(&mut arena, plan_arena).await?;
 
@@ -845,7 +853,15 @@ impl<S: Storage> State<S> {
         'txn: 'p,
         'p: 'a,
     {
-        start_execution(self.table_cache(), self.scala_functions(), self.table_functions(), transaction, executor, plan_arena).await
+        start_execution(
+            self.table_cache(),
+            self.scala_functions(),
+            self.table_functions(),
+            transaction,
+            executor,
+            plan_arena,
+        )
+        .await
     }
 
     pub(crate) async fn execute_mut<'a, 'txn, A, F>(
@@ -908,7 +924,15 @@ impl<S: Storage> State<S> {
 
         plan.populate_output_schema_recursive(&mut plan_arena);
         let executor = Executor::new(plan, &plan_arena);
-        start_execution(table_cache, scala_functions, table_functions, transaction, executor, plan_arena).await
+        start_execution(
+            table_cache,
+            scala_functions,
+            table_functions,
+            transaction,
+            executor,
+            plan_arena,
+        )
+        .await
     }
 }
 

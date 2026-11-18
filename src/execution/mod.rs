@@ -1393,8 +1393,10 @@ mod test_utils {
         E: ReadExecutor<'a>,
     {
         let mut buffer = ExecBuffer::default();
-        let scala_functions: &'static crate::db::ScalaFunctions = Box::leak(Box::new(crate::db::ScalaFunctions::default()));
-        let table_functions: &'static crate::db::TableFunctions = Box::leak(Box::new(crate::db::TableFunctions::default()));
+        let scala_functions: &'static crate::db::ScalaFunctions =
+            Box::leak(Box::new(crate::db::ScalaFunctions::default()));
+        let table_functions: &'static crate::db::TableFunctions =
+            Box::leak(Box::new(crate::db::TableFunctions::default()));
         let mut arena = ExecArena::new(cache, scala_functions, table_functions, transaction);
         let root = <E as ReadExecutor<'a>>::into_executor(
             input,
@@ -1421,8 +1423,10 @@ mod test_utils {
         E: WriteExecutor<'a>,
     {
         let mut buffer = ExecBuffer::default();
-        let scala_functions: &'static crate::db::ScalaFunctions = Box::leak(Box::new(crate::db::ScalaFunctions::default()));
-        let table_functions: &'static crate::db::TableFunctions = Box::leak(Box::new(crate::db::TableFunctions::default()));
+        let scala_functions: &'static crate::db::ScalaFunctions =
+            Box::leak(Box::new(crate::db::ScalaFunctions::default()));
+        let table_functions: &'static crate::db::TableFunctions =
+            Box::leak(Box::new(crate::db::TableFunctions::default()));
         let mut arena = ExecArena::new(cache, scala_functions, table_functions, transaction);
         let root = <E as WriteExecutor<'a>>::into_executor(
             input,
@@ -1491,9 +1495,12 @@ mod test {
         let storage = crate::storage::new_test_storage().await;
         let transaction = storage.transaction()?;
         let mut exec_buffer = ExecBuffer::default();
-        let scala_functions: &'static crate::db::ScalaFunctions = Box::leak(Box::new(crate::db::ScalaFunctions::default()));
-        let table_functions: &'static crate::db::TableFunctions = Box::leak(Box::new(crate::db::TableFunctions::default()));
-        let mut exec_arena = ExecArena::new(&tables, scala_functions, table_functions, &transaction);
+        let scala_functions: &'static crate::db::ScalaFunctions =
+            Box::leak(Box::new(crate::db::ScalaFunctions::default()));
+        let table_functions: &'static crate::db::TableFunctions =
+            Box::leak(Box::new(crate::db::TableFunctions::default()));
+        let mut exec_arena =
+            ExecArena::new(&tables, scala_functions, table_functions, &transaction);
         let mut arena = ExecContext::new(&mut exec_buffer, &mut exec_arena);
         for base in [0, 10] {
             arena.buffer.result.tuple = TupleImpl::concat(
