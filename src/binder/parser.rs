@@ -32,7 +32,6 @@ use crate::expression::visitor_mut::ExprVisitorMut;
 use crate::expression::window::WindowFunctionKind;
 use crate::expression::{AliasType, ScalarExpression, TypeCast};
 use crate::iter_ext::Itertools;
-use crate::parser::parse_sql_with_recursion_limit;
 use crate::planner::operator::alter_table::change_column::{DefaultChange, NotNullChange};
 use crate::planner::operator::join::{JoinCondition, JoinOperator as LJoinOperator, JoinType};
 use crate::planner::operator::mark_apply::MarkApplyQuantifier;
@@ -141,7 +140,12 @@ impl<S: Storage> State<S> {
         &self,
         sql: T,
     ) -> Result<Vec<Statement>, DatabaseError> {
-        let stmts = parse_sql_with_recursion_limit(sql, self.parser_recursion_limit())?;
+        let dialect = self.dialect_registry().default_dialect();
+        let stmts = crate::parser::parse_sql_with_dialect_and_limit(
+            sql,
+            dialect.parser_dialect(),
+            self.parser_recursion_limit(),
+        )?;
         if stmts.is_empty() {
             return Err(DatabaseError::EmptyStatement);
         }
@@ -252,6 +256,29 @@ impl<S: Storage> Database<S> {
     /// iter.schema(|schema| assert_eq!(schema.len(), 1));
     /// iter.done().unwrap();
     /// ```
+    #[cfg(feature = "parser")]
+    pub async fn run_statement(
+        &self,
+        statement: Statement,
+    ) -> Result<DatabaseIter<'_, S>, DatabaseError> {
+        let has_mutation = statement_mutates_catalog_or_statistics(&statement)?;
+        if has_mutation {
+            return Err(DatabaseError::UnsupportedStmt(
+                "`Database::run_statement` does not allow catalog or statistics mutations; use `Database::run_mut` for DDL".to_string(),
+            ));
+        }
+        let read_only = statement_is_read_only(&statement)?;
+
+        self.execute(read_only, |state, transaction| {
+            let (plan, arena) = state.build_plan(&[], transaction, |binder, arena| {
+                binder.bind(&statement, arena)
+            })?;
+            let executor = crate::execution::Executor::new(plan, &arena);
+            Ok((executor, arena))
+        })
+        .await
+    }
+
     pub async fn run<T: AsRef<str>>(&self, sql: T) -> Result<DatabaseIter<'_, S>, DatabaseError> {
         let sql = sql.as_ref();
         let statements = self

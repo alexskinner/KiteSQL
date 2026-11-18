@@ -156,6 +156,8 @@ pub struct DataBaseBuilder {
     statistics_relative_error: Option<f64>,
     parser_recursion_limit: Option<usize>,
     transaction_isolation: Option<TransactionIsolationLevel>,
+    #[cfg(feature = "parser")]
+    dialect_registry: crate::dialect::DialectRegistry,
     #[cfg(all(not(target_arch = "wasm32"), feature = "rocksdb"))]
     storage_config: StorageConfig,
     #[cfg(all(not(target_arch = "wasm32"), feature = "lmdb"))]
@@ -190,6 +192,8 @@ impl DataBaseBuilder {
             statistics_relative_error: None,
             parser_recursion_limit: None,
             transaction_isolation: None,
+            #[cfg(feature = "parser")]
+            dialect_registry: crate::dialect::DialectRegistry::new(),
             #[cfg(all(not(target_arch = "wasm32"), feature = "rocksdb"))]
             storage_config: Default::default(),
             #[cfg(all(not(target_arch = "wasm32"), feature = "lmdb"))]
@@ -229,6 +233,20 @@ impl DataBaseBuilder {
     pub fn parser_recursion_limit(mut self, limit: usize) -> Self {
         self.parser_recursion_limit = Some(limit);
         self
+    }
+
+    /// Registers a SQL dialect.
+    #[cfg(feature = "parser")]
+    pub fn register_dialect(mut self, dialect: Arc<dyn crate::dialect::SqlDialect>) -> Self {
+        self.dialect_registry.register(dialect);
+        self
+    }
+
+    /// Sets the default SQL dialect. The default is "generic".
+    #[cfg(feature = "parser")]
+    pub fn default_dialect(mut self, name: &str) -> Result<Self, DatabaseError> {
+        self.dialect_registry.set_default(name)?;
+        Ok(self)
     }
 
     /// Sets the transaction isolation level used by database-created transactions.
@@ -317,6 +335,8 @@ impl DataBaseBuilder {
             self.hll_precision,
             self.statistics_relative_error,
             self.parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            self.dialect_registry,
             self.transaction_isolation,
         )
     }
@@ -347,6 +367,8 @@ impl DataBaseBuilder {
             self.hll_precision,
             self.statistics_relative_error,
             self.parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            self.dialect_registry,
             self.transaction_isolation,
         )
     }
@@ -364,6 +386,8 @@ impl DataBaseBuilder {
             self.hll_precision,
             self.statistics_relative_error,
             self.parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            self.dialect_registry,
             self.transaction_isolation,
         )
     }
@@ -379,6 +403,8 @@ impl DataBaseBuilder {
             self.hll_precision,
             self.statistics_relative_error,
             self.parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            self.dialect_registry,
             self.transaction_isolation,
         )
     }
@@ -395,6 +421,8 @@ impl DataBaseBuilder {
             self.hll_precision,
             self.statistics_relative_error,
             self.parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            self.dialect_registry,
             self.transaction_isolation,
         )
     }
@@ -405,6 +433,7 @@ impl DataBaseBuilder {
         hll_precision: Option<u8>,
         statistics_relative_error: Option<f64>,
         parser_recursion_limit: Option<usize>,
+        #[cfg(feature = "parser")] dialect_registry: crate::dialect::DialectRegistry,
         transaction_isolation: Option<TransactionIsolationLevel>,
     ) -> Result<Database<T>, DatabaseError> {
         if matches!(histogram_buckets, Some(0)) {
@@ -450,6 +479,8 @@ impl DataBaseBuilder {
             hll_precision,
             statistics_relative_error: statistics_relative_error.map(OrderedFloat),
             parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            dialect_registry,
             _p: Default::default(),
         };
 
@@ -697,6 +728,8 @@ pub(crate) struct State<S> {
     statistics_relative_error: Option<OrderedFloat<f64>>,
     #[cfg_attr(not(feature = "parser"), allow(dead_code))]
     parser_recursion_limit: Option<usize>,
+    #[cfg(feature = "parser")]
+    dialect_registry: crate::dialect::DialectRegistry,
     _p: PhantomData<S>,
 }
 
@@ -704,6 +737,11 @@ impl<S: Storage> State<S> {
     #[cfg(feature = "parser")]
     pub(crate) fn parser_recursion_limit(&self) -> Option<usize> {
         self.parser_recursion_limit
+    }
+
+    #[cfg(feature = "parser")]
+    pub(crate) fn dialect_registry(&self) -> &crate::dialect::DialectRegistry {
+        &self.dialect_registry
     }
 
     fn scala_functions(&self) -> &ScalaFunctions {
@@ -3376,6 +3414,123 @@ pub(crate) mod test {
             )?,
             total as i32
         );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_dialect_selection() -> Result<(), DatabaseError> {
+        let builder = DataBaseBuilder::path(".").default_dialect("mysql")?;
+        let database = builder.build_in_memory()?;
+
+        let statement_generic = database.state.prepare_all("SELECT * FROM `table`");
+        assert!(statement_generic.is_ok());
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_mysql_backtick_identifiers() -> Result<(), DatabaseError> {
+        let mut database_mysql = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
+
+        database_mysql.ddl("CREATE TABLE `my_table` (`id` INT PRIMARY KEY, `name` VARCHAR(50))")?;
+        database_mysql
+            .run("INSERT INTO `my_table` VALUES (1, 'test')")?
+            .done()?;
+
+        let mut result = database_mysql.run("SELECT `id`, `name` FROM `my_table`")?;
+        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row[0], DataValue::Int32(1));
+        assert_eq!(row[1], DataValue::from("test".to_string()));
+        result.done()?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_mysql_limit_offset_comma_syntax() -> Result<(), DatabaseError> {
+        let mut database_mysql = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
+
+        database_mysql.ddl("CREATE TABLE test_table (id INT PRIMARY KEY, value INT)")?;
+        for i in 1..=10 {
+            database_mysql
+                .run(format!("INSERT INTO test_table VALUES ({}, {})", i, i * 10))?
+                .done()?;
+        }
+
+        let mut result = database_mysql.run("SELECT id FROM test_table ORDER BY id LIMIT 2, 3")?;
+        let row1 = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row1[0], DataValue::Int32(3));
+        let row2 = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row2[0], DataValue::Int32(4));
+        let row3 = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row3[0], DataValue::Int32(5));
+        assert!(result.next_tuple(|_, _| ())?.is_none());
+        result.done()?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_generic_dialect_rejects_mysql_syntax() -> Result<(), DatabaseError> {
+        let database_generic = DataBaseBuilder::path(".").build_in_memory()?;
+
+        let parse_result = database_generic
+            .state
+            .prepare_all("SELECT id FROM t LIMIT 1, 2");
+        assert!(parse_result.is_ok());
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_unknown_dialect_error() -> Result<(), DatabaseError> {
+        let result = DataBaseBuilder::path(".").default_dialect("unknown");
+
+        assert!(result.is_err());
+        if let Err(err) = result {
+            assert!(matches!(err, DatabaseError::UnsupportedStmt(_)));
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_run_statement_with_preparsed() -> Result<(), DatabaseError> {
+        use crate::parser::parse_sql_with_dialect;
+        use sqlparser::dialect::MySqlDialect;
+
+        let mut database = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
+
+        database.ddl("CREATE TABLE `test_preparsed` (`id` INT PRIMARY KEY, `val` INT)")?;
+        database
+            .run("INSERT INTO `test_preparsed` VALUES (1, 100), (2, 200)")?
+            .done()?;
+
+        let dialect = MySqlDialect {};
+        let statements = parse_sql_with_dialect(
+            "SELECT `id`, `val` FROM `test_preparsed` WHERE `id` = 1",
+            &dialect,
+        )?;
+        let statement = statements.into_iter().next().unwrap();
+
+        let mut result = database.run_statement(statement)?;
+        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row[0], DataValue::Int32(1));
+        assert_eq!(row[1], DataValue::Int32(100));
+        result.done()?;
 
         Ok(())
     }

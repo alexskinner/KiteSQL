@@ -13,9 +13,7 @@
 // limitations under the License.
 
 use sqlparser::parser::ParserError;
-use sqlparser::{ast::Statement, dialect::GenericDialect, parser::Parser};
-
-const DIALECT: GenericDialect = GenericDialect {};
+use sqlparser::{ast::Statement, dialect::Dialect, parser::Parser};
 
 /// Parse a string to a collection of statements.
 ///
@@ -30,14 +28,32 @@ const DIALECT: GenericDialect = GenericDialect {};
 /// println!("{:?}", ast);
 /// ```
 pub fn parse_sql<S: AsRef<str>>(sql: S) -> Result<Vec<Statement>, ParserError> {
-    parse_sql_with_recursion_limit(sql, None)
+    use sqlparser::dialect::GenericDialect;
+    parse_sql_with_dialect_and_limit(sql, &GenericDialect {}, None)
 }
 
+#[allow(dead_code)]
 pub(crate) fn parse_sql_with_recursion_limit<S: AsRef<str>>(
     sql: S,
     recursion_limit: Option<usize>,
 ) -> Result<Vec<Statement>, ParserError> {
-    let mut parser = Parser::new(&DIALECT);
+    use sqlparser::dialect::GenericDialect;
+    parse_sql_with_dialect_and_limit(sql, &GenericDialect {}, recursion_limit)
+}
+
+pub fn parse_sql_with_dialect<S: AsRef<str>>(
+    sql: S,
+    dialect: &dyn Dialect,
+) -> Result<Vec<Statement>, ParserError> {
+    parse_sql_with_dialect_and_limit(sql, dialect, None)
+}
+
+pub(crate) fn parse_sql_with_dialect_and_limit<S: AsRef<str>>(
+    sql: S,
+    dialect: &dyn Dialect,
+    recursion_limit: Option<usize>,
+) -> Result<Vec<Statement>, ParserError> {
+    let mut parser = Parser::new(dialect);
     if let Some(limit) = recursion_limit {
         parser = parser.with_recursion_limit(limit);
     }
