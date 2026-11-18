@@ -31,12 +31,14 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         table_name: &str,
         column: ColumnCatalog,
         if_not_exists: bool,
+        display_type: Option<std::sync::Arc<str>>,
     ) -> Result<LogicalPlan, DatabaseError> {
         Ok(LogicalPlan::new(
             Operator::AddColumn(AddColumnOperator {
                 table_id: self.context.table_id(table_name)?,
                 if_not_exists,
                 column,
+                display_type,
             }),
             Childrens::None,
         ))

@@ -544,7 +544,7 @@ where
                 ..
             } => {
                 let column_span = column_def.name.span;
-                let (column, _display_type) = self.bind_column(column_def, None)?;
+                let (column, display_type) = self.bind_column(column_def, None)?;
 
                 if !is_valid_identifier(column.name()) {
                     return Err(attach_span_if_absent(
@@ -553,9 +553,8 @@ where
                     ));
                 }
 
-                // TODO: Handle display_type for ADD COLUMN
                 self.binder
-                    .bind_add_column(&table_name, column, if_not_exists)
+                    .bind_add_column(&table_name, column, if_not_exists, display_type)
             }
             AlterTableOperation::DropColumn {
                 column_names,

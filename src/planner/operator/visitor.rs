@@ -768,6 +768,7 @@ pub(crate) mod tests {
                 table_id: 0,
                 if_not_exists: false,
                 column: column.clone(),
+                display_type: None,
             }),
             Operator::ChangeColumn(ChangeColumnOperator {
                 table_id: 0,

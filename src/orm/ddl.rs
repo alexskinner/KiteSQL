@@ -596,7 +596,7 @@ async fn execute_add_column<S: Storage>(
     let field = field.clone();
     database
         .execute_mut("ORM ADD COLUMN", &[], move |binder, arena| {
-            binder.bind_add_column(table_name, field.to_column_catalog(arena)?, false)
+            binder.bind_add_column(table_name, field.to_column_catalog(arena)?, false, None)
         })
         .await
 }

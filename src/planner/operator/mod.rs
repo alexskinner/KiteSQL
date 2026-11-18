@@ -1469,6 +1469,7 @@ mod tests {
                     Some(arena.alloc_expression(ScalarExpression::from(1_i32))),
                 )?,
             ),
+            display_type: None,
         });
         assert!(referenced_columns(&add_column, &mut arena)?.is_empty());
 
@@ -1724,6 +1725,7 @@ mod tests {
                     table_id: 0,
                     if_not_exists: true,
                     column: column_catalog("age"),
+                    display_type: None,
                 }),
                 "Add age -> users, If Not Exists: true",
             ),
