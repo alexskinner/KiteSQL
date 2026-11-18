@@ -48,7 +48,7 @@ use crate::storage::rocksdb::{OptimisticRocksStorage, RocksStorage, StorageConfi
 use crate::storage::table_codec::TableCodec;
 use crate::storage::{
     CheckpointableStorage, NameMapping, StatisticsMetaCache, Storage, StorageTransaction,
-    TableCache, TransactionIsolationLevel, ViewCache,
+    TableCache, TransactionIsolationLevel,
 };
 use crate::types::tuple::{Schema, SchemaView, TupleImpl};
 use crate::types::value::DataValue;
@@ -137,6 +137,7 @@ pub(crate) trait BindSource {
     where
         F: for<'s> FnOnce(
                 &'s State<Self::Storage>,
+                CatalogRef<'s>,
                 &Self::Transaction,
             ) -> Result<(Executor<'s>, PlanArena<'s>), DatabaseError>
             + MaybeSend;
@@ -611,6 +612,7 @@ impl DataBaseBuilder {
             function_registry,
             meta_cache,
             table_arena,
+            published: std::sync::OnceLock::new(),
             optimizer_pipeline: optimizer_pipeline(),
             histogram_buckets,
             hll_precision,
@@ -627,6 +629,7 @@ impl DataBaseBuilder {
             storage,
             transaction_isolation,
             state,
+            id: Arc::new(()),
         })
     }
 }
@@ -858,10 +861,49 @@ where
     Ok(arena)
 }
 
+/// A borrowed catalog generation: the table arena and the statistics cache that belong to it.
+#[derive(Clone, Copy)]
+pub(crate) struct CatalogRef<'a> {
+    pub(crate) arena: &'a TableArenaCell,
+    pub(crate) meta: &'a StatisticsMetaCache,
+}
+
+/// A catalog generation published by a committed `Session` transaction.
+///
+/// Published generations form an append-only chain behind a `OnceLock`, so a `&Database` can
+/// publish without mutating anything a running statement may be reading: a statement keeps
+/// the generation it bound against, and newer statements pick up the tail. The chain is folded
+/// into the base catalog by [`State::absorb_published`] at the next `&mut` entry point.
+#[derive(Default)]
+pub(crate) struct PublishedCatalog {
+    arena: TableArenaCell,
+    meta: StatisticsMetaCache,
+    next: std::sync::OnceLock<Box<PublishedCatalog>>,
+}
+
+/// A catalog a session builds for itself from its own transaction's view of storage.
+pub(crate) struct PrivateCatalog {
+    pub(crate) arena: TableArenaCell,
+    pub(crate) meta: StatisticsMetaCache,
+}
+
+impl PrivateCatalog {
+    pub(crate) fn as_ref(&self) -> CatalogRef<'_> {
+        CatalogRef {
+            arena: &self.arena,
+            meta: &self.meta,
+        }
+    }
+}
+
 pub(crate) struct State<S> {
     function_registry: FunctionRegistry,
     meta_cache: StatisticsMetaCache,
     table_arena: TableArenaCell,
+    /// Catalog generations published by `Session` commits. Append-only while the database is
+    /// shared (`&Database`); folded back into `table_arena`/`meta_cache` by the next `&mut`
+    /// entry point. See [`PublishedCatalog`].
+    published: std::sync::OnceLock<Box<PublishedCatalog>>,
     optimizer_pipeline: HepOptimizerPipeline,
     histogram_buckets: Option<usize>,
     hll_precision: Option<u8>,
@@ -908,20 +950,51 @@ impl<S: Storage> State<S> {
                 .collect(),
         )
     }
-    pub(crate) fn meta_cache(&self) -> &StatisticsMetaCache {
-        &self.meta_cache
+    /// The newest catalog generation: the last published one, else the base fields.
+    pub(crate) fn catalog(&self) -> CatalogRef<'_> {
+        let mut latest = CatalogRef {
+            arena: &self.table_arena,
+            meta: &self.meta_cache,
+        };
+        let mut slot = &self.published;
+        while let Some(node) = slot.get() {
+            latest = CatalogRef {
+                arena: &node.arena,
+                meta: &node.meta,
+            };
+            slot = &node.next;
+        }
+        latest
     }
-    pub(crate) fn names(&self) -> &NameMapping {
-        &self.table_arena.borrow().names
+
+    /// The empty slot at the end of the published chain.
+    fn publish_slot(&self) -> &std::sync::OnceLock<Box<PublishedCatalog>> {
+        let mut slot = &self.published;
+        while let Some(node) = slot.get() {
+            slot = &node.next;
+        }
+        slot
     }
-    pub(crate) fn table_cache(&self) -> &TableCache {
-        &self.table_arena.borrow().tables
+
+    /// Folds published generations into the base fields. Needs `&mut`, so no statement or
+    /// transaction can still hold a reference to an older generation.
+    pub(crate) fn absorb_published(&mut self) {
+        while let Some(mut node) = self.published.take() {
+            if let Some(next) = node.next.take() {
+                self.published = std::sync::OnceLock::from(next);
+            }
+            self.table_arena = std::mem::take(&mut node.arena);
+            self.meta_cache = std::mem::take(&mut node.meta);
+        }
     }
-    pub(crate) fn view_cache(&self) -> &ViewCache {
-        &self.table_arena.borrow().views
-    }
+
     pub(crate) fn table_arena(&self) -> &TableArenaCell {
-        &self.table_arena
+        self.catalog().arena
+    }
+
+    #[cfg(test)]
+    pub(crate) fn meta_cache(&self) -> &StatisticsMetaCache {
+        self.catalog().meta
     }
 
     fn load_scalar_function(&mut self, function: Arc<dyn ScalarFunctionImpl>) {
@@ -943,13 +1016,20 @@ impl<S: Storage> State<S> {
     }
 
     fn recycle_table_arena(&mut self) -> Result<(), DatabaseError> {
+        Self::recycle_arena(&self.table_arena, &self.function_registry)
+    }
+
+    fn recycle_arena(
+        arena: &TableArenaCell,
+        function_registry: &FunctionRegistry,
+    ) -> Result<(), DatabaseError> {
         let mut live_columns = HashSet::new();
         {
             let mut live = |column: &crate::catalog::ColumnRef| {
                 live_columns.insert(column.pos());
             };
 
-            let table_arena = self.table_arena.borrow();
+            let table_arena = arena.borrow();
             for table in table_arena.tables.values() {
                 for column in table.columns() {
                     live(column);
@@ -959,13 +1039,13 @@ impl<S: Storage> State<S> {
                 view.visit_column_refs(table_arena, &mut live)?;
             }
 
-            for function in self.function_registry.table_functions().values() {
+            for function in function_registry.table_functions().values() {
                 for column in &function.schema {
                     live(column);
                 }
             }
         }
-        self.table_arena
+        arena
             .borrow_mut()
             .recycle_unreferenced_positions(live_columns);
         Ok(())
@@ -983,12 +1063,31 @@ impl<S: Storage> State<S> {
             &mut PlanArena<'a>,
         ) -> Result<LogicalPlan, DatabaseError>,
     {
-        let mut arena = PlanArena::new(self.table_arena());
+        self.build_plan_in(self.catalog(), params, transaction, build)
+    }
+
+    /// Binds and optimizes against an explicit catalog generation, so one statement never
+    /// mixes two generations (the shared latest one, or a session's private one).
+    pub(crate) fn build_plan_in<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>, F>(
+        &'a self,
+        catalog: CatalogRef<'a>,
+        params: A,
+        transaction: &T,
+        build: F,
+    ) -> Result<(LogicalPlan, PlanArena<'a>), DatabaseError>
+    where
+        F: for<'bind> FnOnce(
+            &mut Binder<'bind, '_, T, A>,
+            &mut PlanArena<'a>,
+        ) -> Result<LogicalPlan, DatabaseError>,
+    {
+        let mut arena = PlanArena::new(catalog.arena);
+        let tables = catalog.arena.borrow();
         let mut binder = Binder::new(
             BinderContext::new(
-                self.names(),
-                self.table_cache(),
-                self.view_cache(),
+                &tables.names,
+                &tables.tables,
+                &tables.views,
                 transaction,
                 self.function_registry(),
                 #[cfg(feature = "parser")]
@@ -999,10 +1098,10 @@ impl<S: Storage> State<S> {
         );
         let source_plan = build(&mut binder, &mut arena)?;
         drop(binder);
-        let mut plan = self.optimizer_pipeline.instantiate(source_plan).find_best(
-            Some(&StatisticMetaLoader::new(self.meta_cache())),
-            &mut arena,
-        )?;
+        let mut plan = self
+            .optimizer_pipeline
+            .instantiate(source_plan)
+            .find_best(Some(&StatisticMetaLoader::new(catalog.meta)), &mut arena)?;
 
         if let Operator::Analyze(op) = &mut plan.operator {
             if op.histogram_buckets.is_none() {
@@ -1035,8 +1134,10 @@ impl<S: Storage> State<S> {
         'txn: 'p,
         'p: 'a,
     {
+        // The plan's own catalog generation, never the current one: they can differ.
+        let table_cache = &plan_arena.table_arena_cell().borrow().tables;
         start_execution(
-            self.table_cache(),
+            table_cache,
             transaction,
             executor,
             plan_arena,
@@ -1044,6 +1145,84 @@ impl<S: Storage> State<S> {
             enable_undo,
         )
         .await
+    }
+
+    /// Rebuilds a whole catalog from what `transaction` sees in storage, starting from a copy
+    /// of `base` so positions of function schemas and other arena users stay valid.
+    ///
+    /// With a session's own transaction this includes its uncommitted DDL.
+    pub(crate) async fn build_catalog<T: StorageTransaction>(
+        &self,
+        base: CatalogRef<'_>,
+        transaction: &T,
+    ) -> Result<PrivateCatalog, DatabaseError> {
+        let mut arena = base.arena.borrow().clone();
+        arena.tables.clear();
+        arena.views.clear();
+        arena.names = NameMapping::default();
+        let arena = TableArenaCell::new(arena);
+        let mut meta = StatisticsMetaCache::default();
+        let mut table_codec = TableCodec::default();
+
+        let mut table_names = Vec::new();
+        {
+            let mut iter = transaction.tables(&mut table_codec).await?;
+            while let Some(table_meta) = iter.try_next(arena.borrow_mut()).await? {
+                table_names.push(table_meta.table_name);
+            }
+        }
+        let mut view_names = Vec::new();
+        {
+            let mut iter = transaction.views(&mut table_codec).await?;
+            while let Some(name) = iter.try_next(arena.borrow_mut()).await? {
+                view_names.push(name);
+            }
+        }
+
+        for name in table_names {
+            let Some(table) = transaction
+                .load_table(&mut table_codec, arena.borrow_mut(), &name)
+                .await?
+            else {
+                continue;
+            };
+            let table_id = table.id();
+            for index in table.indexes() {
+                let index_id = arena.borrow().index(*index).id;
+                if let Some(stats) = transaction
+                    .index_statistics(&mut table_codec, table_id, index_id, arena.borrow_mut())
+                    .await?
+                {
+                    meta.indexes.insert((table_id, index_id), stats);
+                }
+            }
+            for column in table.columns() {
+                let column_id = {
+                    let arena = arena.borrow();
+                    let column = arena.column(*column);
+                    column
+                        .id()
+                        .ok_or_else(|| DatabaseError::invalid_column(column.name()))?
+                };
+                if let Some(stats) = transaction
+                    .column_statistics(&mut table_codec, table_id, column_id, arena.borrow_mut())
+                    .await?
+                {
+                    meta.columns.insert((table_id, column_id), stats);
+                }
+            }
+            arena.borrow_mut().insert_table(table);
+        }
+        for name in view_names {
+            if let Some((view_id, view)) = transaction
+                .load_view(&mut table_codec, &arena, &self.function_registry, name)
+                .await?
+            {
+                arena.borrow_mut().insert_view(view_id, view);
+            }
+        }
+        Self::recycle_arena(&arena, &self.function_registry)?;
+        Ok(PrivateCatalog { arena, meta })
     }
 
     pub(crate) async fn execute_mut<'a, 'txn, A, F>(
@@ -1115,6 +1294,8 @@ pub struct Database<S: Storage> {
     pub(crate) storage: S,
     pub(crate) transaction_isolation: TransactionIsolationLevel,
     pub(crate) state: State<S>,
+    /// Unique identity for this database instance, used to detect cross-database program usage.
+    pub(crate) id: Arc<()>,
 }
 
 impl DDLApply {
@@ -1212,6 +1393,7 @@ impl<S: Storage> Database<S> {
         ) -> Result<LogicalPlan, DatabaseError>,
         C: ConsumeMut<S>,
     {
+        self.state.absorb_published();
         let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
             self.transaction_isolation,
             false,
@@ -1259,6 +1441,35 @@ impl<S: Storage> Database<S> {
         Ok(result)
     }
 
+    /// Publishes the committed catalog to every statement that starts from now on, without
+    /// `&mut self`: rebuilds a generation from committed storage and appends it to the chain.
+    /// Statements already running keep the generation they bound against.
+    pub(crate) async fn publish_catalog(&self) -> Result<(), DatabaseError> {
+        loop {
+            let transaction = self.storage.transaction_with_functions(
+                self.storage.default_transaction_isolation(),
+                true,
+                Some(self.state.scala_functions_arc()),
+                Some(self.state.table_functions_arc()),
+            )?;
+            let slot = self.state.publish_slot();
+            let built = self
+                .state
+                .build_catalog(self.state.catalog(), &transaction)
+                .await?;
+            drop(transaction);
+            let node = Box::new(PublishedCatalog {
+                arena: built.arena,
+                meta: built.meta,
+                next: std::sync::OnceLock::new(),
+            });
+            // Lost the race to another publisher: rebuild on top of its generation.
+            if slot.set(node).is_ok() {
+                return Ok(());
+            }
+        }
+    }
+
     pub async fn analyze(&mut self, table_name: impl AsRef<str>) -> Result<(), DatabaseError> {
         let context = "ANALYZE";
         let table_name = table_name.as_ref();
@@ -1269,6 +1480,7 @@ impl<S: Storage> Database<S> {
     }
 
     pub async fn load(&mut self, kind: CatalogKind) -> Result<(), DatabaseError> {
+        self.state.absorb_published();
         match kind {
             CatalogKind::ScalarFunction(function) => {
                 self.state.load_scalar_function(function);
@@ -1409,6 +1621,7 @@ impl<S: Storage> Database<S> {
         read_only: bool,
         enable_undo: bool,
     ) -> Result<Transaction<'_, S>, DatabaseError> {
+        let catalog = self.state.catalog();
         let transaction = self.storage.transaction_with_functions(
             self.transaction_isolation,
             read_only,
@@ -1419,8 +1632,10 @@ impl<S: Storage> Database<S> {
         Ok(Transaction {
             inner: transaction,
             state: &self.state,
+            catalog,
             read_only,
             enable_undo,
+            db_id: self.id.clone(),
         })
     }
 
@@ -1483,6 +1698,7 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
     where
         F: for<'s> FnOnce(
                 &'s State<S>,
+                CatalogRef<'s>,
                 &Self::Transaction,
             ) -> Result<(Executor<'s>, PlanArena<'s>), DatabaseError>
             + MaybeSend,
@@ -1495,7 +1711,8 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
         )?);
         // SAFETY: the transaction stays boxed, and so in place, until the iterator is gone.
         let tx = unsafe { &mut *transaction.get() };
-        let (executor, arena) = build(&self.state, tx)?;
+        let catalog = self.state.catalog();
+        let (executor, arena) = build(&self.state, catalog, tx)?;
         // Disable undo for autocommit: entire transaction is dropped on failure
         let (arena, executor) = self.state.execute(tx, executor, arena, false).await?;
         Ok(DatabaseIter {
@@ -1926,8 +2143,14 @@ impl<S: Storage> ResultIter for DatabaseIter<'_, S> {
 pub struct Transaction<'a, S: Storage + 'a> {
     pub(crate) inner: S::TransactionType<'a>,
     pub(crate) state: &'a State<S>,
-    read_only: bool,
-    enable_undo: bool,
+    /// The catalog generation this transaction binds against, pinned when the transaction
+    /// was created. All statements in this transaction use this generation, never the
+    /// latest one, ensuring consistent schema even if other sessions publish DDL.
+    pub(crate) catalog: CatalogRef<'a>,
+    pub(crate) read_only: bool,
+    pub(crate) enable_undo: bool,
+    /// Database instance ID this transaction belongs to.
+    pub(crate) db_id: Arc<()>,
 }
 
 #[maybe_async]
@@ -1951,11 +2174,14 @@ impl<'a, 'txn, S: Storage> BindSource for &'a mut Transaction<'txn, S> {
     where
         F: for<'s> FnOnce(
                 &'s State<S>,
+                CatalogRef<'s>,
                 &Self::Transaction,
             ) -> Result<(Executor<'s>, PlanArena<'s>), DatabaseError>
             + MaybeSend,
     {
-        let (executor, arena) = build(self.state, &self.inner)?;
+        // Pass the transaction's pinned catalog to the build closure, ensuring ORM
+        // operations bind against the same generation throughout the transaction.
+        let (executor, arena) = build(self.state, self.catalog, &self.inner)?;
         if self.read_only && !executor.plan().operator.command_type().is_read_only() {
             return Err(DatabaseError::UnsupportedStmt(
                 "cannot write in a read-only transaction".into(),
@@ -2615,11 +2841,13 @@ pub(crate) mod test {
             "SELECT * FROM onecolumn AS a(aid, x) JOIN empty AS b(bid, y) ON a.x = b.y",
         )?;
         let transaction = kite_sql.storage.transaction()?;
+        let catalog = kite_sql.state.catalog();
+        let arena_borrow = catalog.arena.borrow();
         let mut binder = Binder::new(
             BinderContext::new(
-                kite_sql.state.names(),
-                kite_sql.state.table_cache(),
-                kite_sql.state.view_cache(),
+                &arena_borrow.names,
+                &arena_borrow.tables,
+                &arena_borrow.views,
                 &transaction,
                 kite_sql.state.function_registry(),
                 #[cfg(feature = "parser")]
@@ -2628,7 +2856,7 @@ pub(crate) mod test {
             &[],
             None,
         );
-        let mut source_plan_arena = PlanArena::new(kite_sql.state.table_arena());
+        let mut source_plan_arena = PlanArena::new(catalog.arena);
         let source_plan = binder.bind(&stmt, &mut source_plan_arena)?;
         let (best_plan, best_plan_arena) =
             kite_sql
@@ -2706,11 +2934,13 @@ pub(crate) mod test {
             "SELECT o.x, t.y FROM onecolumn o INNER JOIN twocolumn t ON (o.x=t.x AND t.y=53)",
         )?;
         let transaction = kite_sql.storage.transaction()?;
+        let catalog = kite_sql.state.catalog();
+        let arena_borrow = catalog.arena.borrow();
         let mut binder = Binder::new(
             BinderContext::new(
-                kite_sql.state.names(),
-                kite_sql.state.table_cache(),
-                kite_sql.state.view_cache(),
+                &arena_borrow.names,
+                &arena_borrow.tables,
+                &arena_borrow.views,
                 &transaction,
                 kite_sql.state.function_registry(),
                 #[cfg(feature = "parser")]
@@ -2719,7 +2949,7 @@ pub(crate) mod test {
             &[],
             None,
         );
-        let mut source_plan_arena = PlanArena::new(kite_sql.state.table_arena());
+        let mut source_plan_arena = PlanArena::new(catalog.arena);
         let source_plan = binder.bind(&stmt, &mut source_plan_arena)?;
         let (best_plan, best_plan_arena) =
             kite_sql

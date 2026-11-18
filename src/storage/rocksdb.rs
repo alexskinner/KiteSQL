@@ -1118,16 +1118,14 @@ mod test {
             .done()?;
         let transaction = kite_sql.storage.transaction()?;
 
+        let catalog = kite_sql.state.catalog();
+        let arena_borrow = catalog.arena.borrow();
         let table_name: TableName = "t1".to_string();
         let table = transaction
-            .table(
-                kite_sql.state.names(),
-                kite_sql.state.table_cache(),
-                &table_name,
-            )?
+            .table(&arena_borrow.names, &arena_borrow.tables, &table_name)?
             .unwrap()
             .clone();
-        let plan_arena = PlanArena::new(kite_sql.state.table_arena());
+        let plan_arena = PlanArena::new(catalog.arena);
         let index_meta = table
             .indexes()
             .copied()
@@ -1201,15 +1199,17 @@ mod test {
             .done()?;
         let transaction = kite_sql.storage.transaction().unwrap();
 
+        let catalog = kite_sql.state.catalog();
+        let arena_borrow = catalog.arena.borrow();
         let table = transaction
-            .table(kite_sql.state.names(), kite_sql.state.table_cache(), "t1")?
+            .table(&arena_borrow.names, &arena_borrow.tables, "t1")?
             .unwrap()
             .clone();
-        let plan_arena = PlanArena::new(kite_sql.state.table_arena());
+        let plan_arena = PlanArena::new(catalog.arena);
         {
             let deserializers = crate::storage::project_deserializers_for_test(
-                kite_sql.state.names(),
-                kite_sql.state.table_cache(),
+                &arena_borrow.names,
+                &arena_borrow.tables,
                 "t1",
                 &table.columns().cloned().collect::<Vec<_>>(),
                 &plan_arena,
@@ -1222,10 +1222,9 @@ mod test {
             let mut iter = transaction
                 .read_by_index(
                     &plan_arena,
-                    kite_sql
-                        .state
-                        .names()
-                        .table(kite_sql.state.table_cache(), "t1")
+                    arena_borrow
+                        .names
+                        .table(&arena_borrow.tables, "t1")
                         .unwrap()
                         .id(),
                     (Some(0), Some(1)),
@@ -1258,8 +1257,8 @@ mod test {
             let _ = columns.pop();
 
             let deserializers = crate::storage::project_deserializers_for_test(
-                kite_sql.state.names(),
-                kite_sql.state.table_cache(),
+                &arena_borrow.names,
+                &arena_borrow.tables,
                 "t1",
                 &columns,
                 &plan_arena,
@@ -1272,10 +1271,9 @@ mod test {
             let mut iter = transaction
                 .read_by_index(
                     &plan_arena,
-                    kite_sql
-                        .state
-                        .names()
-                        .table(kite_sql.state.table_cache(), "t1")
+                    arena_borrow
+                        .names
+                        .table(&arena_borrow.tables, "t1")
                         .unwrap()
                         .id(),
                     (Some(0), Some(1)),
@@ -1319,11 +1317,13 @@ mod test {
         kite_sql.load(CatalogKind::Table("t1".to_string()))?;
 
         let transaction = kite_sql.storage.transaction()?;
+        let catalog = kite_sql.state.catalog();
+        let arena_borrow = catalog.arena.borrow();
         let table = transaction
-            .table(kite_sql.state.names(), kite_sql.state.table_cache(), "t1")?
+            .table(&arena_borrow.names, &arena_borrow.tables, "t1")?
             .unwrap()
             .clone();
-        let plan_arena = PlanArena::new(kite_sql.state.table_arena());
+        let plan_arena = PlanArena::new(catalog.arena);
         let c1_column = table
             .get_column_by_name("c1")
             .ok_or_else(|| DatabaseError::column_not_found("c1"))?;
@@ -1338,8 +1338,8 @@ mod test {
             max: Bound::Excluded(DataValue::Int32(10).into()),
         }];
         let deserializers = crate::storage::project_deserializers_for_test(
-            kite_sql.state.names(),
-            kite_sql.state.table_cache(),
+            &arena_borrow.names,
+            &arena_borrow.tables,
             "t1",
             &[c1_column],
             &plan_arena,
@@ -1349,10 +1349,9 @@ mod test {
         let mapping = TupleMapping::cover(plan_arena.index(idx_c1), &deserializers, None);
         let mut iter = transaction.read_by_index(
             &plan_arena,
-            kite_sql
-                .state
-                .names()
-                .table(kite_sql.state.table_cache(), "t1")
+            arena_borrow
+                .names
+                .table(&arena_borrow.tables, "t1")
                 .unwrap()
                 .id(),
             (None, None),
@@ -1402,11 +1401,13 @@ mod test {
         kite_sql.load(CatalogKind::Table("t1".to_string()))?;
 
         let mut transaction = kite_sql.storage.transaction().unwrap();
+        let catalog = kite_sql.state.catalog();
+        let arena_borrow = catalog.arena.borrow();
         let table = transaction
-            .table(kite_sql.state.names(), kite_sql.state.table_cache(), "t1")?
+            .table(&arena_borrow.names, &arena_borrow.tables, "t1")?
             .unwrap()
             .clone();
-        let plan_arena = PlanArena::new(kite_sql.state.table_arena());
+        let plan_arena = PlanArena::new(catalog.arena);
         let columns_vec: Vec<_> = table.columns().cloned().collect();
         let a_cover_column = *columns_vec
             .iter()
@@ -1453,8 +1454,8 @@ mod test {
         ];
 
         let deserializers = crate::storage::project_deserializers_for_test(
-            kite_sql.state.names(),
-            kite_sql.state.table_cache(),
+            &arena_borrow.names,
+            &arena_borrow.tables,
             "t1",
             &reordered_columns,
             &plan_arena,
@@ -1471,10 +1472,9 @@ mod test {
         );
         let mut iter = transaction.read_by_index(
             &plan_arena,
-            kite_sql
-                .state
-                .names()
-                .table(kite_sql.state.table_cache(), "t1")
+            arena_borrow
+                .names
+                .table(&arena_borrow.tables, "t1")
                 .unwrap()
                 .id(),
             (None, None),
@@ -1505,8 +1505,8 @@ mod test {
         // An identity prefix projection still skips the remaining key fields;
         // omitted mapping must not widen the output back to the full index.
         let deserializers = crate::storage::project_deserializers_for_test(
-            kite_sql.state.names(),
-            kite_sql.state.table_cache(),
+            &arena_borrow.names,
+            &arena_borrow.tables,
             "t1",
             &[b_cover_column],
             &plan_arena,
@@ -1519,10 +1519,9 @@ mod test {
         let mapping = TupleMapping::cover(plan_arena.index(composite_index), &deserializers, None);
         let mut iter = transaction.read_by_index(
             &plan_arena,
-            kite_sql
-                .state
-                .names()
-                .table(kite_sql.state.table_cache(), "t1")
+            arena_borrow
+                .names
+                .table(&arena_borrow.tables, "t1")
                 .unwrap()
                 .id(),
             (None, None),
@@ -1568,8 +1567,8 @@ mod test {
         transaction.remove_tuple(&mut table_codec, 0, &target_pk)?;
 
         let deserializers = crate::storage::project_deserializers_for_test(
-            kite_sql.state.names(),
-            kite_sql.state.table_cache(),
+            &arena_borrow.names,
+            &arena_borrow.tables,
             "t1",
             &columns,
             &plan_arena,
@@ -1579,10 +1578,9 @@ mod test {
         let mapping = TupleMapping::cover(plan_arena.index(unique_index), &deserializers, None);
         let mut iter = transaction.read_by_index(
             &plan_arena,
-            kite_sql
-                .state
-                .names()
-                .table(kite_sql.state.table_cache(), "t1")
+            arena_borrow
+                .names
+                .table(&arena_borrow.tables, "t1")
                 .unwrap()
                 .id(),
             (Some(0), Some(1)),
@@ -1620,8 +1618,8 @@ mod test {
             .unwrap();
         let pk_columns = vec![a_cover_column];
         let deserializers = crate::storage::project_deserializers_for_test(
-            kite_sql.state.names(),
-            kite_sql.state.table_cache(),
+            &arena_borrow.names,
+            &arena_borrow.tables,
             "t1",
             &pk_columns,
             &plan_arena,
@@ -1634,10 +1632,9 @@ mod test {
         let mapping = TupleMapping::cover(plan_arena.index(pk_index), &deserializers, Some(&[0]));
         let mut iter = transaction.read_by_index(
             &plan_arena,
-            kite_sql
-                .state
-                .names()
-                .table(kite_sql.state.table_cache(), "t1")
+            arena_borrow
+                .names
+                .table(&arena_borrow.tables, "t1")
                 .unwrap()
                 .id(),
             (None, None),

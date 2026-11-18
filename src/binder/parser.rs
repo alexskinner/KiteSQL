@@ -274,10 +274,11 @@ impl<S: Storage> Database<S> {
         }
         let read_only = statement_is_read_only(&statement)?;
 
-        self.execute(read_only, |state, transaction| {
-            let (plan, arena) = state.build_plan(&[], transaction, |binder, arena| {
-                binder.bind(&statement, arena)
-            })?;
+        self.execute(read_only, |state, catalog, transaction| {
+            let (plan, arena) =
+                state.build_plan_in(catalog, &[], transaction, |binder, arena| {
+                    binder.bind(&statement, arena)
+                })?;
             let executor = crate::execution::Executor::new(plan, &arena);
             Ok((executor, arena))
         })
@@ -376,7 +377,8 @@ impl<S: Storage> Database<S> {
 
 #[maybe_async]
 impl<'txn, S: Storage> Transaction<'txn, S> {
-    /// Runs SQL inside the current transaction and returns the final result iterator.
+    /// Runs SQL inside the current transaction, binding against the transaction's pinned
+    /// catalog generation to ensure consistent schema across statements.
     pub async fn run<'a, T: AsRef<str>>(
         &'a mut self,
         sql: T,
@@ -398,26 +400,52 @@ impl<'txn, S: Storage> Transaction<'txn, S> {
             .pop()
             .ok_or_else(|| DatabaseError::EmptyStatement.with_sql_context(sql))?;
 
+        // Execute all but the last statement, draining their results
         for statement in statements {
-            BindSource::execute(&mut *self, false, |state, tx| {
-                state
-                    .build_plan(&[], tx, |binder, arena| binder.bind(&statement, arena))
-                    .map(Executor::from_plan)
-            })
-            .await
-            .map_err(|err| err.with_sql_context(sql))?
-            .done()
-            .await
-            .map_err(|err| err.with_sql_context(sql))?;
+            let (plan, arena) = self
+                .state
+                .build_plan_in(self.catalog, &[], &self.inner, |binder, arena| {
+                    binder.bind(&statement, arena)
+                })
+                .map_err(|err| err.with_sql_context(sql))?;
+            let executor = crate::execution::Executor::new(plan, &arena);
+            if self.read_only && !executor.plan().operator.command_type().is_read_only() {
+                return Err(DatabaseError::UnsupportedStmt(
+                    "cannot write in a read-only transaction".into(),
+                )
+                .with_sql_context(sql));
+            }
+            let (arena, executor) = self
+                .state
+                .execute(&mut self.inner, executor, arena, self.enable_undo)
+                .await
+                .map_err(|err| err.with_sql_context(sql))?;
+            TransactionIter::new(arena, executor)
+                .done()
+                .await
+                .map_err(|err| err.with_sql_context(sql))?;
         }
 
-        BindSource::execute(self, false, |state, tx| {
-            state
-                .build_plan(&[], tx, |binder, arena| binder.bind(&last_statement, arena))
-                .map(Executor::from_plan)
-        })
-        .await
-        .map_err(|err| err.with_sql_context(sql))
+        // Return the last statement's iterator
+        let (plan, arena) = self
+            .state
+            .build_plan_in(self.catalog, &[], &self.inner, |binder, arena| {
+                binder.bind(&last_statement, arena)
+            })
+            .map_err(|err| err.with_sql_context(sql))?;
+        let executor = crate::execution::Executor::new(plan, &arena);
+        if self.read_only && !executor.plan().operator.command_type().is_read_only() {
+            return Err(DatabaseError::UnsupportedStmt(
+                "cannot write in a read-only transaction".into(),
+            )
+            .with_sql_context(sql));
+        }
+        let (arena, executor) = self
+            .state
+            .execute(&mut self.inner, executor, arena, self.enable_undo)
+            .await
+            .map_err(|err| err.with_sql_context(sql))?;
+        Ok(TransactionIter::new(arena, executor))
     }
 }
 

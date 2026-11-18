@@ -112,6 +112,7 @@ impl<'a, A: MetaArena + ?Sized> OperatorVisitorMut<'a> for ScalarQueryPlanReloca
     }
 }
 
+#[derive(Clone)]
 pub struct TableArena {
     dummy_columns: [ColumnCatalog; DUMMY_COLUMN_COUNT],
     columns: Vec<TableArenaColumn>,
@@ -125,16 +126,19 @@ pub struct TableArena {
     version: usize,
 }
 
+#[derive(Clone)]
 struct TableArenaColumn {
     catalog: ColumnCatalog,
     live: bool,
 }
 
+#[derive(Clone)]
 struct TableArenaIndex {
     meta: IndexMeta,
     live: bool,
 }
 
+#[derive(Clone)]
 struct TableArenaExpression {
     expression: ArenaExpr,
     live: bool,
@@ -397,10 +401,6 @@ impl<A: MetaArena> ExecMetaArena<A> {
 
     pub(crate) fn into_parent(self) -> A {
         self.parent
-    }
-
-    pub(crate) fn parent(&self) -> &A {
-        &self.parent
     }
 
     pub(crate) fn parent_mut(&mut self) -> &mut A {

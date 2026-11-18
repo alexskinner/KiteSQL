@@ -847,12 +847,14 @@ mod tests {
         database.analyze("t1").await?;
 
         let transaction = database.storage.transaction()?;
+        let catalog = database.state.catalog();
+        let arena_borrow = catalog.arena.borrow();
         let c1_column = transaction
-            .table(database.state.names(), database.state.table_cache(), "t1")?
+            .table(&arena_borrow.names, &arena_borrow.tables, "t1")?
             .unwrap()
             .get_column_by_name("c1")
             .unwrap();
-        let mut plan_arena = crate::planner::PlanArena::new(database.state.table_arena());
+        let mut plan_arena = crate::planner::PlanArena::new(catalog.arena);
         let sort_fields = vec![SortField::new(
             plan_arena.alloc_expression(ScalarExpression::column_expr(c1_column, 0)),
             true,
@@ -863,9 +865,9 @@ mod tests {
         let generic_dialect = crate::dialect::GenericSqlDialect::new();
         let mut binder = Binder::new(
             BinderContext::new(
-                database.state.names(),
-                database.state.table_cache(),
-                database.state.view_cache(),
+                &arena_borrow.names,
+                &arena_borrow.tables,
+                &arena_borrow.views,
                 &transaction,
                 &function_registry,
                 #[cfg(feature = "parser")]

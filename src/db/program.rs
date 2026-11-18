@@ -63,6 +63,10 @@ impl<'a> From<&'a [u8]> for Param<'a> {
 pub struct Program<'p> {
     pub(crate) executor: Executor<'p>,
     pub(crate) arena: ExecMetaArena<ParamArena<'p>>,
+    /// Database instance ID this program was prepared on.
+    pub(crate) db_id: Arc<()>,
+    /// Catalog generation this program was bound to.
+    pub(crate) catalog_gen: usize,
 }
 
 #[maybe_async]
@@ -78,14 +82,20 @@ impl<'p> Program<'p> {
         'txn: 'p,
         'p: 'a,
     {
-        self.bind(transaction.state.table_arena(), params.as_ref())?;
+        // Check that the program was prepared on the same database instance.
+        if !Arc::ptr_eq(&self.db_id, &transaction.db_id) {
+            return Err(DatabaseError::ForeignProgram);
+        }
+        // Use the transaction's pinned catalog, not the latest one.
+        let catalog = transaction.catalog;
+        self.bind(catalog.arena, params.as_ref())?;
         if transaction.read_only && !self.read_only() {
             return Err(DatabaseError::UnsupportedStmt(
                 "cannot write in a read-only transaction".into(),
             ));
         }
         let arena = start_execution_inner(
-            transaction.state.table_cache(),
+            &catalog.arena.borrow().tables,
             &mut transaction.inner,
             &mut self.executor,
             &mut self.arena,
@@ -107,13 +117,10 @@ impl<'p> Program<'p> {
         table_arena: &TableArenaCell,
         params: &[(usize, Param<'_>)],
     ) -> Result<(), DatabaseError> {
-        if !std::ptr::eq(
-            self.arena.parent().plan_arena().table_arena_cell(),
-            table_arena,
-        ) {
-            return Err(DatabaseError::UnsupportedStmt(
-                "plan belongs to another database".into(),
-            ));
+        // Check catalog generation match by comparing arena pointers
+        let current_gen = table_arena as *const _ as usize;
+        if self.catalog_gen != current_gen {
+            return Err(DatabaseError::StaleCatalog);
         }
         self.arena.parent_mut().bind(params)?;
         self.arena.reset();
@@ -138,7 +145,9 @@ impl<S: Storage> Database<S> {
         let transaction = self
             .storage
             .transaction_with_isolation(self.transaction_isolation, true)?;
-        self.state.prepare_plan(&statement, params, &transaction)
+        let catalog = self.state.catalog();
+        self.state
+            .prepare_plan(self.id.clone(), catalog, &statement, params, &transaction)
     }
 }
 
@@ -150,7 +159,13 @@ impl<'db, S: Storage> Transaction<'db, S> {
         params: &[(usize, LogicalType)],
     ) -> Result<Program<'db>, DatabaseError> {
         let statement = self.state.parse_statement(sql)?;
-        self.state.prepare_plan(&statement, params, &self.inner)
+        self.state.prepare_plan(
+            self.db_id.clone(),
+            self.catalog,
+            &statement,
+            params,
+            &self.inner,
+        )
     }
 }
 
@@ -158,6 +173,8 @@ impl<S: Storage> State<S> {
     #[cfg(feature = "parser")]
     pub(crate) fn prepare_plan<'a, 'txn>(
         &'a self,
+        db_id: Arc<()>,
+        catalog: CatalogRef<'a>,
         statement: &Statement,
         params: &[(usize, LogicalType)],
         transaction: &S::TransactionType<'txn>,
@@ -173,7 +190,7 @@ impl<S: Storage> State<S> {
                 "DDL and ANALYZE require ddl/analyze".into(),
             ));
         }
-        self.prepare_plan_with(params, transaction, |binder, arena| {
+        self.prepare_plan_with(db_id, catalog, params, transaction, |binder, arena| {
             binder.bind(statement, arena)
         })
     }
@@ -185,6 +202,8 @@ impl<S: Storage> State<S> {
         F,
     >(
         &'a self,
+        db_id: Arc<()>,
+        catalog: CatalogRef<'a>,
         params: A,
         transaction: &T,
         build: F,
@@ -195,11 +214,14 @@ impl<S: Storage> State<S> {
             &mut PlanArena<'a>,
         ) -> Result<LogicalPlan, DatabaseError>,
     {
-        let (plan, mut arena) = self.build_plan(params, transaction, build)?;
+        let (plan, mut arena) = self.build_plan_in(catalog, params, transaction, build)?;
         let parameter_expressions = arena.parameter_expressions();
+        let catalog_gen = catalog.arena as *const _ as usize;
         Ok(Program {
             executor: Executor::new(plan, &arena),
             arena: ExecMetaArena::new(ParamArena::new(arena, parameter_expressions)),
+            db_id,
+            catalog_gen,
         })
     }
 }
@@ -214,7 +236,9 @@ pub struct ProgramIter<'a, 'p, T: StorageTransaction + 'p> {
 impl<'a, 'p, T: StorageTransaction + 'p> ProgramIter<'a, 'p, T> {
     #[inline]
     pub fn schema<R>(&self, f: impl FnOnce(&SchemaView<'_, '_>) -> R) -> R {
-        let Program { executor, arena } = &*self.program;
+        let Program {
+            executor, arena, ..
+        } = &*self.program;
         f(&SchemaView::new(&executor.schema, arena))
     }
 
@@ -223,7 +247,9 @@ impl<'a, 'p, T: StorageTransaction + 'p> ProgramIter<'a, 'p, T> {
         &mut self,
         f: impl FnOnce(&SchemaView<'_, '_>, &mut ResultRow<'_, 'a>) -> R + MaybeSend,
     ) -> Result<Option<R>, DatabaseError> {
-        let Program { executor, arena } = &mut *self.program;
+        let Program {
+            executor, arena, ..
+        } = &mut *self.program;
         self.guard.next_tuple(executor, arena, f).await
     }
 
@@ -970,6 +996,47 @@ mod tests {
                 .map(DataValue::Int32)
                 .collect::<Vec<_>>();
             assert_eq!(rows, expected);
+        }
+        Ok(())
+    }
+
+    #[test]
+    async fn stale_program_after_ddl_publish_returns_clear_error() -> Result<(), DatabaseError> {
+        let mut db = DataBaseBuilder::path(".").build_in_memory().await?;
+        db.ddl("create table t (id int primary key, name varchar)")
+            .await?;
+        db.run("insert into t values (1, 'a'), (2, 'b')")
+            .await?
+            .done()
+            .await?;
+        let mut program = db.program_sql(
+            "select id from t where name = $1",
+            &[(
+                1,
+                LogicalType::Varchar(None, crate::types::CharLengthUnits::Characters),
+            )],
+        )?;
+        let mut tx = db.new_transaction(false)?;
+        let mut iter = program.execute(&mut tx, [(1, "a".into())]).await?;
+        assert_eq!(
+            iter.next_tuple(|_, row| row.value_at(0).clone()).await?,
+            Some(DataValue::Int32(1))
+        );
+        iter.done().await?;
+        tx.commit().await?;
+        {
+            let mut s = db.session();
+            s.run("BEGIN")?.done()?;
+            s.run("ALTER TABLE t ADD COLUMN age INT")?.done()?;
+            s.run("COMMIT")?;
+        }
+        let mut tx = db.new_transaction(false)?;
+        match program.execute(&mut tx, [(1, "a".into())]).await {
+            Err(DatabaseError::StaleCatalog) => {
+                // Expected error
+            }
+            Err(other) => panic!("Expected StaleCatalog error, got: {:?}", other),
+            Ok(_) => panic!("Expected error, but execution succeeded"),
         }
         Ok(())
     }
