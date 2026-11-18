@@ -93,6 +93,10 @@ impl DisplayTypesMeta {
         self.display_types.get(column_id)
     }
 
+    pub fn display_types(&self) -> &BTreeMap<ColumnId, Arc<str>> {
+        &self.display_types
+    }
+
     pub fn is_empty(&self) -> bool {
         self.display_types.is_empty()
     }
@@ -411,13 +415,18 @@ impl TableCatalog {
             .collect_vec();
 
         source_arena.materialize_expressions_into_table_arena();
-        Self::reload(
+        let mut table = Self::reload(
             self.id,
             self.name.clone(),
             column_catalogs.into_iter(),
             index_metas.into_iter(),
             source_arena.table_arena_cell().borrow_mut(),
-        )
+        )?;
+
+        // Copy display types from source table
+        table.display_types = self.display_types.clone();
+
+        Ok(table)
     }
 
     fn build_primary_keys(
