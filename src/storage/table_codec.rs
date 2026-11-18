@@ -1520,7 +1520,7 @@ mod tests {
             })?;
 
         assert_eq!(
-            TableCodec::decode_index_meta::<TestTransaction>(&bytes, &mut plan_arena)?,
+            TableCodec::decode_index_meta::<TestTransaction>(&bytes, None, None, &mut plan_arena)?,
             index_meta
         );
 

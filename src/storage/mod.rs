@@ -2789,7 +2789,7 @@ pub(crate) async fn check_explicit_transaction_does_not_rescan_own_writes<S: Sto
 pub(crate) type TestStorage = crate::storage::memory::MemoryStorage;
 
 #[cfg(all(test, not(feature = "async")))]
-pub(crate) type TestTransaction = crate::storage::memory::MemoryTransaction;
+pub(crate) type TestTransaction<'a> = crate::storage::memory::MemoryTransaction<'a>;
 
 #[cfg(all(test, feature = "async"))]
 pub(crate) type TestStorage = crate::storage::slatedb::SlateDbStorage;
@@ -3408,7 +3408,7 @@ mod test {
             table_cache: &'a TableCache,
             plan_arena: &'a PlanArena<'a>,
             deserializers: &'a TupleDeserializers,
-        ) -> Result<IndexIter<'a, TestTransaction>, DatabaseError> {
+        ) -> Result<IndexIter<'a, TestTransaction<'a>>, DatabaseError> {
             let table_name: crate::catalog::TableName = "t1".to_string();
             let index_meta = names
                 .table(table_cache, &table_name)

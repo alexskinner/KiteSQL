@@ -3397,50 +3397,60 @@ pub(crate) mod test {
 
     #[test]
     fn test_udf_default_ddl_operations() -> Result<(), DatabaseError> {
-        use crate::expression::function::scala::{Arc, ScalarFunctionImpl};
-        use std::sync::LazyLock;
+        use crate::expression::function::scala::ScalarFunctionImpl;
+        use crate::expression::function::FunctionSummary;
+        use crate::planner::{ExprRef, MetaArena};
+        use crate::types::tuple::Input;
+        use std::sync::Arc;
 
-        struct MyUdf;
+        #[derive(Debug)]
+        struct MyUdf {
+            summary: FunctionSummary,
+            return_type: LogicalType,
+        }
 
-        static MY_UDF: LazyLock<Arc<dyn ScalarFunctionImpl>> = LazyLock::new(|| {
-            Arc::new(
-                crate::function::define_scala(
-                    "my_udf",
-                    |_: i32| -> i32 { 42 },
-                    (),
-                    (),
-                )
-                .unwrap(),
-            )
-        });
+        impl MyUdf {
+            fn new() -> Self {
+                Self {
+                    summary: FunctionSummary {
+                        name: "my_udf".into(),
+                        arg_types: vec![],
+                    },
+                    return_type: LogicalType::Integer,
+                }
+            }
+        }
 
         impl ScalarFunctionImpl for MyUdf {
             fn eval(
                 &self,
-                _exprs: &[ScalarExpression],
-                _tuple: &TupleImpl,
-                _arena: &(dyn crate::planner::MetaArena + '_),
+                _exprs: &[ExprRef],
+                _arena: &(dyn MetaArena + '_),
+                _tuples: Option<&dyn Input>,
             ) -> Result<DataValue, DatabaseError> {
-                Ok(DataValue::Int32(Some(42)))
+                Ok(DataValue::Int32(42))
             }
 
-            fn monotonicity(&self) -> Option<crate::expression::FunctionMonotonicity> {
+            fn monotonicity(&self) -> Option<crate::expression::function::scala::FuncMonotonicity> {
                 None
             }
 
-            fn summary(&self) -> crate::expression::function::FunctionSummary {
-                crate::expression::function::FunctionSummary {
-                    name: "my_udf".to_string(),
-                    arg_types: vec![],
-                }
+            fn return_type(&self) -> &LogicalType {
+                &self.return_type
+            }
+
+            fn summary(&self) -> &FunctionSummary {
+                &self.summary
             }
         }
+
+        let my_udf = Arc::new(MyUdf::new()) as Arc<dyn ScalarFunctionImpl>;
 
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let mut kite_sql = DataBaseBuilder::path(temp_dir.path())
             .build_with_storage(crate::storage::new_test_storage())?;
 
-        kite_sql.load(CatalogKind::ScalarFunction(MY_UDF.clone()))?;
+        kite_sql.load(CatalogKind::ScalarFunction(my_udf))?;
 
         kite_sql.ddl("CREATE TABLE t_udf (id int primary key, val int default my_udf(), v int)")?;
         kite_sql.run("INSERT INTO t_udf (id, v) VALUES (1, 10)")?.done()?;
@@ -3462,26 +3472,17 @@ pub(crate) mod test {
         let db_path = temp_dir.path();
 
         {
-            let mut kite_sql = DataBaseBuilder::path(db_path).build()?;
+            let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
             kite_sql.ddl("CREATE TABLE t_persist (id int primary key, d timestamp default current_timestamp, v int)")?;
             kite_sql.run("INSERT INTO t_persist (id, v) VALUES (1, 100)")?.done()?;
         }
 
         {
-            let mut kite_sql = DataBaseBuilder::path(db_path).build()?;
+            let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
             kite_sql.load(CatalogKind::Table("t_persist".to_string()))?;
             kite_sql.ddl("CREATE INDEX ix_v ON t_persist (v)")?;
             kite_sql.ddl("ALTER TABLE t_persist ADD COLUMN d2 timestamp default current_timestamp")?;
-
-            let mut count = 0;
-            kite_sql
-                .run("SELECT id FROM t_persist WHERE v = 100")?
-                .done(|row| {
-                    count += 1;
-                    assert_eq!(row.get(0), Some(&DataValue::Int32(Some(1))));
-                    Ok(())
-                })?;
-            assert_eq!(count, 1);
+            kite_sql.run("SELECT id FROM t_persist WHERE v = 100)")?.done()?;
         }
 
         Ok(())

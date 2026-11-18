@@ -39,7 +39,7 @@ impl Storage for MemoryStorage {
     type Metrics = EmptyStorageMetrics;
 
     type TransactionType<'a>
-        = MemoryTransaction
+        = MemoryTransaction<'a>
     where
         Self: 'a;
 
@@ -52,13 +52,33 @@ impl Storage for MemoryStorage {
         Ok(MemoryTransaction {
             inner: self.inner.clone(),
             statements: self.statements.clone(),
+            scala_functions: None,
+            table_functions: None,
+        })
+    }
+
+    fn transaction_with_functions<'a>(
+        &'a self,
+        isolation: TransactionIsolationLevel,
+        _read_only: bool,
+        scala_functions: Option<&'a crate::db::ScalaFunctions>,
+        table_functions: Option<&'a crate::db::TableFunctions>,
+    ) -> Result<Self::TransactionType<'a>, DatabaseError> {
+        self.validate_transaction_isolation(isolation)?;
+        Ok(MemoryTransaction {
+            inner: self.inner.clone(),
+            statements: self.statements.clone(),
+            scala_functions,
+            table_functions,
         })
     }
 }
 
-pub struct MemoryTransaction {
+pub struct MemoryTransaction<'a> {
     inner: Rc<RefCell<BTreeMap<Vec<u8>, Vec<u8>>>>,
     statements: Rc<Cell<u64>>,
+    scala_functions: Option<&'a crate::db::ScalaFunctions>,
+    table_functions: Option<&'a crate::db::TableFunctions>,
 }
 
 pub struct MemoryIter<'txn> {
@@ -188,6 +208,14 @@ impl StorageTransaction for MemoryTransaction {
         let stamp = self.statements.get() + 1;
         self.statements.set(stamp);
         Ok(stamp)
+    }
+
+    fn scala_functions(&self) -> Option<&crate::db::ScalaFunctions> {
+        self.scala_functions
+    }
+
+    fn table_functions(&self) -> Option<&crate::db::TableFunctions> {
+        self.table_functions
     }
 
     fn get_borrowed<'a>(
