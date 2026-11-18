@@ -96,6 +96,9 @@ impl<T> Drop for OwnedPtr<T> {
 
 pub(crate) type Execution<'a, 'p, A, T> = (ExecMetaArena<A>, (Executor<'p>, ExecArena<'p, 'a, T>));
 
+pub(crate) type ScalaFunctions = HashMap<FunctionSummary, Arc<dyn ScalarFunctionImpl>>;
+pub(crate) type TableFunctions = HashMap<FunctionSummary, TableFunctionCatalog>;
+
 struct BuildParams {
     histogram_buckets: Option<usize>,
     hll_precision: Option<u8>,
@@ -1072,7 +1075,7 @@ impl<S: Storage> State<S> {
             transaction,
             executor,
             plan_arena,
-            Some(function_registry),
+            Some(&self.function_registry),
         )
         .await
     }
