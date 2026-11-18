@@ -43,7 +43,7 @@ use std::fmt::Debug;
 pub trait FunctionPack: Debug + Send + Sync {
     /// Returns the name of this function pack.
     fn name(&self) -> &str;
-    
+
     /// Install all functions from this pack into the given registry.
     ///
     /// This method should call `registry.register_scalar()` or `registry.register_table()`

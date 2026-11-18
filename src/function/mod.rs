@@ -23,9 +23,9 @@ pub(crate) mod lower;
 pub(crate) mod numbers;
 pub(crate) mod octet_length;
 pub mod pack;
+#[cfg(test)]
+mod persistence_tests;
 pub mod registry;
 #[cfg(test)]
 mod registry_tests;
-#[cfg(test)]
-mod persistence_tests;
 pub(crate) mod upper;
