@@ -41,23 +41,27 @@ KiteSQL supports pluggable SQL dialects through the `SqlDialect` trait. By defau
 
 The `kite_sql_mysql` crate provides full MySQL dialect support:
 
-```rust
+```rust,no_run
 use kite_sql::db::DataBaseBuilder;
 use kite_sql_mysql::MySqlBuilderExt;
 
-let database = DataBaseBuilder::path(".")
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let mut database = DataBaseBuilder::path(".")
     .with_mysql()?
     .build_in_memory()?;
 
-// Now you can use MySQL-specific types
-database.run("CREATE TABLE users (id SERIAL PRIMARY KEY, bio MEDIUMTEXT)")?;
+// Now you can use MySQL-specific types like MEDIUMTEXT
+database.ddl("CREATE TABLE users (id INT PRIMARY KEY, bio MEDIUMTEXT)")?;
+database.run("INSERT INTO users VALUES (1, 'bio')")?.done()?;
+# Ok(())
+# }
 ```
 
 #### Writing Custom Dialects
 
 You can write your own dialect by implementing the `SqlDialect` trait:
 
-```rust
+```rust,no_run
 use kite_sql::dialect::SqlDialect;
 use kite_sql::types::LogicalType;
 use kite_sql::errors::DatabaseError;
@@ -94,12 +98,15 @@ impl SqlDialect for MyDialect {
     }
 }
 
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
 // Register and use your dialect
 let my_dialect = Arc::new(MyDialect { parser: GenericDialect {} });
 let database = DataBaseBuilder::path(".")
     .register_dialect(my_dialect)
     .default_dialect("my_dialect")?
     .build_in_memory()?;
+# Ok(())
+# }
 ```
 
 The `map_data_type` hook is called first, allowing your dialect to handle types before falling back to the generic mapping. Return `Some(Ok(logical_type))` to map a type, `Some(Err(...))` to reject it with an error, or `None` to fall back to the default mapping.

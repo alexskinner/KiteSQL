@@ -3797,6 +3797,48 @@ pub(crate) mod test {
 
     #[cfg(feature = "parser")]
     #[test]
+    fn test_mysql_dialect_requires_registration() {
+        // Attempting to use MySQL dialect without registering it should give a clear error
+        let result = DataBaseBuilder::path(".").default_dialect("mysql");
+
+        assert!(result.is_err());
+        if let Err(DatabaseError::UnsupportedStmt(msg)) = result {
+            assert!(
+                msg.contains("unknown dialect") || msg.contains("mysql"),
+                "Error message should mention unknown dialect or mysql: {}",
+                msg
+            );
+        } else {
+            panic!("Expected UnsupportedStmt error for unregistered MySQL dialect");
+        }
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_generic_dialect_rejects_mysql_comment_syntax() -> Result<(), DatabaseError> {
+        let database_generic = DataBaseBuilder::path(".").build_in_memory()?;
+
+        // Generic dialect should reject MySQL's `#` comment syntax
+        let generic_result = database_generic
+            .state
+            .prepare_all("SELECT 1 # MySQL comment");
+        assert!(
+            generic_result.is_err(),
+            "Generic dialect should reject MySQL # comments"
+        );
+
+        // Generic dialect should accept standard SQL comments
+        let generic_result2 = database_generic.state.prepare_all("SELECT 1 -- comment\n");
+        assert!(
+            generic_result2.is_ok(),
+            "Generic dialect should accept standard -- comments"
+        );
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
     fn test_dialect_rewrite_hook() -> Result<(), DatabaseError> {
         use crate::dialect::SqlDialect;
         use sqlparser::ast::Statement;

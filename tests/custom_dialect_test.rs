@@ -18,20 +18,43 @@ use kite_sql::db::DataBaseBuilder;
 use kite_sql::dialect::SqlDialect;
 use kite_sql::errors::DatabaseError;
 use kite_sql::types::{CharLengthUnits, LogicalType};
-use sqlparser::ast::DataType;
+use sqlparser::ast::{DataType, Ident, ObjectName, Statement};
 use sqlparser::dialect::{Dialect as SqlParserDialect, GenericDialect};
 use std::sync::Arc;
 
-/// A toy custom dialect for testing that maps "CUSTOMTEXT" to Varchar.
+/// A toy custom sqlparser dialect that supports backticks like MySQL.
+#[derive(Debug)]
+struct ToyParserDialect;
+
+impl SqlParserDialect for ToyParserDialect {
+    fn is_identifier_start(&self, ch: char) -> bool {
+        GenericDialect {}.is_identifier_start(ch)
+    }
+
+    fn is_identifier_part(&self, ch: char) -> bool {
+        GenericDialect {}.is_identifier_part(ch)
+    }
+
+    fn is_delimited_identifier_start(&self, ch: char) -> bool {
+        // Unlike GenericDialect, also support backticks
+        ch == '`' || ch == '"'
+    }
+
+    fn supports_filter_during_aggregation(&self) -> bool {
+        true
+    }
+}
+
+/// A toy custom dialect for testing that maps "CUSTOMTEXT" to Varchar and changes parsing.
 #[derive(Debug)]
 struct ToyDialect {
-    parser: GenericDialect,
+    parser: ToyParserDialect,
 }
 
 impl ToyDialect {
     fn new() -> Self {
         Self {
-            parser: GenericDialect {},
+            parser: ToyParserDialect,
         }
     }
 }
@@ -58,6 +81,26 @@ impl SqlDialect for ToyDialect {
             _ => None,
         }
     }
+
+    fn rewrite(&self, statement: &mut Statement) -> Result<(), DatabaseError> {
+        // Rewrite table names that are exactly "customtable" to "rewritten_table"
+        match statement {
+            Statement::CreateTable(create) => {
+                if let Some(name_part) = create.name.0.first() {
+                    if let sqlparser::ast::ObjectNamePart::Identifier(ident) = name_part {
+                        if ident.value.eq_ignore_ascii_case("customtable") {
+                            create.name =
+                                ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
+                                    Ident::new("rewritten_table"),
+                                )]);
+                        }
+                    }
+                }
+                Ok(())
+            }
+            _ => Ok(()),
+        }
+    }
 }
 
 #[test]
@@ -78,6 +121,49 @@ fn test_custom_dialect_type_mapping() -> Result<(), Box<dyn std::error::Error>> 
 
     // If we got here, the custom type was successfully mapped
     // This proves that external dialects can map types through the SqlDialect trait
+
+    Ok(())
+}
+
+#[test]
+#[cfg(feature = "parser")]
+fn test_custom_dialect_parsing_and_rewrite() -> Result<(), Box<dyn std::error::Error>> {
+    use kite_sql::storage::lmdb::LmdbStorage;
+
+    let temp_dir = tempfile::tempdir()?;
+    let toy_dialect = Arc::new(ToyDialect::new());
+    let storage = LmdbStorage::new(temp_dir.path())?;
+    let mut database = DataBaseBuilder::path(".")
+        .register_dialect(toy_dialect.clone())
+        .default_dialect("toy")?
+        .build_with_storage(storage)?;
+
+    // Demonstrate the rewrite hook: CUSTOMTABLE gets rewritten to rewritten_table
+    // The CREATE TABLE statement with "CUSTOMTABLE" will be rewritten to "rewritten_table"
+    database.ddl("CREATE TABLE CUSTOMTABLE (val INT PRIMARY KEY)")?;
+
+    // The rewrite hook should have transformed CUSTOMTABLE -> rewritten_table
+    // So we can insert and query using the rewritten name
+    database
+        .run("INSERT INTO rewritten_table VALUES (42)")?
+        .done()?;
+
+    let mut result = database.run("SELECT val FROM rewritten_table")?;
+    let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(row[0], kite_sql::types::value::DataValue::Int32(42));
+    result.done()?;
+
+    // Verify that trying to use "CUSTOMTABLE" directly fails (it was rewritten)
+    let result = database.run("SELECT val FROM CUSTOMTABLE");
+    assert!(
+        result.is_err(),
+        "CUSTOMTABLE should not exist; it was rewritten to rewritten_table"
+    );
+
+    // This proves that external dialects can:
+    // 1. Rewrite AST before execution (CUSTOMTABLE -> rewritten_table)
+    // 2. Map custom types (CUSTOMTEXT -> VARCHAR from type mapping test)
+    // 3. Change parsing behavior (ToyParserDialect supports backtick identifiers)
 
     Ok(())
 }

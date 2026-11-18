@@ -78,9 +78,9 @@ wasm-build:
 test-wasm:
 	$(WASM_PACK) test --node -- --features wasm --package kite_sql --lib
 
-## Run the sqllogictest harness against the configured .slt suite.
+## Run the sqllogictest harness against all .slt suites (core + MySQL by default).
 test-slt:
-	$(CARGO) run -p sqllogictest-test -- --path '$(SQLLOGIC_PATH)'
+	$(CARGO) run -p sqllogictest-test
 
 ## Run the sqllogictest suite through the async path, over SlateDB (in-memory object store).
 test-slt-async:
