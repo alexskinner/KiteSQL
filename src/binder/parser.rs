@@ -32,7 +32,6 @@ use crate::expression::visitor_mut::ExprVisitorMut;
 use crate::expression::window::WindowFunctionKind;
 use crate::expression::{AliasType, ScalarExpression, TypeCast};
 use crate::iter_ext::Itertools;
-use crate::parser::parse_sql_with_recursion_limit;
 use crate::planner::operator::alter_table::change_column::{DefaultChange, NotNullChange};
 use crate::planner::operator::join::{JoinCondition, JoinOperator as LJoinOperator, JoinType};
 use crate::planner::operator::mark_apply::MarkApplyQuantifier;
@@ -141,9 +140,17 @@ impl<S: Storage> State<S> {
         &self,
         sql: T,
     ) -> Result<Vec<Statement>, DatabaseError> {
-        let stmts = parse_sql_with_recursion_limit(sql, self.parser_recursion_limit())?;
+        let dialect = self.dialect_registry().default_dialect();
+        let mut stmts = crate::parser::parse_sql_with_dialect_and_limit(
+            sql,
+            dialect.parser_dialect(),
+            self.parser_recursion_limit(),
+        )?;
         if stmts.is_empty() {
             return Err(DatabaseError::EmptyStatement);
+        }
+        for stmt in &mut stmts {
+            dialect.rewrite(stmt)?;
         }
         Ok(stmts)
     }
@@ -252,6 +259,51 @@ impl<S: Storage> Database<S> {
     /// iter.schema(|schema| assert_eq!(schema.len(), 1));
     /// iter.done().unwrap();
     /// ```
+    #[cfg(feature = "parser")]
+    pub async fn run_statement(
+        &self,
+        statement: Statement,
+    ) -> Result<DatabaseIter<'_, S>, DatabaseError> {
+        let has_mutation = statement_mutates_catalog_or_statistics(&statement)?;
+        if has_mutation {
+            return Err(DatabaseError::UnsupportedStmt(
+                "`Database::run_statement` does not allow catalog or statistics mutations; use `run_mut_statement` for DDL".to_string(),
+            ));
+        }
+        let read_only = statement_is_read_only(&statement)?;
+
+        self.execute(read_only, |state, transaction| {
+            let (plan, arena) = state.build_plan(&[], transaction, |binder, arena| {
+                binder.bind(&statement, arena)
+            })?;
+            let executor = crate::execution::Executor::new(plan, &arena);
+            Ok((executor, arena))
+        })
+        .await
+    }
+
+    /// Executes a pre-parsed statement with catalog mutations allowed.
+    ///
+    /// This is the pre-parsed equivalent of [`run_mut`](Self::run_mut), accepting a
+    /// sqlparser [`Statement`] directly. DDL statements (CREATE, ALTER, DROP) are allowed.
+    #[cfg(feature = "parser")]
+    pub async fn run_mut_statement<C>(
+        &mut self,
+        statement: Statement,
+        consume: C,
+    ) -> Result<C::Output, DatabaseError>
+    where
+        C: ConsumeMut<S>,
+    {
+        self.execute_mut_with(
+            "run_mut_statement",
+            &[],
+            |binder, arena| binder.bind(&statement, arena),
+            consume,
+        )
+        .await
+    }
+
     pub async fn run<T: AsRef<str>>(&self, sql: T) -> Result<DatabaseIter<'_, S>, DatabaseError> {
         let sql = sql.as_ref();
         let statements = self
@@ -280,10 +332,12 @@ impl<S: Storage> Database<S> {
                 Ok::<_, DatabaseError>(read_only && statement_is_read_only(stmt)?)
             })
             .map_err(|err| err.with_sql_context(sql))?;
-        let transaction = OwnedPtr::new(
-            self.storage
-                .transaction_with_isolation(self.transaction_isolation, read_only)?,
-        );
+        let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
+            self.transaction_isolation,
+            read_only,
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
+        )?);
         let mut statements = statements.into_iter().peekable();
 
         while let Some(statement) = statements.next() {
@@ -2097,12 +2151,50 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
         arena: &mut PlanArena,
     ) -> Result<LogicalPlan, DatabaseError> {
         match table {
-            TableFactor::Table { name, alias, .. } => self.bind_base_table_ref(
-                joint_type,
-                sql_table_name(name.clone())?,
-                sql_optional_table_alias(alias.clone()),
-                arena,
-            ),
+            TableFactor::Table {
+                name, alias, args, ..
+            } => {
+                let table_name = sql_table_name(name.clone())?;
+                if let Some(fn_args) = args {
+                    let mut call_args = Vec::new();
+                    for arg in &fn_args.args {
+                        let arg_expr = match arg {
+                            sqlparser::ast::FunctionArg::Named { arg, .. } => arg,
+                            sqlparser::ast::FunctionArg::ExprNamed { arg, .. } => arg,
+                            sqlparser::ast::FunctionArg::Unnamed(arg) => arg,
+                        };
+                        match arg_expr {
+                            sqlparser::ast::FunctionArgExpr::Expr(expr) => {
+                                let expr = self.bind_expr(expr, arena)?;
+                                call_args.push(arena.alloc_expression(expr))
+                            }
+                            _ => {
+                                return Err(DatabaseError::UnsupportedStmt(
+                                    "unsupported table function argument".to_string(),
+                                ))
+                            }
+                        }
+                    }
+
+                    if let Ok(ScalarExpression::TableFunction(function)) =
+                        self.bind_function_call(table_name.clone(), call_args, arena)
+                    {
+                        return self.bind_table_function_source(
+                            ScalarExpression::TableFunction(function),
+                            sql_optional_table_alias(alias.clone()),
+                            joint_type,
+                            arena,
+                        );
+                    }
+                }
+
+                self.bind_base_table_ref(
+                    joint_type,
+                    table_name,
+                    sql_optional_table_alias(alias.clone()),
+                    arena,
+                )
+            }
             TableFactor::Derived { lateral: true, .. } => Err(DatabaseError::UnsupportedStmt(
                 "LATERAL derived tables are not supported".to_string(),
             )),
@@ -3600,8 +3692,7 @@ mod tests {
             if_exists: false,
             drop_behavior: None,
         }];
-        let scala_functions = Default::default();
-        let table_functions = Default::default();
+        let function_registry = crate::function::registry::FunctionRegistry::new();
         let transaction = tables.storage.transaction()?;
         let arena = tables.table_arena.borrow();
         let mut binder = Binder::new(
@@ -3610,8 +3701,7 @@ mod tests {
                 &arena.tables,
                 &arena.views,
                 &transaction,
-                &scala_functions,
-                &table_functions,
+                &function_registry,
             ),
             &[],
             None,

@@ -52,6 +52,24 @@ impl Storage for MemoryStorage {
         Ok(MemoryTransaction {
             inner: self.inner.clone(),
             statements: self.statements.clone(),
+            scala_functions: None,
+            table_functions: None,
+        })
+    }
+
+    fn transaction_with_functions(
+        &self,
+        isolation: TransactionIsolationLevel,
+        _read_only: bool,
+        scala_functions: Option<std::sync::Arc<crate::db::ScalaFunctions>>,
+        table_functions: Option<std::sync::Arc<crate::db::TableFunctions>>,
+    ) -> Result<Self::TransactionType<'_>, DatabaseError> {
+        self.validate_transaction_isolation(isolation)?;
+        Ok(MemoryTransaction {
+            inner: self.inner.clone(),
+            statements: self.statements.clone(),
+            scala_functions,
+            table_functions,
         })
     }
 }
@@ -59,6 +77,8 @@ impl Storage for MemoryStorage {
 pub struct MemoryTransaction {
     inner: Rc<RefCell<BTreeMap<Vec<u8>, Vec<u8>>>>,
     statements: Rc<Cell<u64>>,
+    scala_functions: Option<std::sync::Arc<crate::db::ScalaFunctions>>,
+    table_functions: Option<std::sync::Arc<crate::db::TableFunctions>>,
 }
 
 pub struct MemoryIter<'txn> {
@@ -188,6 +208,14 @@ impl StorageTransaction for MemoryTransaction {
         let stamp = self.statements.get() + 1;
         self.statements.set(stamp);
         Ok(stamp)
+    }
+
+    fn scala_functions(&self) -> Option<&crate::db::ScalaFunctions> {
+        self.scala_functions.as_deref()
+    }
+
+    fn table_functions(&self) -> Option<&crate::db::TableFunctions> {
+        self.table_functions.as_deref()
     }
 
     fn get_borrowed<'a>(

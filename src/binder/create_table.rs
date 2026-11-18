@@ -79,8 +79,7 @@ mod tests {
         let names = crate::storage::NameMapping::default();
         let table_cache = crate::storage::TableCache::default();
         let view_cache = crate::storage::ViewCache::default();
-        let scala_functions = Default::default();
-        let table_functions = Default::default();
+        let function_registry = crate::function::registry::FunctionRegistry::new();
 
         let sql = "create table t1 (id int primary key, name varchar(10) null)";
         let mut binder = Binder::new(
@@ -89,8 +88,7 @@ mod tests {
                 &table_cache,
                 &view_cache,
                 &transaction,
-                &scala_functions,
-                &table_functions,
+                &function_registry,
             ),
             &[],
             None,
