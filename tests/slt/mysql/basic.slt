@@ -1,0 +1,32 @@
+# MySQL dialect basic test
+# Tests MySQL-specific syntax features
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, name VARCHAR(50))
+
+statement ok
+INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob')
+
+query II rowsort
+SELECT * FROM t
+----
+1 Alice
+2 Bob
+
+statement ok
+DROP TABLE t
+
+# Test backtick identifiers (MySQL-specific)
+statement ok
+CREATE TABLE `user` (id INT PRIMARY KEY, `name` VARCHAR(50))
+
+statement ok
+INSERT INTO `user` VALUES (1, 'test')
+
+query I
+SELECT id FROM `user`
+----
+1
+
+statement ok
+DROP TABLE `user`
