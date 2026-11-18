@@ -822,8 +822,12 @@ where
             }
         }
 
-        self.binder
-            .bind_create_table(table_name, columns, create.if_not_exists, unique_constraints)
+        self.binder.bind_create_table(
+            table_name,
+            columns,
+            create.if_not_exists,
+            unique_constraints,
+        )
     }
 
     fn bind_column(

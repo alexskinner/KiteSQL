@@ -700,17 +700,14 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
             TableCodec::check_primary_key_type(plan_arena.column(*column).datatype())?;
         }
         self.create_index_meta_from_column(table_codec, plan_arena, &mut table_catalog)?;
-        
+
         // Create unique indexes for composite unique constraints
         for column_names in unique_constraints {
             let mut column_ids = Vec::with_capacity(column_names.len());
             for column_name in &column_names {
                 if let Some(column) = table_catalog.get_column_by_name(column_name) {
                     let column_id = plan_arena.column(column).id().ok_or_else(|| {
-                        DatabaseError::invalid_column(format!(
-                            "column {} has no id",
-                            column_name
-                        ))
+                        DatabaseError::invalid_column(format!("column {} has no id", column_name))
                     })?;
                     column_ids.push(column_id);
                 } else {
@@ -720,17 +717,12 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                     )));
                 }
             }
-            
+
             // Generate index name: uk_<col1>_<col2>_...
             let index_name = format!("uk_{}", column_names.join("_"));
-            
+
             // Create the composite unique index
-            table_catalog.add_index_meta(
-                index_name,
-                column_ids,
-                IndexType::Unique,
-                plan_arena,
-            )?;
+            table_catalog.add_index_meta(index_name, column_ids, IndexType::Unique, plan_arena)?;
         }
 
         for column in table_catalog
