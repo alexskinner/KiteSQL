@@ -444,7 +444,13 @@ async fn execute_create_table<S: Storage, M: Model>(
                 .iter()
                 .map(|field| field.to_column_catalog(arena))
                 .collect::<Result<Vec<_>, _>>()?;
-            binder.bind_create_table(M::table_name().into(), columns, if_not_exists, Vec::new())
+            binder.bind_create_table(
+                M::table_name().into(),
+                columns,
+                if_not_exists,
+                Vec::new(),
+                std::collections::BTreeMap::new(),
+            )
         })
         .await
 }

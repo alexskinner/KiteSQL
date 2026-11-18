@@ -33,7 +33,7 @@ pub enum NotNullChange {
     Drop,
 }
 
-#[derive(Debug, PartialEq, Eq, Clone, Hash)]
+#[derive(Debug, PartialEq, Eq, Clone, Hash, ReferenceSerialization)]
 pub struct ChangeColumnOperator {
     pub table_id: TableId,
     pub old_column_name: String,
@@ -41,7 +41,9 @@ pub struct ChangeColumnOperator {
     pub data_type: LogicalType,
     pub default_change: DefaultChange,
     pub not_null_change: NotNullChange,
-    pub display_type: Option<Arc<str>>,
+    /// Display type for introspection. This is serialized but ChangeColumnOperator
+    /// is never persisted (DDL is executed immediately), so this is safe.
+    pub display_type: Option<std::sync::Arc<str>>,
 }
 
 impl Explain for ChangeColumnOperator {
@@ -59,60 +61,5 @@ impl Explain for ChangeColumnOperator {
             DefaultChange::Drop => f.write_str("Drop")?,
         }
         write!(f, ", {:?})", self.not_null_change)
-    }
-}
-
-impl crate::serdes::ReferenceSerialization for ChangeColumnOperator {
-    fn encode<W: std::io::Write, A: MetaArena + ?Sized>(
-        &self,
-        writer: &mut W,
-        is_direct: bool,
-        arena: &A,
-    ) -> Result<(), crate::errors::DatabaseError> {
-        #[allow(unused_imports)]
-        use crate::serdes::ReferenceSerialization as _;
-        self.table_id.encode(writer, is_direct, arena)?;
-        self.old_column_name.encode(writer, is_direct, arena)?;
-        self.new_column_name.encode(writer, is_direct, arena)?;
-        self.data_type.encode(writer, is_direct, arena)?;
-        self.default_change.encode(writer, is_direct, arena)?;
-        self.not_null_change.encode(writer, is_direct, arena)?;
-        self.display_type.encode(writer, is_direct, arena)?;
-        Ok(())
-    }
-
-    fn decode<T: crate::storage::StorageTransaction, R: std::io::Read, A: MetaArena + ?Sized>(
-        reader: &mut R,
-        mut context: Option<&mut crate::serdes::ReferenceDecodeContext<'_, T>>,
-        arena: &mut A,
-    ) -> Result<Self, crate::errors::DatabaseError> {
-        #[allow(unused_imports)]
-        use crate::serdes::ReferenceSerialization as _;
-        let table_id = TableId::decode(reader, context.as_deref_mut(), arena)?;
-        let old_column_name = String::decode(reader, context.as_deref_mut(), arena)?;
-        let new_column_name = String::decode(reader, context.as_deref_mut(), arena)?;
-        let data_type = crate::types::LogicalType::decode(reader, context.as_deref_mut(), arena)?;
-        let default_change = DefaultChange::decode(reader, context.as_deref_mut(), arena)?;
-        let not_null_change = NotNullChange::decode(reader, context.as_deref_mut(), arena)?;
-
-        let display_type = match Option::<Arc<str>>::decode(reader, context, arena) {
-            Ok(dt) => dt,
-            Err(crate::errors::DatabaseError::IO(e))
-                if e.kind() == std::io::ErrorKind::UnexpectedEof =>
-            {
-                None
-            }
-            Err(e) => return Err(e),
-        };
-
-        Ok(ChangeColumnOperator {
-            table_id,
-            old_column_name,
-            new_column_name,
-            data_type,
-            default_change,
-            not_null_change,
-            display_type,
-        })
     }
 }

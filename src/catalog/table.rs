@@ -23,6 +23,7 @@ use crate::types::tuple::Schema;
 use crate::types::{ColumnId, LogicalType};
 use kite_sql_serde_macros::ReferenceSerialization;
 use std::collections::BTreeMap;
+use std::sync::Arc;
 use std::{slice, vec};
 
 pub type TableName = String;
@@ -42,6 +43,9 @@ pub struct TableCatalog {
     primary_keys: Vec<(usize, ColumnRef)>,
     primary_key_indices: Vec<usize>,
     primary_key_type: LogicalType,
+    /// Runtime-only field: declared column types for introspection (not serialized).
+    /// Loaded from separate DisplayTypesMeta when the table is loaded.
+    display_types: BTreeMap<ColumnId, Arc<str>>,
 }
 
 /// What a write needs of its table, worked out once when the statement is bound.
@@ -61,6 +65,37 @@ pub struct TableMeta {
     pub(crate) table_name: TableName,
     pub(crate) id: TableId,
     pub(crate) is_view: bool,
+}
+
+/// Separate metadata storing declared column types for introspection.
+/// Stored as optional per-table metadata in the catalog keyspace.
+#[derive(Debug, Clone, PartialEq, Eq, Default, ReferenceSerialization)]
+pub struct DisplayTypesMeta {
+    display_types: BTreeMap<ColumnId, Arc<str>>,
+}
+
+impl DisplayTypesMeta {
+    pub fn new() -> Self {
+        Self {
+            display_types: BTreeMap::new(),
+        }
+    }
+
+    pub fn set(&mut self, column_id: ColumnId, display_type: Arc<str>) {
+        self.display_types.insert(column_id, display_type);
+    }
+
+    pub fn remove(&mut self, column_id: &ColumnId) {
+        self.display_types.remove(column_id);
+    }
+
+    pub fn get(&self, column_id: &ColumnId) -> Option<&Arc<str>> {
+        self.display_types.get(column_id)
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.display_types.is_empty()
+    }
 }
 
 impl TableCatalog {
@@ -270,6 +305,7 @@ impl TableCatalog {
             primary_keys: vec![],
             primary_key_indices: Default::default(),
             primary_key_type: LogicalType::SqlNull,
+            display_types: BTreeMap::new(),
         };
         for col_catalog in columns.into_iter() {
             let _ = table_catalog.add_column(col_catalog, arena).unwrap();
@@ -282,6 +318,24 @@ impl TableCatalog {
         table_catalog.primary_key_indices = primary_key_indices;
 
         Ok(table_catalog)
+    }
+
+    pub(crate) fn get_display_type(&self, column_id: &ColumnId) -> Option<&Arc<str>> {
+        self.display_types.get(column_id)
+    }
+
+    pub(crate) fn set_display_type(&mut self, column_id: ColumnId, display_type: Arc<str>) {
+        self.display_types.insert(column_id, display_type);
+    }
+
+    pub(crate) fn load_display_types(&mut self, meta: DisplayTypesMeta) {
+        self.display_types = meta.display_types;
+    }
+
+    pub(crate) fn collect_display_types(&self) -> DisplayTypesMeta {
+        DisplayTypesMeta {
+            display_types: self.display_types.clone(),
+        }
     }
 
     fn build_primary_key_type(
@@ -339,6 +393,7 @@ impl TableCatalog {
             primary_keys,
             primary_key_indices,
             primary_key_type,
+            display_types: BTreeMap::new(),
         })
     }
 

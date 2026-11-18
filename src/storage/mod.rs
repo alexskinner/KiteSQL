@@ -514,13 +514,14 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
             return Err(DatabaseError::DuplicateColumn(new_column_name.to_string()));
         }
 
+        let mut changed_column_id = None;
         for column_ref in table.columns() {
             let mut new_column = plan_arena.column(*column_ref).clone();
             if new_column.name() == old_column_name {
                 found = true;
+                changed_column_id = new_column.id();
                 new_column.set_name(new_column_name.to_string());
                 new_column.desc_mut().column_datatype = new_data_type.clone();
-                new_column.desc_mut().display_type = new_display_type.clone();
                 match default_change {
                     DefaultChange::NoChange => {
                         if let Some(default_expr) = new_column.desc().default {
@@ -574,15 +575,44 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                 })
             })
             .collect::<Result<Vec<_>, DatabaseError>>()?;
-        let updated_table = TableCatalog::reload(
+        let mut updated_table = TableCatalog::reload(
             table.id(),
             table.name().clone(),
             column_catalogs.into_iter(),
             index_metas.into_iter(),
             plan_arena,
         )?;
+        
+        // Update display types if changed
+        if let (Some(column_id), Some(display)) = (changed_column_id, new_display_type) {
+            updated_table.set_display_type(column_id, display.clone());
+        } else if let Some(column_id) = changed_column_id {
+            // Column type changed but no display type provided - keep existing or clear
+            // Load existing display types from storage
+            let existing_display_types = table_codec
+                .with_display_types(updated_table.id(), None::<&crate::catalog::DisplayTypesMeta>, plan_arena, async |key, _| {
+                    self.get_borrowed(key).await
+                })
+                .await?;
+            if let Some(bytes) = existing_display_types {
+                let meta = TableCodec::decode_display_types::<Self>(bytes.as_ref(), plan_arena)?;
+                updated_table.load_display_types(meta);
+            }
+        }
+        
         self.rewrite_table_metadata(table_codec, plan_arena, &updated_table)
             .await?;
+        
+        // Write updated display types
+        let display_meta = updated_table.collect_display_types();
+        if !display_meta.is_empty() {
+            table_codec
+                .with_display_types(updated_table.id(), Some(&display_meta), plan_arena, |key, value| {
+                    self.set(key, value)
+                })
+                .await?;
+        }
+        
         table_codec
             .with_statistics_bound(updated_table.id(), async |min, max, pool| {
                 self.remove_range(Bound::Included(min), Bound::Included(max), pool)
@@ -721,6 +751,7 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         columns: Vec<ColumnCatalog>,
         if_not_exists: bool,
         unique_constraints: Vec<Vec<String>>,
+        display_types: std::collections::BTreeMap<String, std::sync::Arc<str>>,
     ) -> Result<Option<TableCatalog>, DatabaseError> {
         match self
             .root_table(table_codec, &table_name, plan_arena)
@@ -772,6 +803,25 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
             table_codec.with_column(table_id, column, true, plan_arena, |key, value| {
                 self.set(key, value)
             })?;
+        }
+
+        // Populate display types from column names to column IDs
+        for (column_name, display_type) in display_types {
+            if let Some(column_ref) = table_catalog.get_column_by_name(&column_name) {
+                if let Some(column_id) = plan_arena.column(column_ref).id() {
+                    table_catalog.set_display_type(column_id, display_type);
+                }
+            }
+        }
+
+        // Write display types metadata if any
+        let display_meta = table_catalog.collect_display_types();
+        if !display_meta.is_empty() {
+            table_codec
+                .with_display_types(table_id, Some(&display_meta), plan_arena, |key, value| {
+                    self.set(key, value)
+                })
+                .await?;
         }
 
         Ok(Some(table_catalog))
@@ -940,6 +990,13 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
             })
             .await?;
 
+        // Delete display types metadata if it exists
+        table_codec
+            .with_display_types(meta.id, None::<&crate::catalog::DisplayTypesMeta>, plan_arena, async |key, _| {
+                self.remove(key)
+            })
+            .await?;
+
         table_codec
             .with_root_table(table_name.as_ref(), None, plan_arena, async |key, _| {
                 self.remove(key)
@@ -1057,24 +1114,41 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         };
         let scala_functions = self.scala_functions();
         let table_functions = self.table_functions();
-        self.table_collect_impl(
-            table_codec,
-            meta.id,
-            arena,
-            scala_functions,
-            table_functions,
-        )
-        .await?
-        .map(|(columns, indexes)| {
-            TableCatalog::reload(
+        let table = self
+            .table_collect_impl(
+                table_codec,
                 meta.id,
-                meta.table_name,
-                columns.into_iter(),
-                indexes.into_iter(),
                 arena,
+                scala_functions,
+                table_functions,
             )
-        })
-        .transpose()
+            .await?
+            .map(|(columns, indexes)| {
+                TableCatalog::reload(
+                    meta.id,
+                    meta.table_name,
+                    columns.into_iter(),
+                    indexes.into_iter(),
+                    arena,
+                )
+            })
+            .transpose()?;
+
+        // Load display types if they exist
+        if let Some(mut table) = table {
+            let display_bytes = table_codec
+                .with_display_types(table.id(), None::<&crate::catalog::DisplayTypesMeta>, arena, async |key, _| {
+                    self.get_borrowed(key).await
+                })
+                .await?;
+            if let Some(bytes) = display_bytes {
+                let display_meta = TableCodec::decode_display_types::<Self>(bytes.as_ref(), arena)?;
+                table.load_display_types(display_meta);
+            }
+            Ok(Some(table))
+        } else {
+            Ok(None)
+        }
     }
 
     async fn tables<'a>(

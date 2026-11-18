@@ -86,11 +86,12 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Describe {
         arena: &mut ExecContext<'_, 'a, '_, T>,
         plan_arena: &mut ExecMetaArena<A>,
     ) -> Result<(), DatabaseError> {
+        let table = arena
+            .table_cache()
+            .get(&self.table_id)
+            .ok_or(DatabaseError::TableNotFound)?;
+
         if self.columns.is_none() {
-            let table = arena
-                .table_cache()
-                .get(&self.table_id)
-                .ok_or(DatabaseError::TableNotFound)?;
             self.columns = Some(table.columns().copied().collect());
         }
 
@@ -111,7 +112,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Describe {
         let output = arena.output_tuple_mut();
         output.pk = None;
         output.values.clear();
-        fill_describe_row(&mut output.values, column, default);
+        fill_describe_row(&mut output.values, column, default, table);
 
         arena.resume();
         Ok(())
@@ -127,11 +128,16 @@ fn describe_default(column: &ColumnCatalog, arena: &(dyn MetaArena + '_)) -> Str
         .unwrap_or_else(|| "NULL".to_string())
 }
 
-fn fill_describe_row(values: &mut Vec<DataValue>, column: &ColumnCatalog, default: String) {
+fn fill_describe_row(
+    values: &mut Vec<DataValue>,
+    column: &ColumnCatalog,
+    default: String,
+    table: &crate::catalog::TableCatalog,
+) {
     let datatype = column.datatype();
     let display_type = column
-        .desc()
-        .display_type()
+        .id()
+        .and_then(|column_id| table.get_display_type(&column_id))
         .map(|s| s.to_string())
         .unwrap_or_else(|| datatype.to_string());
 

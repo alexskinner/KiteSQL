@@ -544,7 +544,7 @@ where
                 ..
             } => {
                 let column_span = column_def.name.span;
-                let column = self.bind_column(column_def, None)?;
+                let (column, _display_type) = self.bind_column(column_def, None)?;
 
                 if !is_valid_identifier(column.name()) {
                     return Err(attach_span_if_absent(
@@ -553,6 +553,7 @@ where
                     ));
                 }
 
+                // TODO: Handle display_type for ADD COLUMN
                 self.binder
                     .bind_add_column(&table_name, column, if_not_exists)
             }
@@ -577,7 +578,7 @@ where
             } => {
                 let old_column_name = lower_ident(&old_column_name);
                 let new_column_name = lower_ident(&new_column_name).into_owned();
-                let (data_type, display_type) = {
+                let data_type = {
                     let table = self
                         .binder
                         .context
@@ -589,11 +590,10 @@ where
                             DatabaseError::column_not_found(old_column_name.to_string())
                         })?;
                     let col = self.arena.column(column);
-                    (
-                        col.datatype().clone(),
-                        col.desc().display_type().map(|s| s.into()),
-                    )
+                    col.datatype().clone()
                 };
+                // For RENAME COLUMN, preserve existing display type (None means no change)
+                let display_type = None;
 
                 if !is_valid_identifier(&new_column_name) {
                     return Err(DatabaseError::invalid_column(
@@ -627,26 +627,6 @@ where
                         })?
                 };
 
-                let old_display_type = {
-                    let table = self
-                        .binder
-                        .context
-                        .table(&table_name)?
-                        .ok_or(DatabaseError::TableNotFound)?;
-                    table
-                        .get_column_by_name(old_column_name.as_ref())
-                        .map(|column| {
-                            self.arena
-                                .column(column)
-                                .desc()
-                                .display_type()
-                                .map(|s| s.into())
-                        })
-                        .ok_or_else(|| {
-                            DatabaseError::column_not_found(old_column_name.to_string())
-                        })?
-                };
-
                 let (data_type, display_type, default_change, not_null_change) = match op {
                     AlterColumnOperation::SetDataType {
                         data_type, using, ..
@@ -670,25 +650,25 @@ where
                     }
                     AlterColumnOperation::SetDefault { value } => (
                         old_data_type.clone(),
-                        old_display_type,
+                        None, // Preserve existing display type
                         DefaultChange::Set(self.bind_alter_default_expr(value, &old_data_type)?),
                         NotNullChange::NoChange,
                     ),
                     AlterColumnOperation::DropDefault => (
                         old_data_type.clone(),
-                        old_display_type,
+                        None, // Preserve existing display type
                         DefaultChange::Drop,
                         NotNullChange::NoChange,
                     ),
                     AlterColumnOperation::SetNotNull => (
                         old_data_type.clone(),
-                        old_display_type,
+                        None, // Preserve existing display type
                         DefaultChange::NoChange,
                         NotNullChange::Set,
                     ),
                     AlterColumnOperation::DropNotNull => (
                         old_data_type.clone(),
-                        old_display_type,
+                        None, // Preserve existing display type
                         DefaultChange::NoChange,
                         NotNullChange::Drop,
                     ),
@@ -878,8 +858,13 @@ where
         }
 
         let mut columns = Vec::with_capacity(create.columns.len());
+        let mut display_types = std::collections::BTreeMap::new();
         for (i, column) in create.columns.into_iter().enumerate() {
-            columns.push(self.bind_column(column, Some(i))?);
+            let (col, display) = self.bind_column(column, Some(i))?;
+            if let Some(display_name) = display {
+                display_types.insert(col.name().to_string(), display_name);
+            }
+            columns.push(col);
         }
         let mut unique_constraints = Vec::new();
         for constraint in create.constraints {
@@ -927,6 +912,7 @@ where
             columns,
             create.if_not_exists,
             unique_constraints,
+            display_types,
         )
     }
 
@@ -934,15 +920,15 @@ where
         &mut self,
         column_def: ColumnDef,
         column_index: Option<usize>,
-    ) -> Result<ColumnCatalog, DatabaseError> {
+    ) -> Result<(ColumnCatalog, Option<std::sync::Arc<str>>), DatabaseError> {
         let column_name = lower_ident(&column_def.name).into_owned();
         let type_spec = data_type_to_column_type_spec(
             column_def.data_type,
             #[cfg(feature = "parser")]
             self.binder.context.dialect,
         )?;
-        let mut column_desc = ColumnDesc::new(type_spec.logical, None, false, None)?
-            .with_display_type(type_spec.display);
+        let display_type = type_spec.display;
+        let mut column_desc = ColumnDesc::new(type_spec.logical, None, false, None)?;
         let mut nullable = true;
 
         for option_def in column_def.options {
@@ -978,7 +964,7 @@ where
             }
         }
 
-        Ok(ColumnCatalog::new(column_name, nullable, column_desc))
+        Ok((ColumnCatalog::new(column_name, nullable, column_desc), display_type))
     }
 
     fn bind_constraint<F: Fn(usize, &mut ColumnDesc)>(

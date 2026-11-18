@@ -30,6 +30,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         columns: Vec<ColumnCatalog>,
         if_not_exists: bool,
         unique_constraints: Vec<Vec<String>>,
+        display_types: std::collections::BTreeMap<String, std::sync::Arc<str>>,
     ) -> Result<LogicalPlan, DatabaseError> {
         let mut names = HashSet::new();
         for column in &columns {
@@ -55,6 +56,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                 columns,
                 if_not_exists,
                 unique_constraints,
+                display_types,
             }),
             Childrens::None,
         ))
