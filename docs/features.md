@@ -176,7 +176,7 @@ scala_function!(TestFunction::test(LogicalType::Integer, LogicalType::Integer) -
 });
 
 let kite_sql = DataBaseBuilder::path("./data")
-    .register_scala_function(TestFunction::new())
+    .register_scalar_function(TestFunction::new())
     .build()?;
 ```
 
