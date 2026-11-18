@@ -106,10 +106,8 @@ impl<'db, S: Storage> Session<'db, S> {
         Ok(())
     }
 
-    fn is_set_autocommit(statement: &Statement) -> bool {
-        match statement {
-            _ => false,
-        }
+    fn is_set_autocommit(_statement: &Statement) -> bool {
+        false
     }
 
     async fn handle_set_autocommit(&mut self, _statement: &Statement) -> Result<(), DatabaseError> {
@@ -121,9 +119,8 @@ impl<'db, S: Storage> Session<'db, S> {
     async fn execute_regular_statement(
         &mut self,
         statement: Statement,
-    ) -> Result<(), DatabaseError> {
-        if self.active_transaction.is_some() {
-            let txn = self.active_transaction.as_mut().unwrap();
+        ) -> Result<(), DatabaseError> {
+        if let Some(txn) = &mut self.active_transaction {
             Self::execute_in_transaction_and_drain(txn, &statement).await
         } else if self.autocommit {
             let mut txn = self.database.new_transaction(false)?;
