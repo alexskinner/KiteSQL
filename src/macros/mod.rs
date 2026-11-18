@@ -132,15 +132,15 @@ macro_rules! scala_function {
 
 /// # Examples
 ///
-/// ```
+/// ```ignore
 /// table_function!(MyTableFunction::test_numbers(LogicalType::Integer) -> [c1: LogicalType::Integer, c2: LogicalType::Integer] => (|v1: DataValue| {
 ///     let num = v1.i32().unwrap();
 ///
 ///     Ok(Box::new((0..num)
 ///         .into_iter()
 ///         .map(|i| Ok(Tuple::new(None, vec![
-///                 DataValue::Int32(Some(i)),
-///                 DataValue::Int32(Some(i)),
+///                 DataValue::Int32(i),
+///                 DataValue::Int32(i),
 ///             ])))) as TableFunctionIter)
 ///     }));
 ///
