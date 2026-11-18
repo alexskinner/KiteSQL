@@ -154,6 +154,7 @@ pub struct DataBaseBuilder {
     lmdb_config: LmdbConfig,
     scalar_functions: Vec<Arc<dyn ScalarFunctionImpl>>,
     table_functions: Vec<Arc<dyn TableFunctionImpl>>,
+    aggregate_functions: Vec<Arc<dyn crate::expression::agg_function::AggregateFunctionImpl>>,
     function_packs: Vec<Arc<dyn crate::function::pack::FunctionPack>>,
 }
 
@@ -191,6 +192,7 @@ impl DataBaseBuilder {
             lmdb_config: Default::default(),
             scalar_functions: Vec::new(),
             table_functions: Vec::new(),
+            aggregate_functions: Vec::new(),
             function_packs: Vec::new(),
         }
     }
@@ -252,6 +254,12 @@ impl DataBaseBuilder {
     /// Register a table function that will be available in the database.
     pub fn register_table_function(mut self, function: Arc<dyn TableFunctionImpl>) -> Self {
         self.table_functions.push(function);
+        self
+    }
+
+    /// Register an aggregate function that will be available in the database.
+    pub fn register_aggregate_function(mut self, function: Arc<dyn crate::expression::agg_function::AggregateFunctionImpl>) -> Self {
+        self.aggregate_functions.push(function);
         self
     }
 
@@ -355,6 +363,7 @@ impl DataBaseBuilder {
             self.transaction_isolation,
             self.scalar_functions,
             self.table_functions,
+            self.aggregate_functions,
             self.function_packs,
         )
     }
@@ -388,6 +397,7 @@ impl DataBaseBuilder {
             self.transaction_isolation,
             self.scalar_functions,
             self.table_functions,
+            self.aggregate_functions,
             self.function_packs,
         )
     }
@@ -408,6 +418,7 @@ impl DataBaseBuilder {
             self.transaction_isolation,
             self.scalar_functions,
             self.table_functions,
+            self.aggregate_functions,
             self.function_packs,
         )
     }
@@ -426,6 +437,7 @@ impl DataBaseBuilder {
             self.transaction_isolation,
             self.scalar_functions,
             self.table_functions,
+            self.aggregate_functions,
             self.function_packs,
         )
     }
@@ -445,6 +457,7 @@ impl DataBaseBuilder {
             self.transaction_isolation,
             self.scalar_functions,
             self.table_functions,
+            self.aggregate_functions,
             self.function_packs,
         )
     }
@@ -458,6 +471,7 @@ impl DataBaseBuilder {
         transaction_isolation: Option<TransactionIsolationLevel>,
         scalar_functions: Vec<Arc<dyn ScalarFunctionImpl>>,
         table_functions: Vec<Arc<dyn TableFunctionImpl>>,
+        aggregate_functions: Vec<Arc<dyn crate::expression::agg_function::AggregateFunctionImpl>>,
         function_packs: Vec<Arc<dyn crate::function::pack::FunctionPack>>,
     ) -> Result<Database<T>, DatabaseError> {
         if matches!(histogram_buckets, Some(0)) {
@@ -511,6 +525,10 @@ impl DataBaseBuilder {
                 schema,
             };
             function_registry.register_table(Arc::new(catalog))?;
+        }
+
+        for function in aggregate_functions {
+            function_registry.register_aggregate(function)?;
         }
 
         for pack in function_packs {
