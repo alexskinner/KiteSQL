@@ -20,11 +20,27 @@ use crate::types::LogicalType;
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
+// Key for tracking built-in functions, ignoring persistence policy
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct FunctionKey {
+    name: Arc<str>,
+    arg_types: Vec<LogicalType>,
+}
+
+impl From<&FunctionSummary> for FunctionKey {
+    fn from(summary: &FunctionSummary) -> Self {
+        FunctionKey {
+            name: summary.name.clone(),
+            arg_types: summary.arg_types.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct FunctionRegistry {
     scalar_functions: HashMap<FunctionSummary, Arc<dyn ScalarFunctionImpl>>,
     pub(crate) table_functions: HashMap<FunctionSummary, Arc<TableFunctionCatalog>>,
-    builtin_functions: std::collections::HashSet<FunctionSummary>,
+    builtin_functions: HashSet<FunctionKey>,
 }
 
 impl FunctionRegistry {
@@ -33,7 +49,11 @@ impl FunctionRegistry {
     }
 
     pub(crate) fn mark_builtins_loaded(&mut self) {
-        self.builtin_functions = self.scalar_functions.keys().cloned().collect();
+        self.builtin_functions = self
+            .scalar_functions
+            .keys()
+            .map(FunctionKey::from)
+            .collect();
     }
 
     pub fn register_scalar(
@@ -41,16 +61,17 @@ impl FunctionRegistry {
         function: Arc<dyn ScalarFunctionImpl>,
     ) -> Result<(), DatabaseError> {
         let summary = function.summary().clone();
+        let key = FunctionKey::from(&summary);
         // Allow overriding built-ins, but not user-registered functions
-        let is_builtin = self.builtin_functions.contains(&summary);
+        let is_builtin = self.builtin_functions.contains(&key);
         let exists = self.scalar_functions.contains_key(&summary);
-
+        
         if exists && !is_builtin {
             return Err(DatabaseError::FunctionAlreadyExists(
                 summary.name.to_string(),
             ));
         }
-
+        
         self.scalar_functions.insert(summary, function);
         Ok(())
     }
@@ -302,7 +323,7 @@ mod tests {
                 summary: FunctionSummary {
                     name: "abs".into(),
                     arg_types: vec![LogicalType::Integer],
-                    persistence: PersistencePolicy::Transient,
+                    persistence: PersistencePolicy::Durable,
                 },
                 return_type: LogicalType::Integer,
             })
@@ -407,6 +428,18 @@ mod tests {
     }
 
     #[test]
+    fn test_builtin_abs_works() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let database = DataBaseBuilder::path(temp_dir.path()).build_in_memory()?;
+
+        let mut iter = database.run("select abs(CAST(-5 AS INTEGER))")?;
+        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple[0], DataValue::Int32(5));
+        iter.done()?;
+        Ok(())
+    }
+
+    #[test]
     fn test_override_builtin_function() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
@@ -414,7 +447,8 @@ mod tests {
             .build_in_memory()?;
 
         // Verify the custom abs function is called (returns 1000 + abs(value))
-        let mut iter = database.run("select abs(-5)")?;
+        // Use explicit INTEGER cast to ensure we hit the Integer overload
+        let mut iter = database.run("select abs(CAST(-5 AS INTEGER))")?;
         let tuple = next_tuple_owned(&mut iter)?.unwrap();
         assert_eq!(tuple[0], DataValue::Int32(1005));
         iter.done()?;
