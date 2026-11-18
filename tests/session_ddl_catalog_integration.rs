@@ -296,3 +296,56 @@ fn read_only_transaction_pins_catalog_and_survives_schema_mismatch() -> Result<(
     assert_eq!(latest, ["1|Alice|NULL", "2|Bob|NULL"]);
     Ok(())
 }
+#[cfg(all(feature = "orm", feature = "macros"))]
+#[test]
+fn orm_in_read_only_transaction_pins_catalog() -> Result<(), DatabaseError> {
+    use kite_sql::orm::{Model, FromQueryRow, FromTxnRow};
+    
+    #[derive(Model, FromQueryRow, FromTxnRow, Debug, Clone, PartialEq)]
+    struct Person {
+        #[model(primary_key)]
+        id: i32,
+        name: String,
+    }
+    
+    let dir = TempDir::new().unwrap();
+    let mut db = DataBaseBuilder::path(dir.path()).build_lmdb()?;
+    db.create_table::<Person>()?;
+    db.insert(&Person { id: 1, name: "Alice".into() })?;
+    
+    let mut tx = db.new_transaction(true)?;
+    
+    {
+        let mut s = db.session();
+        exec!(s, "BEGIN")?;
+        exec!(s, "ALTER TABLE person ADD COLUMN age INT")?;
+        exec!(s, "COMMIT")?;
+    }
+    
+    let person = tx.get::<Person>(&1)?.unwrap();
+    assert_eq!(person, Person { id: 1, name: "Alice".into() });
+    
+    tx.commit()?;
+    Ok(())
+}
+
+#[cfg(feature = "parser")]
+#[test]
+fn program_from_different_database_returns_foreign_program_error() -> Result<(), DatabaseError> {
+    let dir1 = TempDir::new().unwrap();
+    let dir2 = TempDir::new().unwrap();
+    let mut db1 = DataBaseBuilder::path(dir1.path()).build_lmdb()?;
+    let mut db2 = DataBaseBuilder::path(dir2.path()).build_lmdb()?;
+    
+    db1.ddl("CREATE TABLE t (id INT PRIMARY KEY, v INT)")?;
+    db2.ddl("CREATE TABLE t (id INT PRIMARY KEY, v INT)")?;
+    db1.run("INSERT INTO t VALUES (1, 100)")?.done()?;
+    db2.run("INSERT INTO t VALUES (2, 200)")?.done()?;
+    
+    let mut program = db1.program_sql("SELECT * FROM t", &[])?;
+    let mut tx = db2.new_transaction(false)?;
+    
+    let result = program.execute(&mut tx, []);
+    assert!(matches!(result, Err(DatabaseError::ForeignProgram)));
+    Ok(())
+}
