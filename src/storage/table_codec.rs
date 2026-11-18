@@ -73,10 +73,10 @@ fn build_temporary_function_registry(
 ) -> Option<crate::function::registry::FunctionRegistry> {
     if let (Some(sf), Some(tf)) = (scala_functions, table_functions) {
         let mut registry = crate::function::registry::FunctionRegistry::new();
-        for (_, func) in sf {
+        for func in sf.values() {
             registry.load_scalar(func.clone());
         }
-        for (_, catalog) in tf {
+        for catalog in tf.values() {
             registry.load_table(std::sync::Arc::new(catalog.clone()));
         }
         Some(registry)

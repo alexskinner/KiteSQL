@@ -61,7 +61,6 @@ use sqlparser::tokenizer::Span;
 use std::borrow::Cow;
 use std::cmp;
 use std::slice;
-use std::sync::Arc;
 
 /// Parsed SQL statement type used by KiteSQL SQL frontend APIs.
 pub type Statement = sqlparser::ast::Statement;
