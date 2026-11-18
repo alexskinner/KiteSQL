@@ -19,8 +19,21 @@ use std::sync::Arc;
 pub mod scala;
 pub mod table;
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, ReferenceSerialization)]
+pub enum PersistencePolicy {
+    Transient,
+    Durable,
+}
+
+impl Default for PersistencePolicy {
+    fn default() -> Self {
+        Self::Durable
+    }
+}
+
 #[derive(Debug, Eq, PartialEq, Hash, Clone, ReferenceSerialization)]
 pub struct FunctionSummary {
     pub name: Arc<str>,
     pub arg_types: Vec<LogicalType>,
+    pub persistence: PersistencePolicy,
 }

@@ -109,6 +109,7 @@ mod tests {
         let summary = FunctionSummary {
             name: name.into(),
             arg_types: vec![LogicalType::Integer],
+            persistence: crate::expression::function::PersistencePolicy::Durable,
         };
         let mut bytes = Vec::new();
         summary

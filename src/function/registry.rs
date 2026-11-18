@@ -37,8 +37,16 @@ impl FunctionRegistry {
         &mut self,
         function: Arc<dyn ScalarFunctionImpl>,
     ) -> Result<(), DatabaseError> {
+        self.register_scalar_with_options(function, false)
+    }
+
+    pub fn register_scalar_with_options(
+        &mut self,
+        function: Arc<dyn ScalarFunctionImpl>,
+        allow_override: bool,
+    ) -> Result<(), DatabaseError> {
         let summary = function.summary().clone();
-        if self.scalar_functions.contains_key(&summary) {
+        if !allow_override && self.scalar_functions.contains_key(&summary) {
             return Err(DatabaseError::FunctionAlreadyExists(
                 summary.name.to_string(),
             ));
@@ -51,8 +59,16 @@ impl FunctionRegistry {
         &mut self,
         catalog: Arc<TableFunctionCatalog>,
     ) -> Result<(), DatabaseError> {
+        self.register_table_with_options(catalog, false)
+    }
+
+    pub fn register_table_with_options(
+        &mut self,
+        catalog: Arc<TableFunctionCatalog>,
+        allow_override: bool,
+    ) -> Result<(), DatabaseError> {
         let summary = catalog.inner.summary().clone();
-        if self.table_functions.contains_key(&summary) {
+        if !allow_override && self.table_functions.contains_key(&summary) {
             return Err(DatabaseError::FunctionAlreadyExists(
                 summary.name.to_string(),
             ));
