@@ -24,7 +24,7 @@ pub(crate) mod table_codec;
 
 use crate::catalog::view::View;
 use crate::catalog::{ColumnCatalog, ColumnRef, TableCatalog, TableId, TableMeta, TableName};
-
+use crate::db::{ScalaFunctions, TableFunctions};
 use crate::errors::DatabaseError;
 use crate::expression::range_detacher::{Range, RangeValue};
 use crate::expression::TypeCast;

@@ -23,6 +23,7 @@ use crate::expression::function::scala::ScalarFunctionImpl;
 use crate::expression::function::table::{
     ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl,
 };
+use crate::expression::function::FunctionSummary;
 use crate::function::core::install_core_functions;
 use crate::function::registry::FunctionRegistry;
 use crate::maybe_async::MaybeSend;
@@ -53,7 +54,7 @@ use crate::types::LogicalType;
 use ordered_float::OrderedFloat;
 pub use program::{Param, Program, ProgramIter};
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::Deref;
@@ -94,6 +95,9 @@ impl<T> Drop for OwnedPtr<T> {
 }
 
 pub(crate) type Execution<'a, 'p, A, T> = (ExecMetaArena<A>, (Executor<'p>, ExecArena<'p, 'a, T>));
+
+pub(crate) type ScalaFunctions = HashMap<FunctionSummary, Arc<dyn ScalarFunctionImpl>>;
+pub(crate) type TableFunctions = HashMap<FunctionSummary, TableFunctionCatalog>;
 
 pub enum CatalogKind {
     Table(crate::catalog::TableName),
@@ -1103,8 +1107,8 @@ impl<S: Storage> Database<S> {
         let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
             self.transaction_isolation,
             false,
-            Some(Arc::clone(self.state.scala_functions_arc())),
-            Some(Arc::clone(self.state.table_functions_arc())),
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
         )?);
 
         let state = TxnPtr::new(std::ptr::from_mut(&mut self.state));
@@ -1171,8 +1175,8 @@ impl<S: Storage> Database<S> {
                 let transaction = self.storage.transaction_with_functions(
                     self.storage.default_transaction_isolation(),
                     true,
-                    Some(Arc::clone(self.state.scala_functions_arc())),
-                    Some(Arc::clone(self.state.table_functions_arc())),
+                    Some(self.state.scala_functions_arc()),
+                    Some(self.state.table_functions_arc()),
                 )?;
                 let mut table_codec = TableCodec::default();
                 let table = transaction
@@ -1234,8 +1238,8 @@ impl<S: Storage> Database<S> {
                 let transaction = self.storage.transaction_with_functions(
                     self.storage.default_transaction_isolation(),
                     true,
-                    Some(Arc::clone(self.state.scala_functions_arc())),
-                    Some(Arc::clone(self.state.table_functions_arc())),
+                    Some(self.state.scala_functions_arc()),
+                    Some(self.state.table_functions_arc()),
                 )?;
                 let mut table_codec = TableCodec::default();
                 let (view_id, view) = transaction
@@ -1268,8 +1272,8 @@ impl<S: Storage> Database<S> {
         let transaction = self.storage.transaction_with_functions(
             self.transaction_isolation,
             read_only,
-            Some(Arc::clone(self.state.scala_functions_arc())),
-            Some(Arc::clone(self.state.table_functions_arc())),
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
         )?;
 
         Ok(Transaction {
@@ -1336,8 +1340,8 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
         let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
             self.transaction_isolation,
             read_only,
-            Some(Arc::clone(self.state.scala_functions_arc())),
-            Some(Arc::clone(self.state.table_functions_arc())),
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
         )?);
         // SAFETY: the transaction stays boxed, and so in place, until the iterator is gone.
         let tx = unsafe { &mut *transaction.get() };
@@ -1361,8 +1365,8 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
         let transaction = self.storage.transaction_with_functions(
             self.transaction_isolation,
             true,
-            Some(Arc::clone(self.state.scala_functions_arc())),
-            Some(Arc::clone(self.state.table_functions_arc())),
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
         )?;
         let (plan, mut arena) = self.state.build_plan(params, &transaction, build)?;
         Ok(plan.explain(&mut arena, 0))
@@ -3509,6 +3513,7 @@ pub(crate) mod test {
                     summary: FunctionSummary {
                         name: "my_udf".into(),
                         arg_types: vec![],
+                        persistence: crate::expression::function::PersistencePolicy::Durable,
                     },
                     return_type: LogicalType::Integer,
                 }

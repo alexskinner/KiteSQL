@@ -14,7 +14,7 @@
 
 use crate::catalog::view::View;
 use crate::catalog::{ColumnCatalog, ColumnRelation, TableId, TableMeta, TableName};
-
+use crate::db::{ScalaFunctions, TableFunctions};
 use crate::errors::DatabaseError;
 use crate::optimizer::core::cm_sketch::{CountMinSketchMeta, CountMinSketchPage};
 use crate::optimizer::core::histogram::Bucket;
@@ -66,6 +66,24 @@ type TupleValueWriter<'a> = (
     usize,
     &'a mut (dyn FnMut(&mut Bytes) -> Result<(), DatabaseError> + Send),
 );
+
+fn build_temporary_function_registry(
+    scala_functions: Option<&crate::db::ScalaFunctions>,
+    table_functions: Option<&crate::db::TableFunctions>,
+) -> Option<crate::function::registry::FunctionRegistry> {
+    if let (Some(sf), Some(tf)) = (scala_functions, table_functions) {
+        let mut registry = crate::function::registry::FunctionRegistry::new();
+        for (_, func) in sf {
+            registry.load_scalar(func.clone());
+        }
+        for (_, catalog) in tf {
+            registry.load_table(std::sync::Arc::new(catalog.clone()));
+        }
+        Some(registry)
+    } else {
+        None
+    }
+}
 
 #[derive(Default)]
 pub struct TableCodec {
@@ -901,9 +919,10 @@ impl TableCodec {
         table_functions: Option<&TableFunctions>,
         arena: &mut (impl MetaArena + ?Sized),
     ) -> Result<IndexMeta, DatabaseError> {
-        let mut context = scala_functions
-            .zip(table_functions)
-            .map(|(sf, tf)| ReferenceDecodeContext::<T>::with_functions(sf, tf));
+        let temp_registry = build_temporary_function_registry(scala_functions, table_functions);
+        let mut context = temp_registry
+            .as_ref()
+            .map(|reg| ReferenceDecodeContext::<T>::with_functions(reg));
         IndexMeta::decode::<T, _, _>(&mut Cursor::new(bytes), context.as_mut(), arena)
     }
 
@@ -985,9 +1004,10 @@ impl TableCodec {
         table_functions: Option<&TableFunctions>,
         arena: &mut (impl MetaArena + ?Sized),
     ) -> Result<ColumnCatalog, DatabaseError> {
-        let mut context = scala_functions
-            .zip(table_functions)
-            .map(|(sf, tf)| ReferenceDecodeContext::<T>::with_functions(sf, tf));
+        let temp_registry = build_temporary_function_registry(scala_functions, table_functions);
+        let mut context = temp_registry
+            .as_ref()
+            .map(|reg| ReferenceDecodeContext::<T>::with_functions(reg));
         ColumnCatalog::decode::<T, R, _>(reader, context.as_mut(), arena)
     }
 

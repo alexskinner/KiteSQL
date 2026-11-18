@@ -336,8 +336,8 @@ impl<S: Storage> Database<S> {
         let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
             self.transaction_isolation,
             read_only,
-            Some(Arc::clone(self.state.scala_functions_arc())),
-            Some(Arc::clone(self.state.table_functions_arc())),
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
         )?);
         let mut statements = statements.into_iter().peekable();
 
