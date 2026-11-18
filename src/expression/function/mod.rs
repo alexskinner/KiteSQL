@@ -19,7 +19,7 @@ use std::sync::Arc;
 pub mod scala;
 pub mod table;
 
-#[derive(Debug, Eq, PartialEq, Hash, Clone, ReferenceSerialization)]
+#[derive(Debug, Eq, PartialEq, Hash, Clone, Default, ReferenceSerialization)]
 pub struct FunctionSummary {
     pub name: Arc<str>,
     pub arg_types: Vec<LogicalType>,
