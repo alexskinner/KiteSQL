@@ -15,7 +15,6 @@
 pub(crate) mod abs;
 #[cfg(test)]
 mod aggregate_tests;
-pub mod builtin_aggregates;
 pub(crate) mod char_length;
 pub(crate) mod core;
 #[cfg(feature = "time")]

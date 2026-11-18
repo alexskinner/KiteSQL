@@ -1096,9 +1096,7 @@ mod test {
 
     use crate::errors::DatabaseError;
     use crate::expression::agg::AggKind;
-    use crate::expression::function::scala::{
-        ArcScalarFunctionImpl, ScalarFunction, ScalarFunctionImpl,
-    };
+    use crate::expression::function::scala::{ArcScalarFunctionImpl, ScalarFunction};
     use crate::expression::function::table::{
         ArcTableFunctionImpl, TableFunction, TableFunctionCatalog, TableFunctionImpl,
     };

@@ -21,44 +21,10 @@ mod tests {
     use crate::execution::dql::aggregate::Accumulator;
     use crate::expression::agg::{AggFnId, AggKind};
     use crate::expression::agg_function::AggregateFunctionImpl;
-    use crate::function::builtin_aggregates::*;
     use crate::types::value::DataValue;
     use crate::types::LogicalType;
     use std::fmt;
     use std::sync::Arc;
-
-    #[test]
-    fn test_sum_aggregate_trait() -> Result<(), DatabaseError> {
-        let _sum_agg = SumAggregate::new(LogicalType::Integer);
-        Ok(())
-    }
-
-    #[test]
-    fn test_count_aggregate_trait() -> Result<(), DatabaseError> {
-        let _count_agg = CountAggregate::new(LogicalType::SqlNull);
-        Ok(())
-    }
-
-    #[test]
-    fn test_min_max_aggregate_trait() -> Result<(), DatabaseError> {
-        let _min_agg = MinMaxAggregate::new_min(LogicalType::Integer);
-        let _max_agg = MinMaxAggregate::new_max(LogicalType::Integer);
-        Ok(())
-    }
-
-    #[test]
-    fn test_avg_aggregate_trait() -> Result<(), DatabaseError> {
-        let _avg_agg = AvgAggregate::new(LogicalType::Integer);
-        Ok(())
-    }
-
-    #[test]
-    fn test_group_concat_aggregate_trait() -> Result<(), DatabaseError> {
-        use crate::types::CharLengthUnits;
-        let _group_concat =
-            GroupConcatAggregate::new(LogicalType::Varchar(None, CharLengthUnits::Characters));
-        Ok(())
-    }
 
     #[derive(Debug)]
     struct SumTimes10Aggregate {

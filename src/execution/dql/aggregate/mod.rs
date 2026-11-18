@@ -55,8 +55,16 @@ pub trait Accumulator: MaybeSend {
         Ok(())
     }
 
-    /// merges another accumulator's state into this one (for distributed aggregation).
-    /// Default implementation is not supported; aggregates that support merge must override.
+    /// Merges another accumulator's state into this one (for distributed aggregation).
+    ///
+    /// This method is provided for future distributed or parallel aggregation paths.
+    /// Currently, KiteSQL does not invoke merge() during query execution:
+    /// - HashAggExecutor accumulates all input locally without splitting work
+    /// - SimpleAggExecutor processes a single stream without parallelization
+    /// - StreamAggExecutor operates on pre-sorted input without distribution
+    ///
+    /// Aggregates that wish to support merge for future use should override this method.
+    /// The default implementation returns an error indicating merge is not supported.
     fn merge(&mut self, _other: &dyn Accumulator) -> Result<(), DatabaseError> {
         Err(DatabaseError::UnsupportedStmt(
             "merge not supported for this accumulator".to_string(),

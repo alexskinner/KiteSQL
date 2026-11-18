@@ -15,7 +15,6 @@
 use crate::errors::DatabaseError;
 use crate::expression;
 use crate::expression::agg::AggKind;
-use crate::iter_ext::Itertools;
 
 use super::{Binder, BinderContext, BoundScalarQuery, QueryBindStep, SubQueryType};
 use crate::expression::function::scala::{ArcScalarFunctionImpl, ScalarFunction};
@@ -660,10 +659,6 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
             }
             _ => (),
         }
-        let arg_types = args
-            .iter()
-            .map(|arg| arg.return_type(arena).into_owned())
-            .collect_vec();
         let arg_type_refs: Vec<_> = args
             .iter()
             .map(|arg| arg.return_type(arena).into_owned())
