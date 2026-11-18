@@ -2165,6 +2165,7 @@ pub(crate) mod test {
                 "t1".to_string(),
                 columns,
                 false,
+                Vec::new(),
             )
             .await?
         {

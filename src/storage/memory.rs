@@ -278,6 +278,7 @@ mod wasm_tests {
             "test".to_string().into(),
             source_columns,
             false,
+            Vec::new(),
         )? {
             let table = table.transplant_to_table_arena(&plan_arena)?;
             names.insert_table(&mut table_cache, table);
@@ -480,6 +481,7 @@ mod native_tests {
             "test".to_string(),
             source_columns,
             false,
+            Vec::new(),
         )? {
             let table = table.transplant_to_table_arena(&plan_arena)?;
             names.insert_table(&mut table_cache, table);
