@@ -6,6 +6,26 @@ use std::sync::Arc;
 
 pub const DIALECT_GENERIC: &str = "generic";
 
+#[derive(Debug, Clone)]
+pub struct ColumnTypeSpec {
+    pub logical: crate::types::LogicalType,
+    pub display: Option<Arc<str>>,
+}
+
+impl ColumnTypeSpec {
+    pub fn new(logical: crate::types::LogicalType) -> Self {
+        Self {
+            logical,
+            display: None,
+        }
+    }
+
+    pub fn with_display(mut self, display: impl Into<Arc<str>>) -> Self {
+        self.display = Some(display.into());
+        self
+    }
+}
+
 pub trait SqlDialect: Debug + Send + Sync + 'static {
     fn name(&self) -> &str;
 
@@ -20,6 +40,14 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
         _data_type: &sqlparser::ast::DataType,
     ) -> Option<Result<crate::types::LogicalType, DatabaseError>> {
         None
+    }
+
+    fn map_column_type(
+        &self,
+        data_type: &sqlparser::ast::DataType,
+    ) -> Option<Result<ColumnTypeSpec, DatabaseError>> {
+        self.map_data_type(data_type)
+            .map(|result| result.map(ColumnTypeSpec::new))
     }
 }
 

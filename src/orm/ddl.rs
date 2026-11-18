@@ -444,7 +444,13 @@ async fn execute_create_table<S: Storage, M: Model>(
                 .iter()
                 .map(|field| field.to_column_catalog(arena))
                 .collect::<Result<Vec<_>, _>>()?;
-            binder.bind_create_table(M::table_name().into(), columns, if_not_exists, Vec::new())
+            binder.bind_create_table(
+                M::table_name().into(),
+                columns,
+                if_not_exists,
+                Vec::new(),
+                std::collections::BTreeMap::new(),
+            )
         })
         .await
 }
@@ -559,6 +565,7 @@ async fn execute_change_column<S: Storage>(
                 old_column_name,
                 new_column_name,
                 data_type,
+                crate::planner::operator::alter_table::change_column::DisplayTypeChange::Keep,
                 default_change,
                 not_null_change,
             )
@@ -589,7 +596,7 @@ async fn execute_add_column<S: Storage>(
     let field = field.clone();
     database
         .execute_mut("ORM ADD COLUMN", &[], move |binder, arena| {
-            binder.bind_add_column(table_name, field.to_column_catalog(arena)?, false)
+            binder.bind_add_column(table_name, field.to_column_catalog(arena)?, false, None)
         })
         .await
 }

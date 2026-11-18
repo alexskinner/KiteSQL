@@ -58,6 +58,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for AddColumn<'a> {
             table_id,
             column,
             if_not_exists,
+            display_type,
         } = self.op;
 
         let table_catalog = table_cache
@@ -89,6 +90,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for AddColumn<'a> {
                     table_catalog.name(),
                     column,
                     *if_not_exists,
+                    display_type.clone(),
                 )
                 .await?;
             let unique_meta = if column.desc().is_unique() {

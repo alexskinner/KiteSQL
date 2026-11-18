@@ -1469,6 +1469,7 @@ mod tests {
                     Some(arena.alloc_expression(ScalarExpression::from(1_i32))),
                 )?,
             ),
+            display_type: None,
         });
         assert!(referenced_columns(&add_column, &mut arena)?.is_empty());
 
@@ -1477,6 +1478,8 @@ mod tests {
             old_column_name: "old".to_string(),
             new_column_name: "new".to_string(),
             data_type: LogicalType::Integer,
+            display_type_change:
+                crate::planner::operator::alter_table::change_column::DisplayTypeChange::Keep,
             default_change: DefaultChange::Set(column_expr(b, 1, &mut arena)),
             not_null_change: NotNullChange::NoChange,
         });
@@ -1496,6 +1499,7 @@ mod tests {
             )],
             if_not_exists: false,
             unique_constraints: Vec::new(),
+            display_types: std::collections::BTreeMap::new(),
         });
         assert!(referenced_columns(&create_table, &mut arena)?.is_empty());
 
@@ -1674,6 +1678,7 @@ mod tests {
                     columns: vec![column_catalog("id"), column_catalog("name")],
                     if_not_exists: true,
                     unique_constraints: Vec::new(),
+                    display_types: std::collections::BTreeMap::new(),
                 }),
                 "Create users -> [id, name], If Not Exists: true",
             ),
@@ -1721,6 +1726,7 @@ mod tests {
                     table_id: 0,
                     if_not_exists: true,
                     column: column_catalog("age"),
+                    display_type: None,
                 }),
                 "Add age -> users, If Not Exists: true",
             ),
@@ -1730,6 +1736,7 @@ mod tests {
                     old_column_name: "age".to_string(),
                     new_column_name: "age_years".to_string(),
                     data_type: LogicalType::Integer,
+                    display_type_change: crate::planner::operator::alter_table::change_column::DisplayTypeChange::Keep,
                     default_change: DefaultChange::Drop,
                     not_null_change: NotNullChange::Set,
                 }),

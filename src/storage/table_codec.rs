@@ -116,6 +116,7 @@ enum CodecType {
     Statistics,
     View,
     Tuple,
+    DisplayTypes,
 }
 
 const INDEX_STATISTICS_TAG: u8 = b'i';
@@ -270,6 +271,10 @@ impl TableCodec {
             CodecType::Statistics => {
                 out.extend_from_slice(&prefix);
                 out.push(b'3');
+            }
+            CodecType::DisplayTypes => {
+                out.extend_from_slice(&prefix);
+                out.push(b'4');
             }
             CodecType::Index => {
                 out.extend_from_slice(&prefix);
@@ -660,6 +665,36 @@ impl TableCodec {
         arena: &mut (impl MetaArena + ?Sized),
     ) -> Result<HistogramMeta, DatabaseError> {
         HistogramMeta::decode::<T, _, _>(&mut Cursor::new(bytes), None, arena)
+    }
+
+    /// Key: `{TableId}{DISPLAY_TYPES_TAG}{BOUND_MIN_TAG}`.
+    pub async fn with_display_types<R>(
+        &mut self,
+        table_id: TableId,
+        meta: Option<&crate::catalog::DisplayTypesMeta>,
+        arena: &(impl MetaArena + ?Sized),
+        f: impl AsyncFnOnce(&[u8], &[u8]) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.clear_buffers();
+        let (lower, value) = self.with_table_buffers(table_id, |lower, prefix, value| {
+            Self::write_key_prefix(lower, CodecType::DisplayTypes, prefix);
+            lower.push(BOUND_MIN_TAG);
+
+            if let Some(meta) = meta {
+                meta.encode(value, true, arena)?;
+            }
+
+            Ok((lower.clone(), value.clone()))
+        })?;
+
+        f(lower.as_slice(), value.as_slice()).await
+    }
+
+    pub fn decode_display_types<T: StorageTransaction>(
+        bytes: &[u8],
+        arena: &mut (impl MetaArena + ?Sized),
+    ) -> Result<crate::catalog::DisplayTypesMeta, DatabaseError> {
+        crate::catalog::DisplayTypesMeta::decode::<T, _, _>(&mut Cursor::new(bytes), None, arena)
     }
 
     /// Key: `{TableName}{STATISTICS_TAG}{BOUND_MIN_TAG}{INDEX_ID}{INDEX_STATISTICS_TAG}{ROOT_TAG}`.

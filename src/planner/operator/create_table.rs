@@ -15,8 +15,10 @@
 use crate::catalog::{ColumnCatalog, TableName};
 use crate::iter_ext::Itertools;
 use kite_sql_serde_macros::ReferenceSerialization;
+use std::collections::BTreeMap;
 use std::fmt;
 use std::fmt::Formatter;
+use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash, ReferenceSerialization)]
 pub struct CreateTableOperator {
@@ -27,6 +29,9 @@ pub struct CreateTableOperator {
     pub if_not_exists: bool,
     /// Composite unique constraints: each inner Vec contains column names for a unique constraint
     pub unique_constraints: Vec<Vec<String>>,
+    /// Declared column types for introspection (column name -> display type).
+    /// Populated from dialect-specific type mapping during parsing.
+    pub display_types: BTreeMap<String, Arc<str>>,
 }
 
 impl fmt::Display for CreateTableOperator {

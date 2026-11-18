@@ -111,6 +111,26 @@ let database = DataBaseBuilder::path(".")
 
 The `map_data_type` hook is called first, allowing your dialect to handle types before falling back to the generic mapping. Return `Some(Ok(logical_type))` to map a type, `Some(Err(...))` to reject it with an error, or `None` to fall back to the default mapping.
 
+For dialects that want to preserve the original declared type name for introspection (e.g., `DESCRIBE` output), implement `map_column_type` instead, which returns a `ColumnTypeSpec` containing both the logical type and an optional display name:
+
+```rust
+fn map_column_type(
+    &self,
+    data_type: &DataType,
+) -> Option<Result<ColumnTypeSpec, DatabaseError>> {
+    match data_type {
+        DataType::Custom(name, _) if name.0.len() == 1 => {
+            // Return both logical type and display name
+            Some(Ok(ColumnTypeSpec::new(LogicalType::Varchar(None, CharLengthUnits::Characters))
+                .with_display("customtext")))
+        }
+        _ => None,
+    }
+}
+```
+
+The `map_column_type` hook takes precedence over `map_data_type`. By default, `map_column_type` wraps `map_data_type` with no display name.
+
 ### ORM Mapping: `features = ["orm"]`
 See [the ORM guide](../src/orm/README.md) for the full ORM guide, including:
 

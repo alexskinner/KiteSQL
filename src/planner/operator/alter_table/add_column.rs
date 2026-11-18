@@ -15,12 +15,14 @@
 use crate::catalog::{ColumnCatalog, TableId};
 use crate::planner::{fmt_table, Explain, MetaArena};
 use kite_sql_serde_macros::ReferenceSerialization;
+use std::sync::Arc;
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash, ReferenceSerialization)]
 pub struct AddColumnOperator {
     pub table_id: TableId,
     pub if_not_exists: bool,
     pub column: ColumnCatalog,
+    pub display_type: Option<std::sync::Arc<str>>,
 }
 
 impl Explain for AddColumnOperator {

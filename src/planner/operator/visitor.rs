@@ -768,12 +768,15 @@ pub(crate) mod tests {
                 table_id: 0,
                 if_not_exists: false,
                 column: column.clone(),
+                display_type: None,
             }),
             Operator::ChangeColumn(ChangeColumnOperator {
                 table_id: 0,
                 old_column_name: "value".to_string(),
                 new_column_name: "value".to_string(),
                 data_type: LogicalType::Integer,
+                display_type_change:
+                    crate::planner::operator::alter_table::change_column::DisplayTypeChange::Keep,
                 default_change: DefaultChange::Set(expr(16)),
                 not_null_change: NotNullChange::NoChange,
             }),
@@ -787,6 +790,7 @@ pub(crate) mod tests {
                 columns: vec![column],
                 if_not_exists: false,
                 unique_constraints: Vec::new(),
+                display_types: std::collections::BTreeMap::new(),
             }),
             Operator::CreateIndex(CreateIndexOperator {
                 table_id: 0,

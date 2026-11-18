@@ -186,3 +186,41 @@ fn test_custom_dialect_parsing_and_rewrite() -> Result<(), Box<dyn std::error::E
 
     Ok(())
 }
+
+#[test]
+#[cfg(feature = "parser")]
+fn test_generic_dialect_unchanged() -> Result<(), Box<dyn std::error::Error>> {
+    use kite_sql::storage::lmdb::LmdbStorage;
+
+    let temp_dir = tempfile::tempdir()?;
+    let storage = LmdbStorage::new(temp_dir.path())?;
+    let mut database = kite_sql::db::DataBaseBuilder::path(".").build_with_storage(storage)?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, name VARCHAR(50))")?;
+
+    let mut result = database.run("DESCRIBE test")?;
+
+    let id_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(
+        id_row[0],
+        kite_sql::types::value::DataValue::from("id".to_string())
+    );
+    assert_eq!(
+        id_row[1],
+        kite_sql::types::value::DataValue::from("Integer".to_string())
+    );
+
+    let name_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    assert_eq!(
+        name_row[0],
+        kite_sql::types::value::DataValue::from("name".to_string())
+    );
+    assert_eq!(
+        name_row[1],
+        kite_sql::types::value::DataValue::from("Varchar(Some(50), CHARACTERS)".to_string())
+    );
+
+    result.done()?;
+
+    Ok(())
+}

@@ -32,7 +32,9 @@ use crate::expression::visitor_mut::ExprVisitorMut;
 use crate::expression::window::WindowFunctionKind;
 use crate::expression::{AliasType, ScalarExpression, TypeCast};
 use crate::iter_ext::Itertools;
-use crate::planner::operator::alter_table::change_column::{DefaultChange, NotNullChange};
+use crate::planner::operator::alter_table::change_column::{
+    DefaultChange, DisplayTypeChange, NotNullChange,
+};
 use crate::planner::operator::join::{JoinCondition, JoinOperator as LJoinOperator, JoinType};
 use crate::planner::operator::mark_apply::MarkApplyQuantifier;
 use crate::planner::operator::project::ProjectOperator;
@@ -544,7 +546,7 @@ where
                 ..
             } => {
                 let column_span = column_def.name.span;
-                let column = self.bind_column(column_def, None)?;
+                let (column, display_type) = self.bind_column(column_def, None)?;
 
                 if !is_valid_identifier(column.name()) {
                     return Err(attach_span_if_absent(
@@ -554,7 +556,7 @@ where
                 }
 
                 self.binder
-                    .bind_add_column(&table_name, column, if_not_exists)
+                    .bind_add_column(&table_name, column, if_not_exists, display_type)
             }
             AlterTableOperation::DropColumn {
                 column_names,
@@ -583,12 +585,13 @@ where
                         .context
                         .table(&table_name)?
                         .ok_or(DatabaseError::TableNotFound)?;
-                    table
+                    let column = table
                         .get_column_by_name(old_column_name.as_ref())
-                        .map(|column| self.arena.column(column).datatype().clone())
                         .ok_or_else(|| {
                             DatabaseError::column_not_found(old_column_name.to_string())
-                        })?
+                        })?;
+                    let col = self.arena.column(column);
+                    col.datatype().clone()
                 };
 
                 if !is_valid_identifier(&new_column_name) {
@@ -602,6 +605,7 @@ where
                     old_column_name.into_owned(),
                     new_column_name,
                     data_type,
+                    DisplayTypeChange::Keep,
                     DefaultChange::NoChange,
                     NotNullChange::NoChange,
                 )
@@ -622,7 +626,7 @@ where
                         })?
                 };
 
-                let (data_type, default_change, not_null_change) = match op {
+                let (data_type, display_type_change, default_change, not_null_change) = match op {
                     AlterColumnOperation::SetDataType {
                         data_type, using, ..
                     } => {
@@ -631,33 +635,43 @@ where
                                 "ALTER COLUMN TYPE USING is not supported".to_string(),
                             ));
                         }
+                        let type_spec = data_type_to_column_type_spec(
+                            data_type,
+                            #[cfg(feature = "parser")]
+                            self.binder.context.dialect,
+                        )?;
+                        let display_change = match type_spec.display {
+                            Some(d) => DisplayTypeChange::Set(d),
+                            None => DisplayTypeChange::Clear,
+                        };
                         (
-                            data_type_to_logical_type(
-                                data_type,
-                                #[cfg(feature = "parser")]
-                                self.binder.context.dialect,
-                            )?,
+                            type_spec.logical,
+                            display_change,
                             DefaultChange::NoChange,
                             NotNullChange::NoChange,
                         )
                     }
                     AlterColumnOperation::SetDefault { value } => (
                         old_data_type.clone(),
+                        DisplayTypeChange::Keep,
                         DefaultChange::Set(self.bind_alter_default_expr(value, &old_data_type)?),
                         NotNullChange::NoChange,
                     ),
                     AlterColumnOperation::DropDefault => (
                         old_data_type.clone(),
+                        DisplayTypeChange::Keep,
                         DefaultChange::Drop,
                         NotNullChange::NoChange,
                     ),
                     AlterColumnOperation::SetNotNull => (
                         old_data_type.clone(),
+                        DisplayTypeChange::Keep,
                         DefaultChange::NoChange,
                         NotNullChange::Set,
                     ),
                     AlterColumnOperation::DropNotNull => (
                         old_data_type.clone(),
+                        DisplayTypeChange::Keep,
                         DefaultChange::NoChange,
                         NotNullChange::Drop,
                     ),
@@ -673,6 +687,7 @@ where
                     old_column_name.to_string(),
                     old_column_name.into_owned(),
                     data_type,
+                    display_type_change,
                     default_change,
                     not_null_change,
                 )
@@ -702,19 +717,24 @@ where
                         })?;
                 }
                 let old_column_name = old_column_name.into_owned();
-                let data_type = data_type_to_logical_type(
+                let type_spec = data_type_to_column_type_spec(
                     data_type,
                     #[cfg(feature = "parser")]
                     self.binder.context.dialect,
                 )?;
                 let (default_change, not_null_change) =
-                    self.bind_change_column_options(options, &data_type)?;
+                    self.bind_change_column_options(options, &type_spec.logical)?;
+                let display_type_change = match type_spec.display {
+                    Some(d) => DisplayTypeChange::Set(d),
+                    None => DisplayTypeChange::Clear,
+                };
 
                 self.binder.bind_change_column(
                     &table_name,
                     old_column_name.clone(),
                     old_column_name,
-                    data_type,
+                    type_spec.logical,
+                    display_type_change,
                     default_change,
                     not_null_change,
                 )
@@ -751,19 +771,24 @@ where
                         "illegal column naming".to_string(),
                     ));
                 }
-                let data_type = data_type_to_logical_type(
+                let type_spec = data_type_to_column_type_spec(
                     data_type,
                     #[cfg(feature = "parser")]
                     self.binder.context.dialect,
                 )?;
                 let (default_change, not_null_change) =
-                    self.bind_change_column_options(options, &data_type)?;
+                    self.bind_change_column_options(options, &type_spec.logical)?;
+                let display_type_change = match type_spec.display {
+                    Some(d) => DisplayTypeChange::Set(d),
+                    None => DisplayTypeChange::Clear,
+                };
 
                 self.binder.bind_change_column(
                     &table_name,
                     old_column_name.into_owned(),
                     new_column_name,
-                    data_type,
+                    type_spec.logical,
+                    display_type_change,
                     default_change,
                     not_null_change,
                 )
@@ -844,8 +869,13 @@ where
         }
 
         let mut columns = Vec::with_capacity(create.columns.len());
+        let mut display_types = std::collections::BTreeMap::new();
         for (i, column) in create.columns.into_iter().enumerate() {
-            columns.push(self.bind_column(column, Some(i))?);
+            let (col, display) = self.bind_column(column, Some(i))?;
+            if let Some(display_name) = display {
+                display_types.insert(col.name().to_string(), display_name);
+            }
+            columns.push(col);
         }
         let mut unique_constraints = Vec::new();
         for constraint in create.constraints {
@@ -893,6 +923,7 @@ where
             columns,
             create.if_not_exists,
             unique_constraints,
+            display_types,
         )
     }
 
@@ -900,18 +931,15 @@ where
         &mut self,
         column_def: ColumnDef,
         column_index: Option<usize>,
-    ) -> Result<ColumnCatalog, DatabaseError> {
+    ) -> Result<(ColumnCatalog, Option<std::sync::Arc<str>>), DatabaseError> {
         let column_name = lower_ident(&column_def.name).into_owned();
-        let mut column_desc = ColumnDesc::new(
-            data_type_to_logical_type(
-                column_def.data_type,
-                #[cfg(feature = "parser")]
-                self.binder.context.dialect,
-            )?,
-            None,
-            false,
-            None,
+        let type_spec = data_type_to_column_type_spec(
+            column_def.data_type,
+            #[cfg(feature = "parser")]
+            self.binder.context.dialect,
         )?;
+        let display_type = type_spec.display;
+        let mut column_desc = ColumnDesc::new(type_spec.logical, None, false, None)?;
         let mut nullable = true;
 
         for option_def in column_def.options {
@@ -947,7 +975,10 @@ where
             }
         }
 
-        Ok(ColumnCatalog::new(column_name, nullable, column_desc))
+        Ok((
+            ColumnCatalog::new(column_name, nullable, column_desc),
+            display_type,
+        ))
     }
 
     fn bind_constraint<F: Fn(usize, &mut ColumnDesc)>(
@@ -1836,15 +1867,22 @@ impl TryFrom<&Value> for DataValue {
     }
 }
 
-pub(crate) fn data_type_to_logical_type(
+pub(crate) fn data_type_to_column_type_spec(
     data_type: DataType,
     #[cfg(feature = "parser")] dialect: &dyn crate::dialect::SqlDialect,
-) -> Result<LogicalType, DatabaseError> {
+) -> Result<crate::dialect::ColumnTypeSpec, DatabaseError> {
+    use crate::dialect::ColumnTypeSpec;
+
     #[cfg(feature = "parser")]
-    if let Some(result) = dialect.map_data_type(&data_type) {
+    if let Some(result) = dialect.map_column_type(&data_type) {
         return result;
     }
 
+    let logical = data_type_to_logical_type_inner(data_type)?;
+    Ok(ColumnTypeSpec::new(logical))
+}
+
+fn data_type_to_logical_type_inner(data_type: DataType) -> Result<LogicalType, DatabaseError> {
     match data_type {
         DataType::Char(char_len) | DataType::Character(char_len) => {
             let mut len = 1;
@@ -2045,6 +2083,18 @@ pub(crate) fn data_type_to_logical_type(
             "unsupported data type: {other}"
         ))),
     }
+}
+
+pub(crate) fn data_type_to_logical_type(
+    data_type: DataType,
+    #[cfg(feature = "parser")] dialect: &dyn crate::dialect::SqlDialect,
+) -> Result<LogicalType, DatabaseError> {
+    Ok(data_type_to_column_type_spec(
+        data_type,
+        #[cfg(feature = "parser")]
+        dialect,
+    )?
+    .logical)
 }
 
 impl TryFrom<DataType> for LogicalType {
