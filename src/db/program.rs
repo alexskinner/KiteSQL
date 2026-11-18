@@ -66,7 +66,7 @@ pub struct Program<'p> {
     /// Database instance ID this program was prepared on.
     pub(crate) db_id: Arc<()>,
     /// Catalog generation this program was bound to.
-    pub(crate) catalog_gen: *const PublishedCatalog,
+    pub(crate) catalog_gen: usize,
 }
 
 #[maybe_async]
@@ -118,7 +118,7 @@ impl<'p> Program<'p> {
         params: &[(usize, Param<'_>)],
     ) -> Result<(), DatabaseError> {
         // Check catalog generation match by comparing arena pointers
-        let current_gen = table_arena as *const _ as *const PublishedCatalog;
+        let current_gen = table_arena as *const _ as usize;
         if self.catalog_gen != current_gen {
             return Err(DatabaseError::StaleCatalog);
         }
@@ -216,7 +216,7 @@ impl<S: Storage> State<S> {
     {
         let (plan, mut arena) = self.build_plan_in(catalog, params, transaction, build)?;
         let parameter_expressions = arena.parameter_expressions();
-        let catalog_gen = catalog.arena as *const _ as *const PublishedCatalog;
+        let catalog_gen = catalog.arena as *const _ as usize;
         Ok(Program {
             executor: Executor::new(plan, &arena),
             arena: ExecMetaArena::new(ParamArena::new(arena, parameter_expressions)),

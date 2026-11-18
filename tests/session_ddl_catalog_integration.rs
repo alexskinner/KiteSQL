@@ -5,8 +5,6 @@
 
 use kite_sql::db::{DataBaseBuilder, ResultIter};
 use kite_sql::errors::DatabaseError;
-use kite_sql::types::value::DataValue;
-use kite_sql::types::LogicalType;
 use tempfile::TempDir;
 
 fn rows<I: ResultIter>(mut it: I) -> Result<Vec<String>, DatabaseError> {
@@ -299,9 +297,18 @@ fn read_only_transaction_pins_catalog_and_survives_schema_mismatch() -> Result<(
 #[cfg(all(feature = "orm", feature = "macros"))]
 #[test]
 fn orm_in_read_only_transaction_pins_catalog() -> Result<(), DatabaseError> {
-    use kite_sql::orm::{FromQueryRow, FromTxnRow, Model};
+    use kite_sql::Model;
 
-    #[derive(Model, FromQueryRow, FromTxnRow, Debug, Clone, PartialEq)]
+    #[derive(Model, Debug, Clone, PartialEq)]
+    #[model(table = "person")]
+    struct PersonNew {
+        #[model(primary_key)]
+        id: i32,
+        name: String,
+        age: Option<i32>,
+    }
+    #[derive(Model, Debug, Clone, PartialEq)]
+    #[model(table = "person")]
     struct Person {
         #[model(primary_key)]
         id: i32,
@@ -334,6 +341,9 @@ fn orm_in_read_only_transaction_pins_catalog() -> Result<(), DatabaseError> {
         }
     );
 
+    let new = tx.get::<PersonNew>(&1);
+    println!("NEWSTRUCT {:?}", new.as_ref().map(|_| ()).map_err(|e| format!("{e:?} / {e}")));
+    assert!(matches!(new, Err(ref e) if !matches!(e, DatabaseError::IO(_))));
     tx.commit()?;
     Ok(())
 }
