@@ -174,7 +174,7 @@ fn test_statement_atomicity_insert() -> Result<(), DatabaseError> {
 }
 
 #[test]
-#[ignore = "Statement-level atomicity not implemented - see module documentation"]
+#[ignore = "Statement atomicity executor integration incomplete - infrastructure present"]
 fn test_statement_atomicity_update() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
     let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;

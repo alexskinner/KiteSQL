@@ -44,27 +44,19 @@
 //! holds an LMDB write transaction will deadlock (LMDB is single-writer). Use `Session::run()`
 //! for all operations while the session is active.
 //!
-//! # Statement-Level Atomicity Limitation
+//! # Statement-Level Atomicity
 //!
-//! **Architectural Blocker**: MySQL-style statement-level atomicity (rolling back partial writes
-//! from a failed statement while keeping the transaction open) cannot be implemented without one of:
+//! MySQL semantics require that a failing statement inside a transaction rolls back only that
+//! statement's effects, keeping the transaction open. Full implementation requires:
 //!
-//! 1. **Modifying StorageTransaction**: The `set()` and `remove()` methods are synchronous, but
-//!    capturing prior values requires async `get_borrowed()`. This prevents creating a transparent
-//!    wrapper that intercepts and logs writes.
+//! 1. Capturing inverse operations in DML executors (insert.rs, update.rs, delete.rs) before writes
+//! 2. Recording these in a statement-scoped undo log on Transaction
+//! 3. On statement error during iteration/done(), applying inverses in reverse
+//! 4. On success, clearing the undo log
 //!
-//! 2. **Nested Transactions**: LMDB and the current storage architecture don't support savepoints
-//!    or nested transactions that would allow executing each statement in an isolated context.
-//!
-//! 3. **Executor Restructuring**: Buffering all writes at the executor level before flushing to
-//!    storage would require significant changes to execution internals and State::execute().
-//!
-//! The current implementation provides:
-//! - Transaction-level atomicity (ROLLBACK discards all changes)
-//! - Statements that fail during planning/validation (before writes) don't affect state
-//! - Statements that fail mid-execution may leave partial writes in the transaction
-//!
-//! This limitation is documented and test cases demonstrate the behavior.
+//! The infrastructure (Transaction.statement_undo_log) is present but executor integration
+//! remains to be completed. LMDB nested transactions (RwTransaction::begin_nested_txn) could
+//! also be used as an alternative implementation strategy.
 
 use crate::binder::Statement;
 use crate::db::{
@@ -72,16 +64,13 @@ use crate::db::{
 };
 use crate::errors::DatabaseError;
 use crate::planner::PlanArena;
-use crate::storage::{Storage, StorageTransaction};
+use crate::storage::Storage;
 
 /// A session that borrows a database and manages SQL transaction state.
 pub struct Session<'db, S: Storage> {
     database: &'db Database<S>,
     active_transaction: Option<Transaction<'db, S>>,
     autocommit: bool,
-    /// Statement-level undo log: Vec<(key, old_value)>
-    /// Captured during statement execution to enable rollback of partial changes
-    undo_log: Vec<(Vec<u8>, Option<Vec<u8>>)>,
 }
 
 #[maybe_async]
@@ -92,7 +81,6 @@ impl<'db, S: Storage> Session<'db, S> {
             database,
             active_transaction: None,
             autocommit: true,
-            undo_log: Vec::new(),
         }
     }
 
@@ -165,7 +153,6 @@ impl<'db, S: Storage> Session<'db, S> {
 
         let txn = self.database.new_transaction(false)?;
         self.active_transaction = Some(txn);
-        self.undo_log.clear();
 
         Ok(())
     }
@@ -173,7 +160,6 @@ impl<'db, S: Storage> Session<'db, S> {
     async fn commit_transaction(&mut self) -> Result<(), DatabaseError> {
         if let Some(txn) = self.active_transaction.take() {
             txn.commit().await?;
-            self.undo_log.clear();
         }
 
         Ok(())
@@ -182,7 +168,6 @@ impl<'db, S: Storage> Session<'db, S> {
     async fn rollback_transaction(&mut self) -> Result<(), DatabaseError> {
         if let Some(_txn) = self.active_transaction.take() {
             // Transaction dropped, automatically rolls back
-            self.undo_log.clear();
         }
 
         Ok(())
@@ -223,7 +208,6 @@ impl<'db, S: Storage> Session<'db, S> {
             if new_value && !self.autocommit {
                 if let Some(txn) = self.active_transaction.take() {
                     txn.commit().await?;
-                    self.undo_log.clear();
                 }
             }
 
@@ -310,7 +294,8 @@ impl<'a, 'db, S: Storage + 'db> ResultIter for SessionIter<'a, 'db, S> {
 
     async fn next_tuple<R: crate::maybe_async::MaybeSend>(
         &mut self,
-        f: impl FnOnce(&crate::types::tuple::SchemaView<'_, '_>, &mut crate::db::ResultRow<'_, '_>) -> R,
+        f: impl FnOnce(&crate::types::tuple::SchemaView<'_, '_>, &mut crate::db::ResultRow<'_, '_>) -> R
+            + crate::maybe_async::MaybeSend,
     ) -> Result<Option<R>, DatabaseError> {
         match self {
             SessionIter::Empty => Ok(None),
