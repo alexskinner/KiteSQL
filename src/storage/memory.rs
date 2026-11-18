@@ -393,11 +393,7 @@ mod wasm_tests {
         let catalog = kite_sql.state.catalog();
         let arena_borrow = catalog.arena.borrow();
         let table = transaction
-            .table(
-                &arena_borrow.names,
-                &arena_borrow.tables,
-                &table_name,
-            )?
+            .table(&arena_borrow.names, &arena_borrow.tables, &table_name)?
             .unwrap()
             .clone();
         let pk_index = table.indexes().next().unwrap().clone();
@@ -598,11 +594,7 @@ mod native_tests {
         let catalog = kite_sql.state.catalog();
         let arena_borrow = catalog.arena.borrow();
         let table = transaction
-            .table(
-                &arena_borrow.names,
-                &arena_borrow.tables,
-                &table_name,
-            )?
+            .table(&arena_borrow.names, &arena_borrow.tables, &table_name)?
             .unwrap()
             .clone();
         let pk_index = *table.indexes().next().unwrap();

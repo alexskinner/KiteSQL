@@ -164,7 +164,8 @@ mod tests {
             Ok(column)
         }
 
-        let mut plan_arena = crate::planner::PlanArena::new(db.state.table_arena());
+        let catalog = db.state.catalog();
+        let mut plan_arena = crate::planner::PlanArena::new(catalog.arena);
         let columns = vec![
             plan_arena.alloc_column(test_column("a", LogicalType::Integer, Some(0))?),
             plan_arena.alloc_column(test_column("b", LogicalType::Float, None)?),
@@ -190,9 +191,10 @@ mod tests {
         };
 
         let transaction = db.storage.transaction()?;
+        let arena_borrow = catalog.arena.borrow();
         let mut executor = crate::execution::execute_input_mut::<_, CopyFromFile>(
             &op,
-            db.state.table_cache(),
+            &arena_borrow.tables,
             plan_arena,
             &transaction,
         );

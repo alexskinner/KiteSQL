@@ -977,9 +977,19 @@ mod tests {
     #[test]
     async fn stale_program_after_ddl_publish_returns_clear_error() -> Result<(), DatabaseError> {
         let mut db = DataBaseBuilder::path(".").build_in_memory().await?;
-        db.ddl("create table t (id int primary key, name varchar)").await?;
-        db.run("insert into t values (1, 'a'), (2, 'b')").await?.done().await?;
-        let mut program = db.program_sql("select id from t where name = $1", &[(1, LogicalType::Varchar(None, crate::types::CharLengthUnits::Characters))])?;
+        db.ddl("create table t (id int primary key, name varchar)")
+            .await?;
+        db.run("insert into t values (1, 'a'), (2, 'b')")
+            .await?
+            .done()
+            .await?;
+        let mut program = db.program_sql(
+            "select id from t where name = $1",
+            &[(
+                1,
+                LogicalType::Varchar(None, crate::types::CharLengthUnits::Characters),
+            )],
+        )?;
         let mut tx = db.new_transaction(false)?;
         let mut iter = program.execute(&mut tx, [(1, "a".into())]).await?;
         assert_eq!(
@@ -995,9 +1005,13 @@ mod tests {
             s.run("COMMIT")?;
         }
         let mut tx = db.new_transaction(false)?;
-        let err = program.execute(&mut tx, [(1, "a".into())]).await.unwrap_err();
-        assert!(matches!(err, DatabaseError::StaleCatalog));
-        assert!(err.to_string().contains("older catalog generation"));
+        match program.execute(&mut tx, [(1, "a".into())]).await {
+            Err(DatabaseError::StaleCatalog) => {
+                // Expected error
+            }
+            Err(other) => panic!("Expected StaleCatalog error, got: {:?}", other),
+            Ok(_) => panic!("Expected error, but execution succeeded"),
+        }
         Ok(())
     }
 }

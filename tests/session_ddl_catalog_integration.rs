@@ -206,7 +206,10 @@ fn long_running_transaction_keeps_consistent_generation_across_ddl() -> Result<(
     let mut tx = db.new_transaction(false)?;
     let mut iter_before = tx.run("SELECT id, a FROM t ORDER BY id")?;
     let first_row = iter_before.next_tuple(|_, r| {
-        r.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
+        r.iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join("|")
     })?;
     assert_eq!(first_row, Some("1|10".to_string()));
     {
@@ -217,7 +220,10 @@ fn long_running_transaction_keeps_consistent_generation_across_ddl() -> Result<(
         exec!(s, "COMMIT")?;
     }
     let second_row = iter_before.next_tuple(|_, r| {
-        r.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
+        r.iter()
+            .map(|v| v.to_string())
+            .collect::<Vec<_>>()
+            .join("|")
     })?;
     assert_eq!(second_row, Some("2|20".to_string()));
     assert!(iter_before.next_tuple(|_, _| ())?.is_none());
@@ -231,15 +237,20 @@ fn long_running_transaction_keeps_consistent_generation_across_ddl() -> Result<(
 }
 
 #[test]
-fn iterator_from_database_keeps_consistent_generation_across_publish() -> Result<(), DatabaseError> {
+fn iterator_from_database_keeps_consistent_generation_across_publish() -> Result<(), DatabaseError>
+{
     let dir = TempDir::new().unwrap();
     let mut db = DataBaseBuilder::path(dir.path()).build_lmdb()?;
     db.ddl("CREATE TABLE t (id INT PRIMARY KEY, x INT)")?;
-    db.run("INSERT INTO t VALUES (1, 100), (2, 200), (3, 300)")?.done()?;
+    db.run("INSERT INTO t VALUES (1, 100), (2, 200), (3, 300)")?
+        .done()?;
     let mut long_iter = db.run("SELECT id, x FROM t ORDER BY id")?;
     assert_eq!(
         long_iter.next_tuple(|_, r| {
-            r.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
+            r.iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join("|")
         })?,
         Some("1|100".to_string())
     );
@@ -253,7 +264,10 @@ fn iterator_from_database_keeps_consistent_generation_across_publish() -> Result
     let remaining = {
         let mut rows = vec![];
         while let Some(r) = long_iter.next_tuple(|_, r| {
-            r.iter().map(|v| v.to_string()).collect::<Vec<_>>().join("|")
+            r.iter()
+                .map(|v| v.to_string())
+                .collect::<Vec<_>>()
+                .join("|")
         })? {
             rows.push(r);
         }
@@ -262,6 +276,9 @@ fn iterator_from_database_keeps_consistent_generation_across_publish() -> Result
     assert_eq!(remaining, ["2|200", "3|300"]);
     long_iter.done()?;
     let new_gen = rows(db.run("SELECT * FROM t ORDER BY id")?)?;
-    assert_eq!(new_gen, ["1|100|NULL", "2|200|NULL", "3|300|NULL", "4|400|4000"]);
+    assert_eq!(
+        new_gen,
+        ["1|100|NULL", "2|200|NULL", "3|300|NULL", "4|400|4000"]
+    );
     Ok(())
 }

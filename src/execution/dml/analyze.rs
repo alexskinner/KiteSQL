@@ -410,19 +410,16 @@ mod test {
         kite_sql.analyze("t1").await?;
 
         let table_name = "t1".to_string();
-        let table_id = kite_sql
-            .state
-            .names()
-            .table(kite_sql.state.table_cache(), "t1")
+        let catalog = kite_sql.state.catalog();
+        let arena_borrow = catalog.arena.borrow();
+        let table_id = arena_borrow
+            .names
+            .table(&arena_borrow.tables, "t1")
             .unwrap()
             .id();
-        let loader = StatisticMetaLoader::new(kite_sql.state.meta_cache());
+        let loader = StatisticMetaLoader::new(catalog.meta);
 
-        let table = kite_sql
-            .state
-            .names()
-            .table(kite_sql.state.table_cache(), &table_name)
-            .unwrap();
+        let table = arena_borrow.names.table(&arena_borrow.tables, &table_name).unwrap();
         let a_id = *table.get_column_id_by_name("a").unwrap();
         let b_id = *table.get_column_id_by_name("b").unwrap();
         let c_id = *table.get_column_id_by_name("c").unwrap();
@@ -605,13 +602,14 @@ mod test {
         }
         kite_sql.analyze("t1").await?;
 
-        let table_id = kite_sql
-            .state
-            .names()
-            .table(kite_sql.state.table_cache(), "t1")
+        let catalog = kite_sql.state.catalog();
+        let arena_borrow = catalog.arena.borrow();
+        let table_id = arena_borrow
+            .names
+            .table(&arena_borrow.tables, "t1")
             .unwrap()
             .id();
-        let loader = StatisticMetaLoader::new(kite_sql.state.meta_cache());
+        let loader = StatisticMetaLoader::new(catalog.meta);
         assert!(loader.load(table_id, 1)?.is_some());
         assert_eq!(
             loader
@@ -668,13 +666,14 @@ mod test {
         create_table(&mut kite_sql, "create table t1 (a int primary key, b int)").await?;
         create_index(&mut kite_sql, "create index b_index on t1 (b)").await?;
 
-        let table_id = kite_sql
-            .state
-            .names()
-            .table(kite_sql.state.table_cache(), "t1")
+        let catalog = kite_sql.state.catalog();
+        let arena_borrow = catalog.arena.borrow();
+        let table_id = arena_borrow
+            .names
+            .table(&arena_borrow.tables, "t1")
             .unwrap()
             .id();
-        let loader = StatisticMetaLoader::new(kite_sql.state.meta_cache());
+        let loader = StatisticMetaLoader::new(catalog.meta);
         assert!(loader.load(table_id, 1)?.is_none());
 
         assert!(!kite_sql
@@ -740,13 +739,14 @@ mod test {
                 Ok(keys)
             })
             .await?;
-        let table_id = kite_sql
-            .state
-            .names()
-            .table(kite_sql.state.table_cache(), "t1")
+        let catalog = kite_sql.state.catalog();
+        let arena_borrow = catalog.arena.borrow();
+        let table_id = arena_borrow
+            .names
+            .table(&arena_borrow.tables, "t1")
             .unwrap()
             .id();
-        let loader = StatisticMetaLoader::new(kite_sql.state.meta_cache());
+        let loader = StatisticMetaLoader::new(catalog.meta);
         let index_statistics = loader.load(table_id, 0)?.unwrap();
         let expected_keys = 2
             + 1
