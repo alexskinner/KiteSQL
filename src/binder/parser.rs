@@ -275,9 +275,10 @@ impl<S: Storage> Database<S> {
         let read_only = statement_is_read_only(&statement)?;
 
         self.execute(read_only, |state, catalog, transaction| {
-            let (plan, arena) = state.build_plan_in(catalog, &[], transaction, |binder, arena| {
-                binder.bind(&statement, arena)
-            })?;
+            let (plan, arena) =
+                state.build_plan_in(catalog, &[], transaction, |binder, arena| {
+                    binder.bind(&statement, arena)
+                })?;
             let executor = crate::execution::Executor::new(plan, &arena);
             Ok((executor, arena))
         })

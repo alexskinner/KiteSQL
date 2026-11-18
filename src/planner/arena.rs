@@ -403,10 +403,6 @@ impl<A: MetaArena> ExecMetaArena<A> {
         self.parent
     }
 
-    pub(crate) fn parent(&self) -> &A {
-        &self.parent
-    }
-
     pub(crate) fn parent_mut(&mut self) -> &mut A {
         &mut self.parent
     }

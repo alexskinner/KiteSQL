@@ -236,7 +236,9 @@ pub struct ProgramIter<'a, 'p, T: StorageTransaction + 'p> {
 impl<'a, 'p, T: StorageTransaction + 'p> ProgramIter<'a, 'p, T> {
     #[inline]
     pub fn schema<R>(&self, f: impl FnOnce(&SchemaView<'_, '_>) -> R) -> R {
-        let Program { executor, arena, .. } = &*self.program;
+        let Program {
+            executor, arena, ..
+        } = &*self.program;
         f(&SchemaView::new(&executor.schema, arena))
     }
 
@@ -245,7 +247,9 @@ impl<'a, 'p, T: StorageTransaction + 'p> ProgramIter<'a, 'p, T> {
         &mut self,
         f: impl FnOnce(&SchemaView<'_, '_>, &mut ResultRow<'_, 'a>) -> R + MaybeSend,
     ) -> Result<Option<R>, DatabaseError> {
-        let Program { executor, arena, .. } = &mut *self.program;
+        let Program {
+            executor, arena, ..
+        } = &mut *self.program;
         self.guard.next_tuple(executor, arena, f).await
     }
 

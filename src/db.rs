@@ -48,7 +48,7 @@ use crate::storage::rocksdb::{OptimisticRocksStorage, RocksStorage, StorageConfi
 use crate::storage::table_codec::TableCodec;
 use crate::storage::{
     CheckpointableStorage, NameMapping, StatisticsMetaCache, Storage, StorageTransaction,
-    TableCache, TransactionIsolationLevel, ViewCache,
+    TableCache, TransactionIsolationLevel,
 };
 use crate::types::tuple::{Schema, SchemaView, TupleImpl};
 use crate::types::value::DataValue;
@@ -988,9 +988,13 @@ impl<S: Storage> State<S> {
         }
     }
 
-
     pub(crate) fn table_arena(&self) -> &TableArenaCell {
         self.catalog().arena
+    }
+
+    #[cfg(test)]
+    pub(crate) fn meta_cache(&self) -> &StatisticsMetaCache {
+        self.catalog().meta
     }
 
     fn load_scalar_function(&mut self, function: Arc<dyn ScalarFunctionImpl>) {
