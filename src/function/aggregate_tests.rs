@@ -145,18 +145,25 @@ mod tests {
         }
     }
 
+    fn next_tuple_owned(
+        iter: &mut impl crate::db::ResultIter,
+    ) -> Result<Option<crate::types::tuple::TupleImpl>, DatabaseError> {
+        iter.next_tuple(|_, tuple| tuple.clone())
+    }
+
+    // Simplified UDAF test using VALUES clause instead of tables
     #[test]
     fn test_register_and_call_udaf() -> Result<(), DatabaseError> {
-        let mut database = DataBaseBuilder::path("test")
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let database = DataBaseBuilder::path(temp_dir.path())
             .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
             .build_in_memory()?;
 
-        database.run("create table t1(id int, category varchar, value int)")?;
-        database.run("insert into t1 values (1, 'A', 10), (2, 'A', 20), (3, 'B', 15)")?;
-
-        let mut iter = database.run("select sum_times_10(value) from t1")?;
-        let tuple = iter.next()?.unwrap();
-        assert_eq!(tuple.values[0], DataValue::Int32(450));
+        // Test aggregate on VALUES clause
+        let mut iter = database.run("select sum_times_10(value) from (values (10), (20), (15)) as t(value)")?;
+        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple[0], DataValue::Int32(450));
         iter.done()?;
 
         Ok(())
@@ -164,20 +171,20 @@ mod tests {
 
     #[test]
     fn test_udaf_with_group_by() -> Result<(), DatabaseError> {
-        let mut database = DataBaseBuilder::path("test")
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let database = DataBaseBuilder::path(temp_dir.path())
             .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
             .build_in_memory()?;
 
-        database.run("create table t1(id int, category varchar, value int)")?;
-        database.run("insert into t1 values (1, 'A', 10), (2, 'A', 20), (3, 'B', 15), (4, 'B', 25)")?;
-
-        let mut iter = database.run("select category, sum_times_10(value) from t1 group by category order by category")?;
+        // Test aggregate with GROUP BY on VALUES clause
+        let mut iter = database.run("select category, sum_times_10(value) from (values ('A', 10), ('A', 20), ('B', 15), ('B', 25)) as t(category, value) group by category order by category")?;
         
-        let tuple_a = iter.next()?.unwrap();
-        assert_eq!(tuple_a.values[1], DataValue::Int32(300));
+        let tuple_a = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple_a[1], DataValue::Int32(300));
         
-        let tuple_b = iter.next()?.unwrap();
-        assert_eq!(tuple_b.values[1], DataValue::Int32(400));
+        let tuple_b = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple_b[1], DataValue::Int32(400));
         
         iter.done()?;
         Ok(())
@@ -185,16 +192,16 @@ mod tests {
 
     #[test]
     fn test_udaf_null_handling() -> Result<(), DatabaseError> {
-        let mut database = DataBaseBuilder::path("test")
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let database = DataBaseBuilder::path(temp_dir.path())
             .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
             .build_in_memory()?;
 
-        database.run("create table t1(id int, value int)")?;
-        database.run("insert into t1 values (1, 10), (2, NULL), (3, 20)")?;
-
-        let mut iter = database.run("select sum_times_10(value) from t1")?;
-        let tuple = iter.next()?.unwrap();
-        assert_eq!(tuple.values[0], DataValue::Int32(300));
+        // Test NULL handling in aggregate
+        let mut iter = database.run("select sum_times_10(value) from (values (10), (NULL), (20)) as t(value)")?;
+        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple[0], DataValue::Int32(300));
         iter.done()?;
 
         Ok(())
