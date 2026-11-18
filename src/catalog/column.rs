@@ -281,14 +281,13 @@ mod tests {
 // GRCOV_EXCL_STOP
 
 /// The descriptor of a column.
-#[derive(Debug, Clone, PartialEq, Eq, Hash, ReferenceSerialization)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct ColumnDesc {
     pub(crate) column_datatype: LogicalType,
-    #[reference_serialization(optional)]
-    pub(crate) display_type: Option<std::sync::Arc<str>>,
     primary: Option<usize>,
     is_unique: bool,
     pub(crate) default: Option<ExprRef>,
+    pub(crate) display_type: Option<std::sync::Arc<str>>,
 }
 
 impl ColumnDesc {
@@ -334,5 +333,153 @@ impl ColumnDesc {
 
     pub(crate) fn set_unique(&mut self) {
         self.is_unique = true
+    }
+}
+
+impl crate::serdes::ReferenceSerialization for ColumnDesc {
+    fn encode<W: std::io::Write, A: crate::planner::MetaArena + ?Sized>(
+        &self,
+        writer: &mut W,
+        is_direct: bool,
+        arena: &A,
+    ) -> Result<(), DatabaseError> {
+        #[allow(unused_imports)]
+        use crate::serdes::ReferenceSerialization as _;
+        self.column_datatype.encode(writer, is_direct, arena)?;
+        self.primary.encode(writer, is_direct, arena)?;
+        self.is_unique.encode(writer, is_direct, arena)?;
+        self.default.encode(writer, is_direct, arena)?;
+        self.display_type.encode(writer, is_direct, arena)?;
+        Ok(())
+    }
+
+    fn decode<
+        T: crate::storage::StorageTransaction,
+        R: std::io::Read,
+        A: crate::planner::MetaArena + ?Sized,
+    >(
+        reader: &mut R,
+        mut context: Option<&mut crate::serdes::ReferenceDecodeContext<'_, T>>,
+        arena: &mut A,
+    ) -> Result<Self, DatabaseError> {
+        #[allow(unused_imports)]
+        use crate::serdes::ReferenceSerialization as _;
+        let column_datatype = LogicalType::decode(reader, context.as_deref_mut(), arena)?;
+        let primary = Option::<usize>::decode(reader, context.as_deref_mut(), arena)?;
+        let is_unique = bool::decode(reader, context.as_deref_mut(), arena)?;
+        let default = Option::<ExprRef>::decode(reader, context.as_deref_mut(), arena)?;
+
+        let display_type = match Option::<Arc<str>>::decode(reader, context, arena) {
+            Ok(dt) => dt,
+            Err(DatabaseError::IO(e)) if e.kind() == std::io::ErrorKind::UnexpectedEof => None,
+            Err(e) => return Err(e),
+        };
+
+        Ok(ColumnDesc {
+            column_datatype,
+            primary,
+            is_unique,
+            default,
+            display_type,
+        })
+    }
+}
+
+#[cfg(all(test, not(target_arch = "wasm32")))]
+#[maybe_async]
+mod backward_compatibility_tests {
+    use super::{ColumnDesc, LogicalType};
+    use crate::errors::DatabaseError;
+    use crate::planner::{PlanArena, TableArenaCell};
+    use crate::serdes::ReferenceSerialization as _;
+
+    #[test]
+    fn test_column_desc_without_display_type() -> Result<(), DatabaseError> {
+        use crate::storage::TestTransaction;
+
+        let table_arena = TableArenaCell::default();
+        let mut arena = PlanArena::new(&table_arena);
+
+        let old_desc = ColumnDesc::new(LogicalType::Integer, Some(0), false, None)?;
+
+        let mut encode_buf = Vec::new();
+        old_desc.encode(&mut encode_buf, false, &arena)?;
+
+        let mut decode_cursor = &encode_buf[..];
+        let decoded: ColumnDesc =
+            ColumnDesc::decode::<TestTransaction, _, _>(&mut decode_cursor, None, &mut arena)?;
+
+        assert_eq!(decoded.column_datatype, LogicalType::Integer);
+        assert_eq!(decoded.primary, Some(0));
+        assert!(!decoded.is_unique);
+        assert_eq!(decoded.default, None);
+        assert!(decoded.display_type.is_none());
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_column_desc_with_display_type() -> Result<(), DatabaseError> {
+        use crate::storage::TestTransaction;
+
+        let table_arena = TableArenaCell::default();
+        let mut arena = PlanArena::new(&table_arena);
+
+        let new_desc = ColumnDesc::new(LogicalType::Integer, None, false, None)?
+            .with_display_type(Some("custom_int".into()));
+
+        let mut encode_buf = Vec::new();
+        new_desc.encode(&mut encode_buf, false, &arena)?;
+
+        let mut decode_cursor = &encode_buf[..];
+        let decoded: ColumnDesc =
+            ColumnDesc::decode::<TestTransaction, _, _>(&mut decode_cursor, None, &mut arena)?;
+
+        assert_eq!(decoded.column_datatype, LogicalType::Integer);
+        assert_eq!(decoded.display_type.as_deref(), Some("custom_int"));
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_old_format_bytes_decode() -> Result<(), DatabaseError> {
+        use crate::storage::TestTransaction;
+
+        let table_arena = TableArenaCell::default();
+        let mut arena = PlanArena::new(&table_arena);
+
+        let old_desc_no_display = ColumnDesc {
+            column_datatype: LogicalType::Bigint,
+            primary: None,
+            is_unique: true,
+            default: None,
+            display_type: None,
+        };
+
+        let mut old_format_bytes = Vec::new();
+        old_desc_no_display
+            .column_datatype
+            .encode(&mut old_format_bytes, false, &arena)?;
+        old_desc_no_display
+            .primary
+            .encode(&mut old_format_bytes, false, &arena)?;
+        old_desc_no_display
+            .is_unique
+            .encode(&mut old_format_bytes, false, &arena)?;
+        old_desc_no_display
+            .default
+            .encode(&mut old_format_bytes, false, &arena)?;
+
+        let mut decode_cursor = &old_format_bytes[..];
+        let decoded: ColumnDesc =
+            ColumnDesc::decode::<TestTransaction, _, _>(&mut decode_cursor, None, &mut arena)?;
+
+        assert_eq!(decoded.column_datatype, LogicalType::Bigint);
+        assert_eq!(decoded.primary, None);
+        assert!(decoded.is_unique);
+        assert_eq!(decoded.default, None);
+        assert!(decoded.display_type.is_none());
+
+        Ok(())
     }
 }

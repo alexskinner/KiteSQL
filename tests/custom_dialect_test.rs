@@ -15,7 +15,7 @@
 //! Test that custom dialects defined in external crates can map types and change parsing.
 
 use kite_sql::db::DataBaseBuilder;
-use kite_sql::dialect::{ColumnTypeSpec, SqlDialect};
+use kite_sql::dialect::SqlDialect;
 use kite_sql::errors::DatabaseError;
 use kite_sql::types::{CharLengthUnits, LogicalType};
 use sqlparser::ast::{DataType, Ident, ObjectName, Statement};
@@ -68,15 +68,12 @@ impl SqlDialect for ToyDialect {
         &self.parser
     }
 
-    fn map_data_type(&self, data_type: &DataType) -> Option<Result<ColumnTypeSpec, DatabaseError>> {
+    fn map_data_type(&self, data_type: &DataType) -> Option<Result<LogicalType, DatabaseError>> {
         match data_type {
             DataType::Custom(name, _) if name.0.len() == 1 => {
                 if let sqlparser::ast::ObjectNamePart::Identifier(ident) = &name.0[0] {
                     if ident.value.to_lowercase() == "customtext" {
-                        return Some(Ok(ColumnTypeSpec::new(LogicalType::Varchar(
-                            None,
-                            CharLengthUnits::Characters,
-                        ))));
+                        return Some(Ok(LogicalType::Varchar(None, CharLengthUnits::Characters)));
                     }
                 }
                 None
@@ -210,7 +207,7 @@ fn test_generic_dialect_unchanged() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(
         id_row[1],
-        kite_sql::types::value::DataValue::from("int".to_string())
+        kite_sql::types::value::DataValue::from("Integer".to_string())
     );
 
     let name_row = result.next_tuple(|_, row| row.clone())?.unwrap();
@@ -220,7 +217,7 @@ fn test_generic_dialect_unchanged() -> Result<(), Box<dyn std::error::Error>> {
     );
     assert_eq!(
         name_row[1],
-        kite_sql::types::value::DataValue::from("varchar(50)".to_string())
+        kite_sql::types::value::DataValue::from("Varchar(Some(50), CHARACTERS)".to_string())
     );
 
     result.done()?;

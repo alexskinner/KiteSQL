@@ -38,8 +38,16 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
     fn map_data_type(
         &self,
         _data_type: &sqlparser::ast::DataType,
-    ) -> Option<Result<ColumnTypeSpec, DatabaseError>> {
+    ) -> Option<Result<crate::types::LogicalType, DatabaseError>> {
         None
+    }
+
+    fn map_column_type(
+        &self,
+        data_type: &sqlparser::ast::DataType,
+    ) -> Option<Result<ColumnTypeSpec, DatabaseError>> {
+        self.map_data_type(data_type)
+            .map(|result| result.map(ColumnTypeSpec::new))
     }
 }
 

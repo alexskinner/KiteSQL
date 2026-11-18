@@ -1873,19 +1873,13 @@ pub(crate) fn data_type_to_column_type_spec(
 ) -> Result<crate::dialect::ColumnTypeSpec, DatabaseError> {
     use crate::dialect::ColumnTypeSpec;
 
-    let display_name = data_type_display_name(&data_type);
-
     #[cfg(feature = "parser")]
-    if let Some(result) = dialect.map_data_type(&data_type) {
+    if let Some(result) = dialect.map_column_type(&data_type) {
         return result;
     }
 
     let logical = data_type_to_logical_type_inner(data_type)?;
-    Ok(ColumnTypeSpec::new(logical).with_display(display_name))
-}
-
-fn data_type_display_name(data_type: &DataType) -> String {
-    data_type.to_string().to_lowercase()
+    Ok(ColumnTypeSpec::new(logical))
 }
 
 fn data_type_to_logical_type_inner(data_type: DataType) -> Result<LogicalType, DatabaseError> {
