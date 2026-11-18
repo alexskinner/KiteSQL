@@ -116,7 +116,7 @@ macro_rules! scala_function {
             }
 
             fn monotonicity(&self) -> Option<::kite_sql::expression::function::scala::FuncMonotonicity> {
-                todo!()
+                None
             }
 
             fn return_type(&self) -> &::kite_sql::types::LogicalType {

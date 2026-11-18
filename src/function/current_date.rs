@@ -55,7 +55,7 @@ impl ScalarFunctionImpl for CurrentDate {
     }
 
     fn monotonicity(&self) -> Option<FuncMonotonicity> {
-        todo!()
+        None
     }
 
     fn return_type(&self) -> &LogicalType {

@@ -70,7 +70,7 @@ impl ScalarFunctionImpl for OctetLength {
     }
 
     fn monotonicity(&self) -> Option<FuncMonotonicity> {
-        todo!()
+        None
     }
 
     // Must match what `eval` produces (see char_length).

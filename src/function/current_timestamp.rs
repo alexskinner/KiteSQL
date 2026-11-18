@@ -55,7 +55,7 @@ impl ScalarFunctionImpl for CurrentTimeStamp {
     }
 
     fn monotonicity(&self) -> Option<FuncMonotonicity> {
-        todo!()
+        None
     }
 
     fn return_type(&self) -> &LogicalType {
