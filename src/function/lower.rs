@@ -38,6 +38,7 @@ impl Lower {
             summary: FunctionSummary {
                 name: function_name.into(),
                 arg_types,
+                persistence: crate::expression::function::PersistencePolicy::Durable,
             },
         })
     }
@@ -69,7 +70,7 @@ impl ScalarFunctionImpl for Lower {
     }
 
     fn monotonicity(&self) -> Option<FuncMonotonicity> {
-        todo!()
+        None
     }
 
     fn return_type(&self) -> &LogicalType {

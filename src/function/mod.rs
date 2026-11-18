@@ -14,6 +14,7 @@
 
 pub(crate) mod abs;
 pub(crate) mod char_length;
+pub(crate) mod core;
 #[cfg(feature = "time")]
 pub(crate) mod current_date;
 #[cfg(feature = "time")]
@@ -21,4 +22,6 @@ pub(crate) mod current_timestamp;
 pub(crate) mod lower;
 pub(crate) mod numbers;
 pub(crate) mod octet_length;
+pub mod pack;
+pub mod registry;
 pub(crate) mod upper;

@@ -36,6 +36,7 @@ impl Abs {
             summary: FunctionSummary {
                 name: "abs".into(),
                 arg_types: vec![ty.clone()],
+                persistence: crate::expression::function::PersistencePolicy::Durable,
             },
             return_type: ty,
         })

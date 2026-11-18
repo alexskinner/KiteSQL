@@ -15,7 +15,6 @@
 use crate::errors::DatabaseError;
 use crate::expression;
 use crate::expression::agg::AggKind;
-use crate::iter_ext::Itertools;
 
 use super::{Binder, BinderContext, BoundScalarQuery, QueryBindStep, SubQueryType};
 use crate::expression::function::scala::{ArcScalarFunctionImpl, ScalarFunction};
@@ -644,24 +643,42 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
             }
             _ => (),
         }
-        let arg_types = args
+        let arg_type_refs: Vec<_> = args
             .iter()
             .map(|arg| arg.return_type(arena).into_owned())
-            .collect_vec();
+            .collect();
+
+        match self
+            .context
+            .function_registry
+            .resolve_scalar(function_name.as_str(), &arg_type_refs)
+        {
+            Ok(function) => {
+                return Ok(ScalarExpression::ScalaFunction(ScalarFunction {
+                    args,
+                    inner: ArcScalarFunctionImpl(function),
+                }));
+            }
+            Err(DatabaseError::AmbiguousFunction { .. }) => {
+                // Propagate ambiguous function error
+                return Err(self
+                    .context
+                    .function_registry
+                    .resolve_scalar(function_name.as_str(), &arg_type_refs)
+                    .unwrap_err());
+            }
+            Err(_) => {
+                // Continue to check for table functions
+            }
+        }
+
         let summary = FunctionSummary {
             name: function_name.into(),
-            arg_types,
+            arg_types: arg_type_refs,
+            persistence: crate::expression::function::PersistencePolicy::Durable,
         };
-        // TODO: a NULL literal argument has type `SqlNull`, so the exact lookup
-        // misses e.g. `upper(null)` (FunctionNotFound). PostgreSQL treats it as
-        // an unknown type that matches any parameter and returns NULL.
-        if let Some(function) = self.context.scala_functions.get(&summary) {
-            return Ok(ScalarExpression::ScalaFunction(ScalarFunction {
-                args,
-                inner: ArcScalarFunctionImpl(function.clone()),
-            }));
-        }
-        if let Some(function) = self.context.table_functions.get(&summary) {
+
+        if let Some(function) = self.context.function_registry.get_table(&summary) {
             if !matches!(self.context.step_now(), QueryBindStep::From) {
                 return Err(DatabaseError::UnsupportedStmt(
                     "`TableFunction` cannot bind in non-From step".to_string(),
@@ -669,7 +686,7 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
             }
             return Ok(ScalarExpression::TableFunction(TableFunction {
                 args,
-                catalog: function.clone(),
+                catalog: (**function).clone(),
             }));
         }
 

@@ -60,6 +60,10 @@ fn format_not_null_message(column: &Option<String>, span: &Option<SqlErrorSpan>)
 pub enum DatabaseError {
     AggMiss(String),
     AmbiguousColumn(String),
+    AmbiguousFunction {
+        name: String,
+        candidates: Vec<String>,
+    },
     CacheSizeOverFlow,
     CastFail {
         from: LogicalType,
@@ -82,6 +86,7 @@ pub enum DatabaseError {
     DuplicateTableName(String),
     DuplicatePrimaryKey,
     DuplicateUniqueValue,
+    FunctionAlreadyExists(String),
     FunctionNotFound {
         name: String,
         span: Option<SqlErrorSpan>,
@@ -158,6 +163,12 @@ impl fmt::Display for DatabaseError {
         match self {
             Self::AggMiss(value) => write!(f, "agg miss: {value}"),
             Self::AmbiguousColumn(value) => write!(f, "column: `{value}` is ambiguous"),
+            Self::AmbiguousFunction { name, candidates } => write!(
+                f,
+                "function: `{}` is ambiguous, candidates: {}",
+                name,
+                candidates.join(", ")
+            ),
             Self::CacheSizeOverFlow => f.write_str("cache size overflow"),
             Self::CastFail { from, to, span } => {
                 write!(f, "cast fail: {from} -> {to}{}", format_sql_error_loc(span))
@@ -186,6 +197,9 @@ impl fmt::Display for DatabaseError {
             Self::DuplicatePrimaryKey => f.write_str("duplicate primary key"),
             Self::DuplicateUniqueValue => {
                 f.write_str("the column has been declared unique and the value already exists")
+            }
+            Self::FunctionAlreadyExists(name) => {
+                write!(f, "function: `{name}` already exists")
             }
             Self::FunctionNotFound { name, span } => {
                 write!(

@@ -1,0 +1,55 @@
+# Test DDL operations on tables with function DEFAULT expressions
+# This test covers CREATE INDEX, DROP INDEX, ALTER ADD COLUMN, ALTER DROP COLUMN,
+# and SET/DROP DEFAULT on tables with function defaults like current_timestamp.
+
+statement ok
+CREATE TABLE t1 ( id int primary key, d timestamp default current_timestamp, v int )
+
+statement ok
+INSERT INTO t1 ( id, v ) VALUES ( 1, 10 )
+
+# CREATE INDEX should work with function defaults
+statement ok
+CREATE INDEX ix_v ON t1 ( v )
+
+# Verify the index was created and data is accessible
+query II
+SELECT id, v FROM t1 WHERE v = 10
+----
+1 10
+
+# DROP INDEX should work
+statement ok
+DROP INDEX ix_v ON t1
+
+# ALTER TABLE ADD COLUMN with function default
+statement ok
+ALTER TABLE t1 ADD COLUMN ts timestamp default current_timestamp
+
+# Verify column was added
+query I
+SELECT id FROM t1 WHERE id = 1
+----
+1
+
+# ALTER TABLE DROP COLUMN
+statement ok
+ALTER TABLE t1 DROP COLUMN ts
+
+# ALTER TABLE SET DEFAULT with function
+statement ok
+ALTER TABLE t1 ALTER COLUMN d SET DEFAULT current_timestamp
+
+# ALTER TABLE DROP DEFAULT
+statement ok
+ALTER TABLE t1 ALTER COLUMN d DROP DEFAULT
+
+# Recreate index to verify it still works after ALTER operations
+statement ok
+CREATE INDEX ix_v2 ON t1 ( v )
+
+statement ok
+DROP INDEX ix_v2 ON t1
+
+statement ok
+DROP TABLE t1
