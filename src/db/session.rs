@@ -119,7 +119,7 @@ impl<'db, S: Storage> Session<'db, S> {
     async fn execute_regular_statement(
         &mut self,
         statement: Statement,
-        ) -> Result<(), DatabaseError> {
+    ) -> Result<(), DatabaseError> {
         if let Some(txn) = &mut self.active_transaction {
             Self::execute_in_transaction_and_drain(txn, &statement).await
         } else if self.autocommit {
