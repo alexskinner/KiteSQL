@@ -264,6 +264,8 @@ pub struct BinderContext<'a, T: StorageTransaction> {
     pub(crate) table_cache: &'a TableCache,
     pub(crate) view_cache: &'a ViewCache,
     pub(crate) transaction: &'a T,
+    #[cfg(feature = "parser")]
+    pub(crate) dialect: &'a dyn crate::dialect::SqlDialect,
     // Tips: retain binding order so wildcard expansion and position derivation
     // follow FROM/JOIN order directly.
     pub(crate) bind_table: Vec<BoundSource<'a>>,
@@ -331,6 +333,7 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
         view_cache: &'a ViewCache,
         transaction: &'a T,
         function_registry: &'a crate::function::registry::FunctionRegistry,
+        #[cfg(feature = "parser")] dialect: &'a dyn crate::dialect::SqlDialect,
     ) -> Self {
         BinderContext {
             function_registry,
@@ -338,6 +341,8 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
             table_cache,
             view_cache,
             transaction,
+            #[cfg(feature = "parser")]
+            dialect,
             bind_table: Default::default(),
             name_bindings: Vec::new(),
             source_scope_start: 0,
@@ -368,6 +373,8 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
             table_cache: self.table_cache,
             view_cache: self.view_cache,
             transaction: self.transaction,
+            #[cfg(feature = "parser")]
+            dialect: self.dialect,
             bind_table: self.bind_table.clone(),
             name_bindings: self.name_bindings.clone(),
             source_scope_start: self.bind_table.len(),
@@ -398,6 +405,8 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
             self.view_cache,
             self.transaction,
             self.function_registry,
+            #[cfg(feature = "parser")]
+            self.dialect,
         );
         context.ctes = self.ctes.clone();
         context.cte_depth = self.cte_depth;
@@ -824,6 +833,8 @@ pub mod test {
             let function_registry = crate::function::registry::FunctionRegistry::new();
             let transaction = self.storage.transaction()?;
             let arena = self.table_arena.borrow();
+            #[cfg(feature = "parser")]
+            let generic_dialect = crate::dialect::GenericSqlDialect::new();
             let mut binder = Binder::new(
                 BinderContext::new(
                     &arena.names,
@@ -831,6 +842,8 @@ pub mod test {
                     &arena.views,
                     &transaction,
                     &function_registry,
+                    #[cfg(feature = "parser")]
+                    &generic_dialect,
                 ),
                 &[],
                 None,
@@ -937,12 +950,16 @@ pub mod test {
         let plan_arena = PlanArena::new(&state.table_arena);
         let transaction = state.storage.transaction()?;
         let function_registry = crate::function::registry::FunctionRegistry::new();
+        #[cfg(feature = "parser")]
+        let generic_dialect = crate::dialect::GenericSqlDialect::new();
         let mut context = BinderContext::new(
             &arena.names,
             &arena.tables,
             &arena.views,
             &transaction,
             &function_registry,
+            #[cfg(feature = "parser")]
+            &generic_dialect,
         );
         let c1 = state.table.get_column_by_name("c1").unwrap();
         let c2 = state.table.get_column_by_name("c2").unwrap();

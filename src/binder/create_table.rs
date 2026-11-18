@@ -82,6 +82,8 @@ mod tests {
         let function_registry = crate::function::registry::FunctionRegistry::new();
 
         let sql = "create table t1 (id int primary key, name varchar(10) null)";
+        #[cfg(feature = "parser")]
+        let generic_dialect = crate::dialect::GenericSqlDialect::new();
         let mut binder = Binder::new(
             BinderContext::new(
                 &names,
@@ -89,6 +91,8 @@ mod tests {
                 &view_cache,
                 &transaction,
                 &function_registry,
+                #[cfg(feature = "parser")]
+                &generic_dialect,
             ),
             &[],
             None,

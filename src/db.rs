@@ -600,6 +600,9 @@ impl DataBaseBuilder {
             pack.install(&mut function_registry)?;
         }
 
+        #[cfg(feature = "parser")]
+        let default_dialect = dialect_registry.default_dialect();
+
         let state = State {
             function_registry,
             meta_cache,
@@ -611,6 +614,8 @@ impl DataBaseBuilder {
             parser_recursion_limit,
             #[cfg(feature = "parser")]
             dialect_registry,
+            #[cfg(feature = "parser")]
+            default_dialect,
             _p: Default::default(),
         };
 
@@ -856,6 +861,8 @@ pub(crate) struct State<S> {
     parser_recursion_limit: Option<usize>,
     #[cfg(feature = "parser")]
     dialect_registry: crate::dialect::DialectRegistry,
+    #[cfg(feature = "parser")]
+    default_dialect: Arc<dyn crate::dialect::SqlDialect>,
     _p: PhantomData<S>,
 }
 
@@ -868,6 +875,11 @@ impl<S: Storage> State<S> {
     #[cfg(feature = "parser")]
     pub(crate) fn dialect_registry(&self) -> &crate::dialect::DialectRegistry {
         &self.dialect_registry
+    }
+
+    #[cfg(feature = "parser")]
+    pub(crate) fn dialect(&self) -> &dyn crate::dialect::SqlDialect {
+        self.default_dialect.as_ref()
     }
 
     pub(crate) fn function_registry(&self) -> &FunctionRegistry {
@@ -970,6 +982,8 @@ impl<S: Storage> State<S> {
                 self.view_cache(),
                 transaction,
                 self.function_registry(),
+                #[cfg(feature = "parser")]
+                self.dialect(),
             ),
             &params,
             None,
@@ -1045,6 +1059,8 @@ impl<S: Storage> State<S> {
                 &arena.views,
                 transaction,
                 &self.function_registry,
+                #[cfg(feature = "parser")]
+                self.dialect(),
             ),
             &params,
             None,
@@ -2517,6 +2533,8 @@ pub(crate) mod test {
                 kite_sql.state.view_cache(),
                 &transaction,
                 kite_sql.state.function_registry(),
+                #[cfg(feature = "parser")]
+                kite_sql.state.dialect(),
             ),
             &[],
             None,
@@ -2606,6 +2624,8 @@ pub(crate) mod test {
                 kite_sql.state.view_cache(),
                 &transaction,
                 kite_sql.state.function_registry(),
+                #[cfg(feature = "parser")]
+                kite_sql.state.dialect(),
             ),
             &[],
             None,
@@ -3764,88 +3784,6 @@ pub(crate) mod test {
 
     #[cfg(feature = "parser")]
     #[test]
-    fn test_dialect_selection() -> Result<(), DatabaseError> {
-        let builder = DataBaseBuilder::path(".").default_dialect("mysql")?;
-        let database = builder.build_in_memory()?;
-
-        let statement_generic = database.state.prepare_all("SELECT * FROM `table`");
-        assert!(statement_generic.is_ok());
-
-        Ok(())
-    }
-
-    #[cfg(feature = "parser")]
-    #[test]
-    fn test_mysql_backtick_identifiers() -> Result<(), DatabaseError> {
-        let mut database_mysql = DataBaseBuilder::path(".")
-            .default_dialect("mysql")?
-            .build_in_memory()?;
-
-        database_mysql.ddl("CREATE TABLE `my_table` (`id` INT PRIMARY KEY, `name` VARCHAR(50))")?;
-        database_mysql
-            .run("INSERT INTO `my_table` VALUES (1, 'test')")?
-            .done()?;
-
-        let mut result = database_mysql.run("SELECT `id`, `name` FROM `my_table`")?;
-        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
-        assert_eq!(row[0], DataValue::Int32(1));
-        assert_eq!(row[1], DataValue::from("test".to_string()));
-        result.done()?;
-
-        Ok(())
-    }
-
-    #[cfg(feature = "parser")]
-    #[test]
-    fn test_mysql_limit_offset_comma_syntax() -> Result<(), DatabaseError> {
-        let mut database_mysql = DataBaseBuilder::path(".")
-            .default_dialect("mysql")?
-            .build_in_memory()?;
-
-        database_mysql.ddl("CREATE TABLE test_table (id INT PRIMARY KEY, value INT)")?;
-        for i in 1..=10 {
-            database_mysql
-                .run(format!("INSERT INTO test_table VALUES ({}, {})", i, i * 10))?
-                .done()?;
-        }
-
-        let mut result = database_mysql.run("SELECT id FROM test_table ORDER BY id LIMIT 2, 3")?;
-        let row1 = result.next_tuple(|_, row| row.clone())?.unwrap();
-        assert_eq!(row1[0], DataValue::Int32(3));
-        let row2 = result.next_tuple(|_, row| row.clone())?.unwrap();
-        assert_eq!(row2[0], DataValue::Int32(4));
-        let row3 = result.next_tuple(|_, row| row.clone())?.unwrap();
-        assert_eq!(row3[0], DataValue::Int32(5));
-        assert!(result.next_tuple(|_, _| ())?.is_none());
-        result.done()?;
-
-        Ok(())
-    }
-
-    #[cfg(feature = "parser")]
-    #[test]
-    fn test_generic_dialect_rejects_mysql_comment_syntax() -> Result<(), DatabaseError> {
-        let database_generic = DataBaseBuilder::path(".").build_in_memory()?;
-        let database_mysql = DataBaseBuilder::path(".")
-            .default_dialect("mysql")?
-            .build_in_memory()?;
-
-        let generic_result = database_generic
-            .state
-            .prepare_all("SELECT 1 # MySQL comment");
-        assert!(generic_result.is_err());
-
-        let mysql_result = database_mysql.state.prepare_all("SELECT 1 # MySQL comment");
-        assert!(mysql_result.is_ok());
-
-        let generic_result2 = database_generic.state.prepare_all("SELECT 1 -- comment\n");
-        assert!(generic_result2.is_ok());
-
-        Ok(())
-    }
-
-    #[cfg(feature = "parser")]
-    #[test]
     fn test_unknown_dialect_error() -> Result<(), DatabaseError> {
         let result = DataBaseBuilder::path(".").default_dialect("unknown");
 
@@ -3859,58 +3797,42 @@ pub(crate) mod test {
 
     #[cfg(feature = "parser")]
     #[test]
-    fn test_run_statement_with_preparsed() -> Result<(), DatabaseError> {
-        use crate::parser::parse_sql_with_dialect;
-        use sqlparser::dialect::MySqlDialect;
+    fn test_mysql_dialect_requires_registration() {
+        // Attempting to use MySQL dialect without registering it should give a clear error
+        let result = DataBaseBuilder::path(".").default_dialect("mysql");
 
-        let mut database = DataBaseBuilder::path(".")
-            .default_dialect("mysql")?
-            .build_in_memory()?;
-
-        database.ddl("CREATE TABLE `test_preparsed` (`id` INT PRIMARY KEY, `val` INT)")?;
-        database
-            .run("INSERT INTO `test_preparsed` VALUES (1, 100), (2, 200)")?
-            .done()?;
-
-        let dialect = MySqlDialect {};
-        let statements = parse_sql_with_dialect(
-            "SELECT `id`, `val` FROM `test_preparsed` WHERE `id` = 1",
-            &dialect,
-        )?;
-        let statement = statements.into_iter().next().unwrap();
-
-        let mut result = database.run_statement(statement)?;
-        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
-        assert_eq!(row[0], DataValue::Int32(1));
-        assert_eq!(row[1], DataValue::Int32(100));
-        result.done()?;
-
-        Ok(())
+        assert!(result.is_err());
+        if let Err(DatabaseError::UnsupportedStmt(msg)) = result {
+            assert!(
+                msg.contains("unknown dialect") || msg.contains("mysql"),
+                "Error message should mention unknown dialect or mysql: {}",
+                msg
+            );
+        } else {
+            panic!("Expected UnsupportedStmt error for unregistered MySQL dialect");
+        }
     }
 
     #[cfg(feature = "parser")]
     #[test]
-    fn test_run_mut_statement_with_ddl() -> Result<(), DatabaseError> {
-        use crate::parser::parse_sql_with_dialect;
-        use sqlparser::dialect::MySqlDialect;
+    fn test_generic_dialect_rejects_mysql_comment_syntax() -> Result<(), DatabaseError> {
+        let database_generic = DataBaseBuilder::path(".").build_in_memory()?;
 
-        let mut database = DataBaseBuilder::path(".")
-            .default_dialect("mysql")?
-            .build_in_memory()?;
+        // Generic dialect should reject MySQL's `#` comment syntax
+        let generic_result = database_generic
+            .state
+            .prepare_all("SELECT 1 # MySQL comment");
+        assert!(
+            generic_result.is_err(),
+            "Generic dialect should reject MySQL # comments"
+        );
 
-        let dialect = MySqlDialect {};
-        let statements =
-            parse_sql_with_dialect("CREATE TABLE `ddl_test` (`id` INT PRIMARY KEY)", &dialect)?;
-        let statement = statements.into_iter().next().unwrap();
-
-        database.run_mut_statement(statement, ()).await?;
-
-        database.run("INSERT INTO `ddl_test` VALUES (1)")?.done()?;
-
-        let mut result = database.run("SELECT `id` FROM `ddl_test`")?;
-        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
-        assert_eq!(row[0], DataValue::Int32(1));
-        result.done()?;
+        // Generic dialect should accept standard SQL comments
+        let generic_result2 = database_generic.state.prepare_all("SELECT 1 -- comment\n");
+        assert!(
+            generic_result2.is_ok(),
+            "Generic dialect should accept standard -- comments"
+        );
 
         Ok(())
     }

@@ -78,13 +78,13 @@ wasm-build:
 test-wasm:
 	$(WASM_PACK) test --node -- --features wasm --package kite_sql --lib
 
-## Run the sqllogictest harness against the configured .slt suite.
+## Run the sqllogictest harness against all .slt suites (core + MySQL by default).
 test-slt:
-	$(CARGO) run -p sqllogictest-test -- --path '$(SQLLOGIC_PATH)'
+	$(CARGO) run -p sqllogictest-test
 
 ## Run the sqllogictest suite through the async path, over SlateDB (in-memory object store).
 test-slt-async:
-	$(CARGO) run -p sqllogictest-test --no-default-features --features async -- --path '$(SQLLOGIC_PATH)'
+	$(CARGO) run -p sqllogictest-test --no-default-features --features async
 
 .PHONY: test-slt-sqlite
 
@@ -102,7 +102,7 @@ codecov:
 		rm -rf '$(COVERAGE_PROFILE_DIR)' '$(CODECOV_OUTPUT)'; \
 		mkdir -p '$(COVERAGE_PROFILE_DIR)'; \
 		CARGO_INCREMENTAL=0 RUSTFLAGS=\"$${RUSTFLAGS:-} $(COVERAGE_RUSTFLAGS)\" LLVM_PROFILE_FILE='$(COVERAGE_PROFILE_DIR)/kitesql-%p-%m.profraw' $(CARGO) test --all --features '$(COVERAGE_TEST_FEATURES)'; \
-		CARGO_INCREMENTAL=0 RUSTFLAGS=\"$${RUSTFLAGS:-} $(COVERAGE_RUSTFLAGS)\" LLVM_PROFILE_FILE='$(COVERAGE_PROFILE_DIR)/kitesql-%p-%m.profraw' $(CARGO) run -p sqllogictest-test -- --path '$(SQLLOGIC_PATH)'; \
+		CARGO_INCREMENTAL=0 RUSTFLAGS=\"$${RUSTFLAGS:-} $(COVERAGE_RUSTFLAGS)\" LLVM_PROFILE_FILE='$(COVERAGE_PROFILE_DIR)/kitesql-%p-%m.profraw' $(CARGO) run -p sqllogictest-test; \
 		$(GRCOV) . --binary-path \"$${CARGO_TARGET_DIR:-target}/debug\" -s . -t lcov $(COVERAGE_REPORT_ARGS) -o '$(CODECOV_OUTPUT)'"
 
 ## Generate a local HTML coverage report.
@@ -112,7 +112,7 @@ codecov-html:
 		rm -rf '$(COVERAGE_PROFILE_DIR)' '$(COVERAGE_HTML_DIR)'; \
 		mkdir -p '$(COVERAGE_PROFILE_DIR)' '$(COVERAGE_HTML_DIR)'; \
 		CARGO_INCREMENTAL=0 RUSTFLAGS=\"$${RUSTFLAGS:-} $(COVERAGE_RUSTFLAGS)\" LLVM_PROFILE_FILE='$(COVERAGE_PROFILE_DIR)/kitesql-%p-%m.profraw' $(CARGO) test --all --features '$(COVERAGE_TEST_FEATURES)'; \
-		CARGO_INCREMENTAL=0 RUSTFLAGS=\"$${RUSTFLAGS:-} $(COVERAGE_RUSTFLAGS)\" LLVM_PROFILE_FILE='$(COVERAGE_PROFILE_DIR)/kitesql-%p-%m.profraw' $(CARGO) run -p sqllogictest-test -- --path '$(SQLLOGIC_PATH)'; \
+		CARGO_INCREMENTAL=0 RUSTFLAGS=\"$${RUSTFLAGS:-} $(COVERAGE_RUSTFLAGS)\" LLVM_PROFILE_FILE='$(COVERAGE_PROFILE_DIR)/kitesql-%p-%m.profraw' $(CARGO) run -p sqllogictest-test; \
 		$(GRCOV) . --binary-path \"$${CARGO_TARGET_DIR:-target}/debug\" -s . -t html $(COVERAGE_REPORT_ARGS) -o '$(COVERAGE_HTML_DIR)'"
 	@echo "Coverage report: $(COVERAGE_HTML_DIR)/index.html"
 

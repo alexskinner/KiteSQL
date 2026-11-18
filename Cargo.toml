@@ -122,6 +122,7 @@ members = [
   "tests/sqllogictest",
   "tests/macros-test",
   "kite_sql_serde_macros",
+  "kite_sql_mysql",
   "tpcc"]
 
 [profile.release]

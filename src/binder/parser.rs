@@ -632,7 +632,11 @@ where
                             ));
                         }
                         (
-                            LogicalType::try_from(data_type)?,
+                            data_type_to_logical_type(
+                                data_type,
+                                #[cfg(feature = "parser")]
+                                self.binder.context.dialect,
+                            )?,
                             DefaultChange::NoChange,
                             NotNullChange::NoChange,
                         )
@@ -698,7 +702,11 @@ where
                         })?;
                 }
                 let old_column_name = old_column_name.into_owned();
-                let data_type = LogicalType::try_from(data_type)?;
+                let data_type = data_type_to_logical_type(
+                    data_type,
+                    #[cfg(feature = "parser")]
+                    self.binder.context.dialect,
+                )?;
                 let (default_change, not_null_change) =
                     self.bind_change_column_options(options, &data_type)?;
 
@@ -743,7 +751,11 @@ where
                         "illegal column naming".to_string(),
                     ));
                 }
-                let data_type = LogicalType::try_from(data_type)?;
+                let data_type = data_type_to_logical_type(
+                    data_type,
+                    #[cfg(feature = "parser")]
+                    self.binder.context.dialect,
+                )?;
                 let (default_change, not_null_change) =
                     self.bind_change_column_options(options, &data_type)?;
 
@@ -891,7 +903,11 @@ where
     ) -> Result<ColumnCatalog, DatabaseError> {
         let column_name = lower_ident(&column_def.name).into_owned();
         let mut column_desc = ColumnDesc::new(
-            LogicalType::try_from(column_def.data_type)?,
+            data_type_to_logical_type(
+                column_def.data_type,
+                #[cfg(feature = "parser")]
+                self.binder.context.dialect,
+            )?,
             None,
             false,
             None,
@@ -1820,210 +1836,230 @@ impl TryFrom<&Value> for DataValue {
     }
 }
 
+pub(crate) fn data_type_to_logical_type(
+    data_type: DataType,
+    #[cfg(feature = "parser")] dialect: &dyn crate::dialect::SqlDialect,
+) -> Result<LogicalType, DatabaseError> {
+    #[cfg(feature = "parser")]
+    if let Some(result) = dialect.map_data_type(&data_type) {
+        return result;
+    }
+
+    match data_type {
+        DataType::Char(char_len) | DataType::Character(char_len) => {
+            let mut len = 1;
+            let mut char_unit = None;
+            if let Some(char_len) = char_len {
+                match char_len {
+                    sqlparser::ast::CharacterLength::IntegerLength { length, unit } => {
+                        len = cmp::max(len, length);
+                        char_unit = unit;
+                    }
+                    sqlparser::ast::CharacterLength::Max => {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "CHAR(MAX) is not supported".to_string(),
+                        ));
+                    }
+                }
+            }
+            Ok(LogicalType::Char(
+                len as u32,
+                char_unit
+                    .map(Into::into)
+                    .unwrap_or(CharLengthUnits::Characters),
+            ))
+        }
+        DataType::CharVarying(varchar_len)
+        | DataType::CharacterVarying(varchar_len)
+        | DataType::Varchar(varchar_len) => {
+            let mut len = None;
+            let mut char_unit = None;
+            if let Some(varchar_len) = varchar_len {
+                match varchar_len {
+                    sqlparser::ast::CharacterLength::IntegerLength { length, unit } => {
+                        len = Some(length as u32);
+                        char_unit = unit;
+                    }
+                    sqlparser::ast::CharacterLength::Max => {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "VARCHAR(MAX) is not supported".to_string(),
+                        ));
+                    }
+                }
+            }
+            Ok(LogicalType::Varchar(
+                len,
+                char_unit
+                    .map(Into::into)
+                    .unwrap_or(CharLengthUnits::Characters),
+            ))
+        }
+        DataType::Varbinary(length) => {
+            let len = match length {
+                Some(BinaryLength::IntegerLength { length }) => Some(u32::try_from(length)?),
+                None | Some(BinaryLength::Max) => None,
+            };
+            Ok(LogicalType::Varbinary(len))
+        }
+        DataType::Blob(length) | DataType::Bytes(length) => Ok(LogicalType::Varbinary(
+            length.map(u32::try_from).transpose()?,
+        )),
+        DataType::Bytea => Ok(LogicalType::Varbinary(None)),
+        DataType::String(_) | DataType::Text => {
+            Ok(LogicalType::Varchar(None, CharLengthUnits::Characters))
+        }
+        DataType::Float(_) | DataType::Float4 | DataType::Float32 | DataType::Real => {
+            Ok(LogicalType::Float)
+        }
+        DataType::Double(_) | DataType::DoublePrecision | DataType::Float8 | DataType::Float64 => {
+            Ok(LogicalType::Double)
+        }
+        DataType::TinyInt(_) => Ok(LogicalType::Tinyint),
+        DataType::TinyIntUnsigned(_) | DataType::UTinyInt => Ok(LogicalType::UTinyint),
+        DataType::SmallInt(_) | DataType::Int2(_) => Ok(LogicalType::Smallint),
+        DataType::SmallIntUnsigned(_) | DataType::Int2Unsigned(_) | DataType::USmallInt => {
+            Ok(LogicalType::USmallint)
+        }
+        DataType::Int(_) | DataType::Integer(_) | DataType::Int4(_) | DataType::Int32 => {
+            Ok(LogicalType::Integer)
+        }
+        DataType::IntUnsigned(_)
+        | DataType::IntegerUnsigned(_)
+        | DataType::Int4Unsigned(_)
+        | DataType::Unsigned
+        | DataType::UnsignedInteger
+        | DataType::UInt32 => Ok(LogicalType::UInteger),
+        DataType::BigInt(_) | DataType::Int8(_) | DataType::Int64 => Ok(LogicalType::Bigint),
+        DataType::BigIntUnsigned(_)
+        | DataType::Int8Unsigned(_)
+        | DataType::UBigInt
+        | DataType::UInt64 => Ok(LogicalType::UBigint),
+        DataType::Boolean => Ok(LogicalType::Boolean),
+        DataType::Date => {
+            #[cfg(feature = "time")]
+            {
+                Ok(LogicalType::Date)
+            }
+            #[cfg(not(feature = "time"))]
+            {
+                Err(DatabaseError::UnsupportedStmt(
+                    "time types require the `time` feature".to_string(),
+                ))
+            }
+        }
+        DataType::Datetime(precision) => {
+            #[cfg(feature = "time")]
+            {
+                if precision.is_some() {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "time's precision".to_string(),
+                    ));
+                }
+                Ok(LogicalType::DateTime)
+            }
+            #[cfg(not(feature = "time"))]
+            {
+                let _ = precision;
+                Err(DatabaseError::UnsupportedStmt(
+                    "time types require the `time` feature".to_string(),
+                ))
+            }
+        }
+        DataType::Time(precision, info) => {
+            #[cfg(feature = "time")]
+            {
+                match precision {
+                    Some(0..5) | None => (),
+                    _ => {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "time's precision must be less than 5".to_string(),
+                        ))
+                    }
+                }
+                if !matches!(info, sqlparser::ast::TimezoneInfo::None) {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "time's zone is not supported".to_string(),
+                    ));
+                }
+                Ok(LogicalType::Time(precision))
+            }
+            #[cfg(not(feature = "time"))]
+            {
+                let _ = (precision, info);
+                Err(DatabaseError::UnsupportedStmt(
+                    "time types require the `time` feature".to_string(),
+                ))
+            }
+        }
+        DataType::Timestamp(precision, info) => {
+            #[cfg(feature = "time")]
+            {
+                let mut zone = false;
+                match precision {
+                    Some(3 | 6 | 9) | None => (),
+                    _ => {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "timestamp's precision must be 3,6,9".to_string(),
+                        ))
+                    }
+                }
+                if matches!(info, sqlparser::ast::TimezoneInfo::WithTimeZone) {
+                    zone = true;
+                }
+                Ok(LogicalType::TimeStamp(precision, zone))
+            }
+            #[cfg(not(feature = "time"))]
+            {
+                let _ = (precision, info);
+                Err(DatabaseError::UnsupportedStmt(
+                    "time types require the `time` feature".to_string(),
+                ))
+            }
+        }
+        DataType::Decimal(info)
+        | DataType::DecimalUnsigned(info)
+        | DataType::Dec(info)
+        | DataType::DecUnsigned(info)
+        | DataType::Numeric(info) => {
+            #[cfg(feature = "decimal")]
+            {
+                match info {
+                    sqlparser::ast::ExactNumberInfo::None => Ok(LogicalType::Decimal(None, None)),
+                    sqlparser::ast::ExactNumberInfo::Precision(p) => {
+                        Ok(LogicalType::Decimal(Some(p as u8), None))
+                    }
+                    sqlparser::ast::ExactNumberInfo::PrecisionAndScale(p, s) => {
+                        Ok(LogicalType::Decimal(Some(p as u8), Some(s as u8)))
+                    }
+                }
+            }
+            #[cfg(not(feature = "decimal"))]
+            {
+                let _ = info;
+                Err(DatabaseError::UnsupportedStmt(
+                    "DECIMAL requires the `decimal` feature".to_string(),
+                ))
+            }
+        }
+        other => Err(DatabaseError::UnsupportedStmt(format!(
+            "unsupported data type: {other}"
+        ))),
+    }
+}
+
 impl TryFrom<DataType> for LogicalType {
     type Error = DatabaseError;
 
     fn try_from(value: DataType) -> Result<Self, Self::Error> {
-        match value {
-            DataType::Char(char_len) | DataType::Character(char_len) => {
-                let mut len = 1;
-                let mut char_unit = None;
-                if let Some(char_len) = char_len {
-                    match char_len {
-                        sqlparser::ast::CharacterLength::IntegerLength { length, unit } => {
-                            len = cmp::max(len, length);
-                            char_unit = unit;
-                        }
-                        sqlparser::ast::CharacterLength::Max => {
-                            return Err(DatabaseError::UnsupportedStmt(
-                                "CHAR(MAX) is not supported".to_string(),
-                            ));
-                        }
-                    }
-                }
-                Ok(Self::Char(
-                    len as u32,
-                    char_unit
-                        .map(Into::into)
-                        .unwrap_or(CharLengthUnits::Characters),
-                ))
-            }
-            DataType::CharVarying(varchar_len)
-            | DataType::CharacterVarying(varchar_len)
-            | DataType::Varchar(varchar_len) => {
-                let mut len = None;
-                let mut char_unit = None;
-                if let Some(varchar_len) = varchar_len {
-                    match varchar_len {
-                        sqlparser::ast::CharacterLength::IntegerLength { length, unit } => {
-                            len = Some(length as u32);
-                            char_unit = unit;
-                        }
-                        sqlparser::ast::CharacterLength::Max => {
-                            return Err(DatabaseError::UnsupportedStmt(
-                                "VARCHAR(MAX) is not supported".to_string(),
-                            ));
-                        }
-                    }
-                }
-                Ok(Self::Varchar(
-                    len,
-                    char_unit
-                        .map(Into::into)
-                        .unwrap_or(CharLengthUnits::Characters),
-                ))
-            }
-            DataType::Varbinary(length) => {
-                let len = match length {
-                    Some(BinaryLength::IntegerLength { length }) => Some(u32::try_from(length)?),
-                    None | Some(BinaryLength::Max) => None,
-                };
-                Ok(Self::Varbinary(len))
-            }
-            DataType::Blob(length) | DataType::Bytes(length) => {
-                Ok(Self::Varbinary(length.map(u32::try_from).transpose()?))
-            }
-            DataType::Bytea => Ok(Self::Varbinary(None)),
-            DataType::String(_) | DataType::Text => {
-                Ok(Self::Varchar(None, CharLengthUnits::Characters))
-            }
-            DataType::Float(_) | DataType::Float4 | DataType::Float32 | DataType::Real => {
-                Ok(Self::Float)
-            }
-            DataType::Double(_)
-            | DataType::DoublePrecision
-            | DataType::Float8
-            | DataType::Float64 => Ok(Self::Double),
-            DataType::TinyInt(_) => Ok(Self::Tinyint),
-            DataType::TinyIntUnsigned(_) | DataType::UTinyInt => Ok(Self::UTinyint),
-            DataType::SmallInt(_) | DataType::Int2(_) => Ok(Self::Smallint),
-            DataType::SmallIntUnsigned(_) | DataType::Int2Unsigned(_) | DataType::USmallInt => {
-                Ok(Self::USmallint)
-            }
-            DataType::Int(_) | DataType::Integer(_) | DataType::Int4(_) | DataType::Int32 => {
-                Ok(Self::Integer)
-            }
-            DataType::IntUnsigned(_)
-            | DataType::IntegerUnsigned(_)
-            | DataType::Int4Unsigned(_)
-            | DataType::Unsigned
-            | DataType::UnsignedInteger
-            | DataType::UInt32 => Ok(Self::UInteger),
-            DataType::BigInt(_) | DataType::Int8(_) | DataType::Int64 => Ok(Self::Bigint),
-            DataType::BigIntUnsigned(_)
-            | DataType::Int8Unsigned(_)
-            | DataType::UBigInt
-            | DataType::UInt64 => Ok(Self::UBigint),
-            DataType::Boolean => Ok(Self::Boolean),
-            DataType::Date => {
-                #[cfg(feature = "time")]
-                {
-                    Ok(Self::Date)
-                }
-                #[cfg(not(feature = "time"))]
-                {
-                    Err(DatabaseError::UnsupportedStmt(
-                        "time types require the `time` feature".to_string(),
-                    ))
-                }
-            }
-            DataType::Datetime(precision) => {
-                #[cfg(feature = "time")]
-                {
-                    if precision.is_some() {
-                        return Err(DatabaseError::UnsupportedStmt(
-                            "time's precision".to_string(),
-                        ));
-                    }
-                    Ok(Self::DateTime)
-                }
-                #[cfg(not(feature = "time"))]
-                {
-                    let _ = precision;
-                    Err(DatabaseError::UnsupportedStmt(
-                        "time types require the `time` feature".to_string(),
-                    ))
-                }
-            }
-            DataType::Time(precision, info) => {
-                #[cfg(feature = "time")]
-                {
-                    match precision {
-                        Some(0..5) | None => (),
-                        _ => {
-                            return Err(DatabaseError::UnsupportedStmt(
-                                "time's precision must be less than 5".to_string(),
-                            ))
-                        }
-                    }
-                    if !matches!(info, sqlparser::ast::TimezoneInfo::None) {
-                        return Err(DatabaseError::UnsupportedStmt(
-                            "time's zone is not supported".to_string(),
-                        ));
-                    }
-                    Ok(Self::Time(precision))
-                }
-                #[cfg(not(feature = "time"))]
-                {
-                    let _ = (precision, info);
-                    Err(DatabaseError::UnsupportedStmt(
-                        "time types require the `time` feature".to_string(),
-                    ))
-                }
-            }
-            DataType::Timestamp(precision, info) => {
-                #[cfg(feature = "time")]
-                {
-                    let mut zone = false;
-                    match precision {
-                        Some(3 | 6 | 9) | None => (),
-                        _ => {
-                            return Err(DatabaseError::UnsupportedStmt(
-                                "timestamp's precision must be 3,6,9".to_string(),
-                            ))
-                        }
-                    }
-                    if matches!(info, sqlparser::ast::TimezoneInfo::WithTimeZone) {
-                        zone = true;
-                    }
-                    Ok(Self::TimeStamp(precision, zone))
-                }
-                #[cfg(not(feature = "time"))]
-                {
-                    let _ = (precision, info);
-                    Err(DatabaseError::UnsupportedStmt(
-                        "time types require the `time` feature".to_string(),
-                    ))
-                }
-            }
-            DataType::Decimal(info)
-            | DataType::DecimalUnsigned(info)
-            | DataType::Dec(info)
-            | DataType::DecUnsigned(info)
-            | DataType::Numeric(info) => {
-                #[cfg(feature = "decimal")]
-                {
-                    match info {
-                        sqlparser::ast::ExactNumberInfo::None => Ok(Self::Decimal(None, None)),
-                        sqlparser::ast::ExactNumberInfo::Precision(p) => {
-                            Ok(Self::Decimal(Some(p as u8), None))
-                        }
-                        sqlparser::ast::ExactNumberInfo::PrecisionAndScale(p, s) => {
-                            Ok(Self::Decimal(Some(p as u8), Some(s as u8)))
-                        }
-                    }
-                }
-                #[cfg(not(feature = "decimal"))]
-                {
-                    let _ = info;
-                    Err(DatabaseError::UnsupportedStmt(
-                        "DECIMAL requires the `decimal` feature".to_string(),
-                    ))
-                }
-            }
-            other => Err(DatabaseError::UnsupportedStmt(format!(
-                "unsupported data type: {other}"
-            ))),
+        #[cfg(feature = "parser")]
+        {
+            use crate::dialect::GenericSqlDialect;
+            let generic_dialect = GenericSqlDialect::new();
+            data_type_to_logical_type(value, &generic_dialect)
+        }
+        #[cfg(not(feature = "parser"))]
+        {
+            data_type_to_logical_type(value)
         }
     }
 }
@@ -2479,13 +2515,22 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
             }
             Expr::Cast {
                 expr, data_type, ..
-            } => self
-                .bind_expr(expr, arena)?
-                .type_cast(Cow::Owned(LogicalType::try_from(data_type.clone())?), arena),
+            } => self.bind_expr(expr, arena)?.type_cast(
+                Cow::Owned(data_type_to_logical_type(
+                    data_type.clone(),
+                    #[cfg(feature = "parser")]
+                    self.context.dialect,
+                )?),
+                arena,
+            ),
             Expr::TypedString(TypedString {
                 data_type, value, ..
             }) => {
-                let logical_type = LogicalType::try_from(data_type.clone())?;
+                let logical_type = data_type_to_logical_type(
+                    data_type.clone(),
+                    #[cfg(feature = "parser")]
+                    self.context.dialect,
+                )?;
                 let raw = value.clone().into_string().ok_or_else(|| {
                     DatabaseError::InvalidValue("typed string literal must be a string".to_string())
                 })?;
@@ -3757,6 +3802,8 @@ mod tests {
         let function_registry = crate::function::registry::FunctionRegistry::new();
         let transaction = tables.storage.transaction()?;
         let arena = tables.table_arena.borrow();
+        #[cfg(feature = "parser")]
+        let generic_dialect = crate::dialect::GenericSqlDialect::new();
         let mut binder = Binder::new(
             BinderContext::new(
                 &arena.names,
@@ -3764,6 +3811,8 @@ mod tests {
                 &arena.views,
                 &transaction,
                 &function_registry,
+                #[cfg(feature = "parser")]
+                &generic_dialect,
             ),
             &[],
             None,

@@ -33,6 +33,84 @@ Built-in metacommands:
 
 run `cargo run --features="net"` to start service
 
+### SQL Dialects
+
+KiteSQL supports pluggable SQL dialects through the `SqlDialect` trait. By default, KiteSQL uses a generic SQL dialect, but you can register custom dialects to support database-specific syntax and type mappings.
+
+#### Using MySQL Dialect
+
+The `kite_sql_mysql` crate provides full MySQL dialect support:
+
+```rust,no_run
+use kite_sql::db::DataBaseBuilder;
+use kite_sql_mysql::MySqlBuilderExt;
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+let mut database = DataBaseBuilder::path(".")
+    .with_mysql()?
+    .build_in_memory()?;
+
+// Now you can use MySQL-specific types like MEDIUMTEXT
+database.ddl("CREATE TABLE users (id INT PRIMARY KEY, bio MEDIUMTEXT)")?;
+database.run("INSERT INTO users VALUES (1, 'bio')")?.done()?;
+# Ok(())
+# }
+```
+
+#### Writing Custom Dialects
+
+You can write your own dialect by implementing the `SqlDialect` trait:
+
+```rust,no_run
+use kite_sql::dialect::SqlDialect;
+use kite_sql::types::LogicalType;
+use kite_sql::errors::DatabaseError;
+use sqlparser::ast::DataType;
+use sqlparser::dialect::{Dialect as SqlParserDialect, GenericDialect};
+use std::sync::Arc;
+
+#[derive(Debug)]
+struct MyDialect {
+    parser: GenericDialect,
+}
+
+impl SqlDialect for MyDialect {
+    fn name(&self) -> &str {
+        "my_dialect"
+    }
+
+    fn parser_dialect(&self) -> &dyn SqlParserDialect {
+        &self.parser
+    }
+
+    // Map custom types to KiteSQL's logical types
+    fn map_data_type(
+        &self,
+        data_type: &DataType,
+    ) -> Option<Result<LogicalType, DatabaseError>> {
+        match data_type {
+            DataType::Custom(name, _) if name.0.len() == 1 => {
+                // Handle your custom types here
+                None
+            }
+            _ => None,
+        }
+    }
+}
+
+# fn main() -> Result<(), Box<dyn std::error::Error>> {
+// Register and use your dialect
+let my_dialect = Arc::new(MyDialect { parser: GenericDialect {} });
+let database = DataBaseBuilder::path(".")
+    .register_dialect(my_dialect)
+    .default_dialect("my_dialect")?
+    .build_in_memory()?;
+# Ok(())
+# }
+```
+
+The `map_data_type` hook is called first, allowing your dialect to handle types before falling back to the generic mapping. Return `Some(Ok(logical_type))` to map a type, `Some(Err(...))` to reject it with an error, or `None` to fall back to the default mapping.
+
 ### ORM Mapping: `features = ["orm"]`
 See [the ORM guide](../src/orm/README.md) for the full ORM guide, including:
 

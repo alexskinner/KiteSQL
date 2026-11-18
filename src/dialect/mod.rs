@@ -1,8 +1,10 @@
 use crate::errors::DatabaseError;
 use sqlparser::ast::Statement;
-use sqlparser::dialect::{Dialect as SqlParserDialect, GenericDialect, MySqlDialect};
+use sqlparser::dialect::{Dialect as SqlParserDialect, GenericDialect};
 use std::fmt::Debug;
 use std::sync::Arc;
+
+pub const DIALECT_GENERIC: &str = "generic";
 
 pub trait SqlDialect: Debug + Send + Sync + 'static {
     fn name(&self) -> &str;
@@ -11,6 +13,13 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
 
     fn rewrite(&self, _stmt: &mut Statement) -> Result<(), DatabaseError> {
         Ok(())
+    }
+
+    fn map_data_type(
+        &self,
+        _data_type: &sqlparser::ast::DataType,
+    ) -> Option<Result<crate::types::LogicalType, DatabaseError>> {
+        None
     }
 }
 
@@ -35,36 +44,7 @@ impl Default for GenericSqlDialect {
 
 impl SqlDialect for GenericSqlDialect {
     fn name(&self) -> &str {
-        "generic"
-    }
-
-    fn parser_dialect(&self) -> &dyn SqlParserDialect {
-        &self.parser
-    }
-}
-
-#[derive(Debug)]
-pub struct MySqlSqlDialect {
-    parser: MySqlDialect,
-}
-
-impl MySqlSqlDialect {
-    pub fn new() -> Self {
-        Self {
-            parser: MySqlDialect {},
-        }
-    }
-}
-
-impl Default for MySqlSqlDialect {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-impl SqlDialect for MySqlSqlDialect {
-    fn name(&self) -> &str {
-        "mysql"
+        DIALECT_GENERIC
     }
 
     fn parser_dialect(&self) -> &dyn SqlParserDialect {
@@ -83,14 +63,11 @@ impl DialectRegistry {
         let mut dialects = std::collections::HashMap::new();
 
         let generic = Arc::new(GenericSqlDialect::new()) as Arc<dyn SqlDialect>;
-        dialects.insert("generic".to_string(), generic.clone());
-
-        let mysql = Arc::new(MySqlSqlDialect::new()) as Arc<dyn SqlDialect>;
-        dialects.insert("mysql".to_string(), mysql);
+        dialects.insert(DIALECT_GENERIC.to_string(), generic.clone());
 
         Self {
             dialects: Arc::new(dialects),
-            default_name: "generic".to_string(),
+            default_name: DIALECT_GENERIC.to_string(),
         }
     }
 

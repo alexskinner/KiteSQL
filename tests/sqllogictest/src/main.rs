@@ -27,8 +27,8 @@ use tempfile::TempDir;
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    #[clap(long, default_value = "tests/slt/**/*.slt")]
-    path: String,
+    #[clap(long)]
+    path: Option<String>,
 }
 
 fn main() {
@@ -65,18 +65,37 @@ fn main() {
         })
     };
 
-    for slt_file in glob::glob(&args.path).expect("failed to find slt files") {
-        let filepath = slt_file.expect("failed to read slt file");
+    // Default to both core and MySQL SLT files
+    let paths = if let Some(path) = &args.path {
+        vec![path.clone()]
+    } else {
+        vec![
+            "tests/slt/**/*.slt".to_string(),
+            "kite_sql_mysql/tests/**/*.slt".to_string(),
+        ]
+    };
 
-        let is_mysql = filepath.to_str().map_or(false, |s| s.contains("/mysql/"));
+    let mut all_files = Vec::new();
+    for path_pattern in &paths {
+        for slt_file in glob::glob(path_pattern).expect("failed to find slt files") {
+            all_files.push(slt_file.expect("failed to read slt file"));
+        }
+    }
+
+    for filepath in all_files {
+        let is_mysql = filepath
+            .to_str()
+            .map_or(false, |s| s.contains("/slt_mysql/"));
 
         #[cfg(not(feature = "async"))]
         if is_mysql {
+            use kite_sql_mysql::MySqlBuilderExt;
+
             let temp_dir_mysql =
                 TempDir::new().expect("unable to create temporary working directory");
             let mut tester_mysql = Runner::new(|| {
                 let db = DataBaseBuilder::path(temp_dir_mysql.path())
-                    .default_dialect("mysql")
+                    .with_mysql()
                     .expect("failed to set mysql dialect")
                     .build_lmdb();
                 std::future::ready(db.map(|db| SQLBase { db }))
@@ -97,10 +116,12 @@ fn main() {
 
         #[cfg(feature = "async")]
         if is_mysql {
+            use kite_sql_mysql::MySqlBuilderExt;
+
             let storage = open_slatedb(&runtime);
             let mut tester_mysql = Runner::new(move || {
                 let db = DataBaseBuilder::path(".")
-                    .default_dialect("mysql")
+                    .with_mysql()
                     .expect("failed to set mysql dialect")
                     .build_with_storage(storage.clone());
                 std::future::ready(db.map(|db| SQLBase { db }))
