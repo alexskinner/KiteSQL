@@ -17,13 +17,14 @@ use crate::expression::function::scala::ScalarFunctionImpl;
 use crate::expression::function::table::TableFunctionCatalog;
 use crate::expression::function::FunctionSummary;
 use crate::types::LogicalType;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 
 #[derive(Debug, Default)]
 pub struct FunctionRegistry {
     scalar_functions: HashMap<FunctionSummary, Arc<dyn ScalarFunctionImpl>>,
     pub(crate) table_functions: HashMap<FunctionSummary, Arc<TableFunctionCatalog>>,
+    builtin_functions: std::collections::HashSet<FunctionSummary>,
 }
 
 impl FunctionRegistry {
@@ -31,24 +32,25 @@ impl FunctionRegistry {
         Self::default()
     }
 
+    pub(crate) fn mark_builtins_loaded(&mut self) {
+        self.builtin_functions = self.scalar_functions.keys().cloned().collect();
+    }
+
     pub fn register_scalar(
         &mut self,
         function: Arc<dyn ScalarFunctionImpl>,
     ) -> Result<(), DatabaseError> {
-        self.register_scalar_with_options(function, false)
-    }
-
-    pub fn register_scalar_with_options(
-        &mut self,
-        function: Arc<dyn ScalarFunctionImpl>,
-        allow_override: bool,
-    ) -> Result<(), DatabaseError> {
         let summary = function.summary().clone();
-        if !allow_override && self.scalar_functions.contains_key(&summary) {
+        // Allow overriding built-ins, but not user-registered functions
+        let is_builtin = self.builtin_functions.contains(&summary);
+        let exists = self.scalar_functions.contains_key(&summary);
+
+        if exists && !is_builtin {
             return Err(DatabaseError::FunctionAlreadyExists(
                 summary.name.to_string(),
             ));
         }
+
         self.scalar_functions.insert(summary, function);
         Ok(())
     }
@@ -158,10 +160,27 @@ impl FunctionRegistry {
         scored_candidates.sort_by_key(|(quality, _)| *quality);
 
         if scored_candidates.len() > 1 && scored_candidates[0].0 == scored_candidates[1].0 {
-            return Err(DatabaseError::function_not_found(format!(
-                "ambiguous function {} with argument types {:?} - multiple overloads match equally",
-                name, arg_types
-            )));
+            let candidates: Vec<String> = scored_candidates
+                .iter()
+                .filter(|(q, _)| *q == scored_candidates[0].0)
+                .map(|(_, func)| {
+                    let summary = func.summary();
+                    format!(
+                        "{}({})",
+                        summary.name,
+                        summary
+                            .arg_types
+                            .iter()
+                            .map(|t| t.to_string())
+                            .collect::<Vec<_>>()
+                            .join(", ")
+                    )
+                })
+                .collect();
+            return Err(DatabaseError::AmbiguousFunction {
+                name: name.to_string(),
+                candidates,
+            });
         }
 
         Ok(scored_candidates[0].1.clone())
@@ -345,9 +364,11 @@ mod tests {
         ) -> Result<DataValue, DatabaseError> {
             use ordered_float::OrderedFloat;
             let value = arena.expression(args[0]).eval(arena, tuple)?;
-            Ok(match value.as_ref() {
+            // Cast to Double if needed (demonstrates implicit widening)
+            let double_value = value.into_owned().cast(&LogicalType::Double)?;
+            Ok(match &double_value {
                 DataValue::Float64(v) => DataValue::Float64(OrderedFloat(v.0 * 2.0)),
-                _ => value.into_owned(),
+                _ => double_value,
             })
         }
 
@@ -459,15 +480,17 @@ mod tests {
             .register_scalar_function(AddOneInt64Function::new())
             .build_in_memory()?;
 
-        // Current behavior: NULL literal with multiple overloads results in function not found
-        // rather than detecting ambiguity at the registry level
+        // NULL literal creates a genuine tie: both Integer and Bigint overloads
+        // match with NullLiteral quality, so we should get AmbiguousFunction
         let result = database.run("select add_one(NULL)");
         assert!(result.is_err());
         match result {
-            Err(DatabaseError::FunctionNotFound { .. }) => {
-                // Expected: NULL doesn't resolve to a specific overload
+            Err(DatabaseError::AmbiguousFunction { name, candidates }) => {
+                assert_eq!(name, "add_one");
+                assert_eq!(candidates.len(), 2);
             }
-            _ => panic!("Expected FunctionNotFound error"),
+            Err(ref e) => panic!("Expected AmbiguousFunction error, got: {}", e),
+            Ok(_) => panic!("Expected error but query succeeded"),
         }
 
         Ok(())
@@ -484,7 +507,7 @@ mod tests {
                 summary: FunctionSummary {
                     name: "range".into(),
                     arg_types: vec![],
-                    persistence: PersistencePolicy::Transient,
+                    persistence: PersistencePolicy::Durable,
                 },
             })
         }

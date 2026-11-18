@@ -493,6 +493,9 @@ impl DataBaseBuilder {
         let mut function_registry = FunctionRegistry::new();
         install_core_functions(&mut function_registry, table_arena.borrow_mut())?;
 
+        // Mark all current functions as built-ins so user functions can override them
+        function_registry.mark_builtins_loaded();
+
         for function in scalar_functions {
             function_registry.register_scalar(function)?;
         }
