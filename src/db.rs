@@ -2046,10 +2046,10 @@ impl<'p, T: StorageTransaction + 'p> TransactionGuard<'_, 'p, T> {
                     let (transaction, table_codec) = state.transaction_codec_mut();
                     undo_log.rollback(transaction, table_codec).await
                 };
-                
+
                 // Mark guard as inactive (iters already recycled above)
                 self.active = false;
-                
+
                 match rollback_result {
                     Ok(()) => Err(original_err),
                     Err(rollback_err) => Err(DatabaseError::StatementRollbackFailed {

@@ -538,7 +538,7 @@ fn test_statement_atomicity_autocommit() -> Result<(), DatabaseError> {
 #[test]
 fn test_new_transaction_gets_statement_atomicity() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
-    let database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
 
     database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
     database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
@@ -546,60 +546,36 @@ fn test_new_transaction_gets_statement_atomicity() -> Result<(), DatabaseError> 
     // Use plain new_transaction API (not Session)
     let mut tx = database.new_transaction(false)?;
 
-    // Execute through the transaction using BindSource
-    use crate::db::BindSource;
-    let iter = BindSource::execute(&mut tx, false, |state, txn| {
-        state.build_plan(&[], txn, |binder, arena| {
-            binder.bind_str("INSERT INTO test VALUES (2, 200), (1, 100)", arena)
-        })
-        .map(crate::db::Executor::from_plan)
-    })
-    .await?;
-
-    let result = iter.done().await;
+    // Multi-row insert that fails on duplicate key
+    let iter = tx.run("INSERT INTO test VALUES (2, 200), (1, 100)")?;
+    let result = iter.done();
     assert!(
         result.is_err(),
         "Duplicate key should fail during iteration"
     );
 
     // Verify statement was rolled back but transaction is still open
-    let iter = BindSource::execute(&mut tx, false, |state, txn| {
-        state.build_plan(&[], txn, |binder, arena| {
-            binder.bind_str("SELECT * FROM test WHERE id = 2", arena)
-        })
-        .map(crate::db::Executor::from_plan)
-    })
-    .await?;
-
+    let mut iter = tx.run("SELECT * FROM test WHERE id = 2")?;
     let mut count = 0;
-    let mut iter = iter;
     while iter.next_tuple(|_, _| ())?.is_some() {
         count += 1;
     }
-    iter.done().await?;
+    iter.done()?;
     assert_eq!(
         count, 0,
         "Failed INSERT should not have inserted row 2 (statement atomicity)"
     );
 
     // Verify row 1 still exists
-    let iter = BindSource::execute(&mut tx, false, |state, txn| {
-        state.build_plan(&[], txn, |binder, arena| {
-            binder.bind_str("SELECT * FROM test WHERE id = 1", arena)
-        })
-        .map(crate::db::Executor::from_plan)
-    })
-    .await?;
-
+    let mut iter = tx.run("SELECT * FROM test WHERE id = 1")?;
     let mut count = 0;
-    let mut iter = iter;
     while iter.next_tuple(|_, _| ())?.is_some() {
         count += 1;
     }
-    iter.done().await?;
+    iter.done()?;
     assert_eq!(count, 1, "Original row should remain");
 
-    tx.commit().await?;
+    tx.commit()?;
 
     Ok(())
 }
