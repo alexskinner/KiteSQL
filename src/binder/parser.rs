@@ -1823,7 +1823,7 @@ pub(crate) fn data_type_to_logical_type(
                     }
                 };
                 let type_name_lower = type_name.to_lowercase();
-                
+
                 if type_name_lower.as_str() == "serial" {
                     // TODO: serial should also apply NOT NULL UNIQUE AUTO_INCREMENT constraints
                     // Currently only the type mapping (BIGINT UNSIGNED) is implemented
