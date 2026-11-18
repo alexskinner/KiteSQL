@@ -122,7 +122,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
             }
         }
 
-        let (args, ty) = match kind {
+        let (args, ty) = match &kind {
             WindowFunctionKind::RowNumber
             | WindowFunctionKind::Rank
             | WindowFunctionKind::DenseRank => {
@@ -136,7 +136,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
             }
             WindowFunctionKind::Aggregate(agg_kind) => {
                 let ScalarExpression::AggCall { args, ty, .. } =
-                    self.bind_aggregate_function(agg_kind, args, false, arena)?
+                    self.bind_aggregate_function(agg_kind.clone(), args, false, arena)?
                 else {
                     unreachable!()
                 };

@@ -502,7 +502,7 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
         is_distinct: bool,
         arena: &mut PlanArena,
     ) -> Result<ScalarExpression, DatabaseError> {
-        let ty = match kind {
+        let ty = match &kind {
             AggKind::Count => {
                 if args.len() != 1 {
                     return Err(DatabaseError::MisMatch("number of count() parameters", "1"));
@@ -553,6 +553,22 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
                     ));
                 }
                 LogicalType::Varchar(None, CharLengthUnits::Characters)
+            }
+            AggKind::Udf(id) => {
+                if args.is_empty() {
+                    return Err(DatabaseError::MisMatch("number of UDAF parameters", ">= 1"));
+                }
+                let arg_types: Vec<_> = id.arg_types.iter().collect();
+                match self
+                    .context
+                    .function_registry
+                    .resolve_aggregate(&id.name, &arg_types)
+                {
+                    Ok(agg_impl) => agg_impl.output_type().clone(),
+                    Err(_) => {
+                        return Err(DatabaseError::function_not_found(&id.name));
+                    }
+                }
             }
         };
         Ok(ScalarExpression::AggCall {

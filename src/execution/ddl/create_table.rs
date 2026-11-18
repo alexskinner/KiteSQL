@@ -53,6 +53,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CreateTable<'a> {
             table_name,
             columns,
             if_not_exists,
+            unique_constraints,
         } = self.op;
 
         let (transaction, table_codec) = arena.transaction_codec_mut();
@@ -63,6 +64,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CreateTable<'a> {
                 table_name.clone(),
                 columns.clone(),
                 *if_not_exists,
+                unique_constraints.clone(),
             )
             .await?;
         if let Some(table) = table {

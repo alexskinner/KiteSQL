@@ -1,0 +1,57 @@
+# Bug #4: FETCH NEXT n ROWS and TOP n were silently ignored
+# Now they are implemented as LIMIT
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, value VARCHAR(20))
+
+statement ok
+INSERT INTO t VALUES (1, 'one'), (2, 'two'), (3, 'three'), (4, 'four'), (5, 'five')
+
+# Test FETCH NEXT n ROWS ONLY
+query I rowsort
+SELECT id FROM t ORDER BY id OFFSET 1 ROWS FETCH NEXT 2 ROWS ONLY
+----
+2
+3
+
+# Test FETCH FIRST n ROWS ONLY (synonym)
+query I rowsort
+SELECT id FROM t ORDER BY id FETCH FIRST 3 ROWS ONLY
+----
+1
+2
+3
+
+# Test FETCH NEXT with no quantity (defaults to 1)
+query I
+SELECT id FROM t ORDER BY id FETCH NEXT ROW ONLY
+----
+1
+
+# Test TOP n
+query I rowsort
+SELECT TOP 2 id FROM t ORDER BY id
+----
+1
+2
+
+# Test TOP with expression
+query I
+SELECT TOP (3) id FROM t ORDER BY id DESC
+----
+5
+4
+3
+
+# Verify the full result without FETCH/TOP for comparison
+query I rowsort
+SELECT id FROM t
+----
+1
+2
+3
+4
+5
+
+statement ok
+DROP TABLE t
