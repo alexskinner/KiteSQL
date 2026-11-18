@@ -179,7 +179,7 @@ impl InnerIter for MemoryIter<'_> {
     }
 }
 
-impl StorageTransaction for MemoryTransaction {
+impl StorageTransaction for MemoryTransaction<'_> {
     type BorrowedBytes<'a>
         = MemoryValue<'a>
     where

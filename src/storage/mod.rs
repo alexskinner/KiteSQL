@@ -1024,18 +1024,24 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         };
         let scala_functions = self.scala_functions();
         let table_functions = self.table_functions();
-        self.table_collect_impl(table_codec, meta.id, arena, scala_functions, table_functions)
-            .await?
-            .map(|(columns, indexes)| {
-                TableCatalog::reload(
-                    meta.id,
-                    meta.table_name,
-                    columns.into_iter(),
-                    indexes.into_iter(),
-                    arena,
-                )
-            })
-            .transpose()
+        self.table_collect_impl(
+            table_codec,
+            meta.id,
+            arena,
+            scala_functions,
+            table_functions,
+        )
+        .await?
+        .map(|(columns, indexes)| {
+            TableCatalog::reload(
+                meta.id,
+                meta.table_name,
+                columns.into_iter(),
+                indexes.into_iter(),
+                arena,
+            )
+        })
+        .transpose()
     }
 
     async fn tables<'a>(
@@ -1250,10 +1256,17 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
     ) -> Result<Option<(Vec<ColumnCatalog>, Vec<IndexMeta>)>, DatabaseError> {
         let scala_functions = self.scala_functions();
         let table_functions = self.table_functions();
-        self.table_collect_impl(table_codec, table_id, arena, scala_functions, table_functions)
-            .await
+        self.table_collect_impl(
+            table_codec,
+            table_id,
+            arena,
+            scala_functions,
+            table_functions,
+        )
+        .await
     }
 
+    #[allow(clippy::type_complexity)]
     async fn table_collect_impl(
         &self,
         table_codec: &mut TableCodec,

@@ -3453,7 +3453,9 @@ pub(crate) mod test {
         kite_sql.load(CatalogKind::ScalarFunction(my_udf))?;
 
         kite_sql.ddl("CREATE TABLE t_udf (id int primary key, val int default my_udf(), v int)")?;
-        kite_sql.run("INSERT INTO t_udf (id, v) VALUES (1, 10)")?.done()?;
+        kite_sql
+            .run("INSERT INTO t_udf (id, v) VALUES (1, 10)")?
+            .done()?;
 
         kite_sql.ddl("CREATE INDEX ix_v ON t_udf (v)")?;
         kite_sql.ddl("DROP INDEX ix_v ON t_udf")?;
@@ -3474,15 +3476,20 @@ pub(crate) mod test {
         {
             let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
             kite_sql.ddl("CREATE TABLE t_persist (id int primary key, d timestamp default current_timestamp, v int)")?;
-            kite_sql.run("INSERT INTO t_persist (id, v) VALUES (1, 100)")?.done()?;
+            kite_sql
+                .run("INSERT INTO t_persist (id, v) VALUES (1, 100)")?
+                .done()?;
         }
 
         {
             let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
             kite_sql.load(CatalogKind::Table("t_persist".to_string()))?;
             kite_sql.ddl("CREATE INDEX ix_v ON t_persist (v)")?;
-            kite_sql.ddl("ALTER TABLE t_persist ADD COLUMN d2 timestamp default current_timestamp")?;
-            kite_sql.run("SELECT id FROM t_persist WHERE v = 100)")?.done()?;
+            kite_sql
+                .ddl("ALTER TABLE t_persist ADD COLUMN d2 timestamp default current_timestamp")?;
+            kite_sql
+                .run("SELECT id FROM t_persist WHERE v = 100)")?
+                .done()?;
         }
 
         Ok(())
