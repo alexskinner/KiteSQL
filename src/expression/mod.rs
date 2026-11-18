@@ -1093,7 +1093,7 @@ impl fmt::Display for UnaryOperator {
 mod test {
     use crate::catalog::{ColumnCatalog, ColumnDesc};
     use crate::db::test::build_table;
-    
+
     use crate::errors::DatabaseError;
     use crate::expression::agg::AggKind;
     use crate::expression::function::scala::{

@@ -94,7 +94,12 @@ struct Aggregate {
 
 impl WindowFunction for Aggregate {
     fn reset(&mut self) -> Result<(), DatabaseError> {
-        self.accumulator = Some(create_accumulator(self.kind.clone(), &self.ty, false, None)?);
+        self.accumulator = Some(create_accumulator(
+            self.kind.clone(),
+            &self.ty,
+            false,
+            None,
+        )?);
         Ok(())
     }
 

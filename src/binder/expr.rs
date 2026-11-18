@@ -560,7 +560,11 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
                     return Err(DatabaseError::MisMatch("number of UDAF parameters", ">= 1"));
                 }
                 let arg_types: Vec<_> = id.arg_types.iter().collect();
-                match self.context.function_registry.resolve_aggregate(&id.name, &arg_types) {
+                match self
+                    .context
+                    .function_registry
+                    .resolve_aggregate(&id.name, &arg_types)
+                {
                     Ok(agg_impl) => agg_impl.output_type().clone(),
                     Err(_) => {
                         return Err(DatabaseError::function_not_found(&id.name));

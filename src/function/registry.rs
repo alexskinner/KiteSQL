@@ -149,7 +149,10 @@ impl FunctionRegistry {
         Ok(())
     }
 
-    pub fn get_aggregate(&self, summary: &FunctionSummary) -> Option<&Arc<dyn AggregateFunctionImpl>> {
+    pub fn get_aggregate(
+        &self,
+        summary: &FunctionSummary,
+    ) -> Option<&Arc<dyn AggregateFunctionImpl>> {
         self.aggregate_functions.get(summary)
     }
 
@@ -160,7 +163,9 @@ impl FunctionRegistry {
     ) -> Result<Arc<dyn AggregateFunctionImpl>, DatabaseError> {
         for (summary, func) in &self.aggregate_functions {
             if summary.name.as_ref() == name && summary.arg_types.len() == arg_types.len() {
-                let all_match = summary.arg_types.iter()
+                let all_match = summary
+                    .arg_types
+                    .iter()
                     .zip(arg_types.iter())
                     .all(|(expected, actual)| expected == *actual);
                 if all_match {

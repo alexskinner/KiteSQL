@@ -55,7 +55,8 @@ mod tests {
     #[test]
     fn test_group_concat_aggregate_trait() -> Result<(), DatabaseError> {
         use crate::types::CharLengthUnits;
-        let _group_concat = GroupConcatAggregate::new(LogicalType::Varchar(None, CharLengthUnits::Characters));
+        let _group_concat =
+            GroupConcatAggregate::new(LogicalType::Varchar(None, CharLengthUnits::Characters));
         Ok(())
     }
 
@@ -90,7 +91,10 @@ mod tests {
             false
         }
 
-        fn create_accumulator(&self, _distinct: bool) -> Result<Box<dyn Accumulator>, DatabaseError> {
+        fn create_accumulator(
+            &self,
+            _distinct: bool,
+        ) -> Result<Box<dyn Accumulator>, DatabaseError> {
             Ok(Box::new(SumTimes10Accumulator {
                 sum: DataValue::Int32(0),
                 result: DataValue::Null,
@@ -113,7 +117,11 @@ mod tests {
                 self.sum = match (&self.sum, value) {
                     (DataValue::Int32(a), DataValue::Int32(b)) => DataValue::Int32(a + b),
                     (DataValue::Int64(a), DataValue::Int64(b)) => DataValue::Int64(a + b),
-                    _ => return Err(DatabaseError::UnsupportedStmt("Type mismatch in sum_times_10".to_string())),
+                    _ => {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Type mismatch in sum_times_10".to_string(),
+                        ))
+                    }
                 };
             }
             Ok(())
@@ -127,7 +135,11 @@ mod tests {
             self.result = match &self.sum {
                 DataValue::Int32(val) => DataValue::Int32(val * 10),
                 DataValue::Int64(val) => DataValue::Int64(val * 10),
-                _ => return Err(DatabaseError::UnsupportedStmt("Invalid type for sum_times_10".to_string())),
+                _ => {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "Invalid type for sum_times_10".to_string(),
+                    ))
+                }
             };
             Ok(())
         }
@@ -169,7 +181,8 @@ mod tests {
             .build_in_memory()?;
 
         // Test aggregate on VALUES clause
-        let mut iter = database.run("select sum_times_10(value) from (values (10), (20), (15)) as t(value)")?;
+        let mut iter = database
+            .run("select sum_times_10(value) from (values (10), (20), (15)) as t(value)")?;
         let tuple = next_tuple_owned(&mut iter)?.unwrap();
         assert_eq!(tuple[0], DataValue::Int32(450));
         iter.done()?;
@@ -187,13 +200,13 @@ mod tests {
 
         // Test aggregate with GROUP BY on VALUES clause
         let mut iter = database.run("select category, sum_times_10(value) from (values ('A', 10), ('A', 20), ('B', 15), ('B', 25)) as t(category, value) group by category order by category")?;
-        
+
         let tuple_a = next_tuple_owned(&mut iter)?.unwrap();
         assert_eq!(tuple_a[1], DataValue::Int32(300));
-        
+
         let tuple_b = next_tuple_owned(&mut iter)?.unwrap();
         assert_eq!(tuple_b[1], DataValue::Int32(400));
-        
+
         iter.done()?;
         Ok(())
     }
@@ -207,7 +220,8 @@ mod tests {
             .build_in_memory()?;
 
         // Test NULL handling in aggregate
-        let mut iter = database.run("select sum_times_10(value) from (values (10), (NULL), (20)) as t(value)")?;
+        let mut iter = database
+            .run("select sum_times_10(value) from (values (10), (NULL), (20)) as t(value)")?;
         let tuple = next_tuple_owned(&mut iter)?.unwrap();
         assert_eq!(tuple[0], DataValue::Int32(300));
         iter.done()?;
@@ -246,10 +260,10 @@ mod tests {
         let mut iter = database.run(
             "select category, sum_times_10(value) from (values ('A', 10), ('A', 20), ('B', 5), ('B', 5)) as t(category, value) group by category having sum_times_10(value) > 200 order by category"
         )?;
-        
+
         let tuple_a = next_tuple_owned(&mut iter)?.unwrap();
         assert_eq!(tuple_a[1], DataValue::Int32(300));
-        
+
         assert!(next_tuple_owned(&mut iter)?.is_none());
         iter.done()?;
 
@@ -264,9 +278,8 @@ mod tests {
             .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
             .build_in_memory()?;
 
-        let mut iter = database.run(
-            "select sum_times_10(value) from (values (1)) as t(value) where value > 100"
-        )?;
+        let mut iter = database
+            .run("select sum_times_10(value) from (values (1)) as t(value) where value > 100")?;
         let tuple = next_tuple_owned(&mut iter)?.unwrap();
         assert_eq!(tuple[0], DataValue::Null);
         iter.done()?;
@@ -285,13 +298,13 @@ mod tests {
         let mut iter = database.run(
             "select category, sum_times_10(value) from (values ('A', 10), ('B', NULL)) as t(category, value) group by category order by category"
         )?;
-        
+
         let tuple_a = next_tuple_owned(&mut iter)?.unwrap();
         assert_eq!(tuple_a[1], DataValue::Int32(100));
-        
+
         let tuple_b = next_tuple_owned(&mut iter)?.unwrap();
         assert_eq!(tuple_b[1], DataValue::Null);
-        
+
         iter.done()?;
         Ok(())
     }
@@ -300,12 +313,12 @@ mod tests {
     fn test_udaf_name_clash_with_builtin() -> Result<(), DatabaseError> {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-        
+
         #[derive(Debug)]
         struct SumOverride {
             input_type: LogicalType,
         }
-        
+
         impl AggregateFunctionImpl for SumOverride {
             fn kind(&self) -> AggKind {
                 AggKind::Udf(AggFnId {
@@ -313,20 +326,23 @@ mod tests {
                     arg_types: vec![self.input_type.clone()],
                 })
             }
-            
+
             fn input_type(&self) -> &LogicalType {
                 &self.input_type
             }
-            
+
             fn output_type(&self) -> &LogicalType {
                 &self.input_type
             }
-            
+
             fn supports_distinct(&self) -> bool {
                 false
             }
-            
-            fn create_accumulator(&self, _distinct: bool) -> Result<Box<dyn Accumulator>, DatabaseError> {
+
+            fn create_accumulator(
+                &self,
+                _distinct: bool,
+            ) -> Result<Box<dyn Accumulator>, DatabaseError> {
                 Ok(Box::new(SumTimes10Accumulator {
                     sum: DataValue::Int32(0),
                     result: DataValue::Null,
@@ -334,9 +350,11 @@ mod tests {
                 }))
             }
         }
-        
+
         let database = DataBaseBuilder::path(temp_dir.path())
-            .register_aggregate_function(Arc::new(SumOverride { input_type: LogicalType::Integer }))
+            .register_aggregate_function(Arc::new(SumOverride {
+                input_type: LogicalType::Integer,
+            }))
             .build_in_memory()?;
 
         let mut iter = database.run("select sum(value) from (values (10), (20)) as t(value)")?;

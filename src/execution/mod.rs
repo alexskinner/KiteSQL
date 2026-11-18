@@ -877,8 +877,11 @@ impl<'a, 't, T: StorageTransaction + 'a> ExecArena<'a, 't, T> {
             _lifetimes: PhantomData,
         }
     }
-    
-    pub(crate) fn with_function_registry(mut self, registry: &'a crate::function::registry::FunctionRegistry) -> Self {
+
+    pub(crate) fn with_function_registry(
+        mut self,
+        registry: &'a crate::function::registry::FunctionRegistry,
+    ) -> Self {
         self.function_registry = Some(registry);
         self
     }
@@ -917,8 +920,10 @@ impl<'c, 'a, 't, T: StorageTransaction + 'a> ExecContext<'c, 'a, 't, T> {
     pub(crate) fn table_cache(&self) -> &'a TableCache {
         self.arena.table_cache
     }
-    
-    pub(crate) fn function_registry(&self) -> Option<&'a crate::function::registry::FunctionRegistry> {
+
+    pub(crate) fn function_registry(
+        &self,
+    ) -> Option<&'a crate::function::registry::FunctionRegistry> {
         self.arena.function_registry
     }
 

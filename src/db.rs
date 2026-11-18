@@ -258,7 +258,10 @@ impl DataBaseBuilder {
     }
 
     /// Register an aggregate function that will be available in the database.
-    pub fn register_aggregate_function(mut self, function: Arc<dyn crate::expression::agg_function::AggregateFunctionImpl>) -> Self {
+    pub fn register_aggregate_function(
+        mut self,
+        function: Arc<dyn crate::expression::agg_function::AggregateFunctionImpl>,
+    ) -> Self {
         self.aggregate_functions.push(function);
         self
     }
@@ -742,8 +745,14 @@ where
     'p: 'a,
 {
     let mut plan_arena = ExecMetaArena::new(plan_arena);
-    let arena =
-        start_execution_inner(table_cache, transaction, &mut executor, &mut plan_arena, function_registry).await?;
+    let arena = start_execution_inner(
+        table_cache,
+        transaction,
+        &mut executor,
+        &mut plan_arena,
+        function_registry,
+    )
+    .await?;
 
     Ok((plan_arena, (executor, arena)))
 }
@@ -921,7 +930,14 @@ impl<S: Storage> State<S> {
         'txn: 'p,
         'p: 'a,
     {
-        start_execution(self.table_cache(), transaction, executor, plan_arena, Some(&self.function_registry)).await
+        start_execution(
+            self.table_cache(),
+            transaction,
+            executor,
+            plan_arena,
+            Some(&self.function_registry),
+        )
+        .await
     }
 
     pub(crate) async fn execute_mut<'a, 'txn, A, F>(
@@ -982,7 +998,14 @@ impl<S: Storage> State<S> {
 
         plan.populate_output_schema_recursive(&mut plan_arena);
         let executor = Executor::new(plan, &plan_arena);
-        start_execution(table_cache, transaction, executor, plan_arena, Some(function_registry)).await
+        start_execution(
+            table_cache,
+            transaction,
+            executor,
+            plan_arena,
+            Some(function_registry),
+        )
+        .await
     }
 }
 
