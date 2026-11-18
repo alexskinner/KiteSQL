@@ -1009,10 +1009,19 @@ impl<S: Storage> Database<S> {
         ) -> Result<LogicalPlan, DatabaseError>,
         C: ConsumeMut<S>,
     {
-        let transaction = OwnedPtr::new(
-            self.storage
-                .transaction_with_isolation(self.transaction_isolation, false)?,
-        );
+        let (scala_functions, table_functions) = unsafe {
+            let state_ptr = std::ptr::from_ref(&self.state);
+            (
+                Some((*state_ptr).scala_functions()),
+                Some((*state_ptr).table_functions()),
+            )
+        };
+        let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
+            self.transaction_isolation,
+            false,
+            scala_functions,
+            table_functions,
+        )?);
         let state = TxnPtr::new(std::ptr::from_mut(&mut self.state));
         let (plan_arena, executor) = match unsafe {
             (&mut *state.get())
@@ -1070,9 +1079,11 @@ impl<S: Storage> Database<S> {
                 Ok(())
             }
             CatalogKind::Table(name) => {
-                let transaction = self.storage.transaction_with_isolation(
+                let transaction = self.storage.transaction_with_functions(
                     self.storage.default_transaction_isolation(),
                     true,
+                    Some(self.state.scala_functions()),
+                    Some(self.state.table_functions()),
                 )?;
                 let mut table_codec = TableCodec::default();
                 let table = transaction
@@ -1116,6 +1127,7 @@ impl<S: Storage> Database<S> {
                     }
                 }
                 let table_id = table.id();
+                drop(transaction);
                 self.state.meta_cache.remove_table(table_id);
                 self.state
                     .meta_cache
@@ -1130,9 +1142,11 @@ impl<S: Storage> Database<S> {
                 Ok(())
             }
             CatalogKind::View(name) => {
-                let transaction = self.storage.transaction_with_isolation(
+                let transaction = self.storage.transaction_with_functions(
                     self.storage.default_transaction_isolation(),
                     true,
+                    Some(self.state.scala_functions()),
+                    Some(self.state.table_functions()),
                 )?;
                 let mut table_codec = TableCodec::default();
                 let (view_id, view) = transaction
@@ -1145,6 +1159,7 @@ impl<S: Storage> Database<S> {
                     )
                     .await?
                     .ok_or(DatabaseError::ViewNotFound)?;
+                drop(transaction);
                 self.state
                     .table_arena
                     .borrow_mut()
@@ -3376,6 +3391,98 @@ pub(crate) mod test {
             )?,
             total as i32
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_udf_default_ddl_operations() -> Result<(), DatabaseError> {
+        use crate::expression::function::scala::{Arc, ScalarFunctionImpl};
+        use std::sync::LazyLock;
+
+        struct MyUdf;
+
+        static MY_UDF: LazyLock<Arc<dyn ScalarFunctionImpl>> = LazyLock::new(|| {
+            Arc::new(
+                crate::function::define_scala(
+                    "my_udf",
+                    |_: i32| -> i32 { 42 },
+                    (),
+                    (),
+                )
+                .unwrap(),
+            )
+        });
+
+        impl ScalarFunctionImpl for MyUdf {
+            fn eval(
+                &self,
+                _exprs: &[ScalarExpression],
+                _tuple: &TupleImpl,
+                _arena: &(dyn crate::planner::MetaArena + '_),
+            ) -> Result<DataValue, DatabaseError> {
+                Ok(DataValue::Int32(Some(42)))
+            }
+
+            fn monotonicity(&self) -> Option<crate::expression::FunctionMonotonicity> {
+                None
+            }
+
+            fn summary(&self) -> crate::expression::function::FunctionSummary {
+                crate::expression::function::FunctionSummary {
+                    name: "my_udf".to_string(),
+                    arg_types: vec![],
+                }
+            }
+        }
+
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let mut kite_sql = DataBaseBuilder::path(temp_dir.path())
+            .build_with_storage(crate::storage::new_test_storage())?;
+
+        kite_sql.load(CatalogKind::ScalarFunction(MY_UDF.clone()))?;
+
+        kite_sql.ddl("CREATE TABLE t_udf (id int primary key, val int default my_udf(), v int)")?;
+        kite_sql.run("INSERT INTO t_udf (id, v) VALUES (1, 10)")?.done()?;
+
+        kite_sql.ddl("CREATE INDEX ix_v ON t_udf (v)")?;
+        kite_sql.ddl("DROP INDEX ix_v ON t_udf")?;
+        kite_sql.ddl("ALTER TABLE t_udf ADD COLUMN val2 int default my_udf()")?;
+        kite_sql.ddl("ALTER TABLE t_udf DROP COLUMN val2")?;
+        kite_sql.ddl("ALTER TABLE t_udf ALTER COLUMN val SET DEFAULT my_udf()")?;
+        kite_sql.ddl("ALTER TABLE t_udf ALTER COLUMN val DROP DEFAULT")?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "lmdb")]
+    #[test]
+    fn test_lmdb_function_default_persistence() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let db_path = temp_dir.path();
+
+        {
+            let mut kite_sql = DataBaseBuilder::path(db_path).build()?;
+            kite_sql.ddl("CREATE TABLE t_persist (id int primary key, d timestamp default current_timestamp, v int)")?;
+            kite_sql.run("INSERT INTO t_persist (id, v) VALUES (1, 100)")?.done()?;
+        }
+
+        {
+            let mut kite_sql = DataBaseBuilder::path(db_path).build()?;
+            kite_sql.load(CatalogKind::Table("t_persist".to_string()))?;
+            kite_sql.ddl("CREATE INDEX ix_v ON t_persist (v)")?;
+            kite_sql.ddl("ALTER TABLE t_persist ADD COLUMN d2 timestamp default current_timestamp")?;
+
+            let mut count = 0;
+            kite_sql
+                .run("SELECT id FROM t_persist WHERE v = 100")?
+                .done(|row| {
+                    count += 1;
+                    assert_eq!(row.get(0), Some(&DataValue::Int32(Some(1))));
+                    Ok(())
+                })?;
+            assert_eq!(count, 1);
+        }
 
         Ok(())
     }

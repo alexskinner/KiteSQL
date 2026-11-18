@@ -897,9 +897,14 @@ impl TableCodec {
 
     pub fn decode_index_meta<T: StorageTransaction>(
         bytes: &[u8],
+        scala_functions: Option<&ScalaFunctions>,
+        table_functions: Option<&TableFunctions>,
         arena: &mut (impl MetaArena + ?Sized),
     ) -> Result<IndexMeta, DatabaseError> {
-        IndexMeta::decode::<T, _, _>(&mut Cursor::new(bytes), None, arena)
+        let mut context = scala_functions
+            .zip(table_functions)
+            .map(|(sf, tf)| ReferenceDecodeContext::<T>::with_functions(sf, tf));
+        IndexMeta::decode::<T, _, _>(&mut Cursor::new(bytes), context.as_mut(), arena)
     }
 
     pub fn decode_index_into<M: IndexKeyMapping>(
@@ -976,10 +981,14 @@ impl TableCodec {
 
     pub fn decode_column<T: StorageTransaction, R: Read>(
         reader: &mut R,
+        scala_functions: Option<&ScalaFunctions>,
+        table_functions: Option<&TableFunctions>,
         arena: &mut (impl MetaArena + ?Sized),
     ) -> Result<ColumnCatalog, DatabaseError> {
-        // `TableCache` is not theoretically used in `table_collect` because `ColumnCatalog` should not depend on other Column
-        ColumnCatalog::decode::<T, R, _>(reader, None, arena)
+        let mut context = scala_functions
+            .zip(table_functions)
+            .map(|(sf, tf)| ReferenceDecodeContext::<T>::with_functions(sf, tf));
+        ColumnCatalog::decode::<T, R, _>(reader, context.as_mut(), arena)
     }
 
     pub fn decode_index_statistics<T: StorageTransaction>(
@@ -1555,8 +1564,12 @@ mod tests {
             })
             .unwrap();
         let mut cursor = Cursor::new(bytes);
-        let decode_col =
-            TableCodec::decode_column::<TestTransaction, _>(&mut cursor, &mut plan_arena)?;
+        let decode_col = TableCodec::decode_column::<TestTransaction, _>(
+            &mut cursor,
+            None,
+            None,
+            &mut plan_arena,
+        )?;
 
         assert_eq!(decode_col, expected_col);
 
