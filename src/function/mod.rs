@@ -26,4 +26,6 @@ pub mod pack;
 pub mod registry;
 #[cfg(test)]
 mod registry_tests;
+#[cfg(test)]
+mod persistence_tests;
 pub(crate) mod upper;
