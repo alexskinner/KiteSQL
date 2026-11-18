@@ -20,7 +20,7 @@ pub use crate::binder::Statement;
 use crate::binder::{Binder, BinderContext};
 use crate::errors::DatabaseError;
 pub use crate::execution::Executor;
-use crate::execution::{DDLApply, ExecArena, ExecArenaLocalState, ExecBuffer, TxnPtr};
+use crate::execution::{DDLApply, ExecArena, ExecBuffer, TxnPtr};
 use crate::expression::function::scala::ScalarFunctionImpl;
 use crate::expression::function::table::{
     ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl,

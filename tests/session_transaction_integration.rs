@@ -318,7 +318,11 @@ fn test_statement_after_failed_statement() -> Result<(), DatabaseError> {
     }
     iter.done()?;
 
-    assert_eq!(results, vec![(1, 100), (2, 200)], "Both inserts should be visible");
+    assert_eq!(
+        results,
+        vec![(1, 100), (2, 200)],
+        "Both inserts should be visible"
+    );
 
     session.run("COMMIT")?.done()?;
 
