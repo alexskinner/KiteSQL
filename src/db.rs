@@ -494,8 +494,7 @@ impl DataBaseBuilder {
         let table_arena = TableArenaCell::default();
 
         let mut function_registry = FunctionRegistry::new();
-<<<<<<< HEAD
-        install_core_functions(&mut function_registry, &mut table_arena.borrow_mut())?;
+        install_core_functions(&mut function_registry, &table_arena)?;
         
         for function in scalar_functions {
             function_registry.register_scalar(function)?;
@@ -514,11 +513,7 @@ impl DataBaseBuilder {
         for pack in function_packs {
             pack.install(&mut function_registry)?;
         }
-        
-=======
-        install_core_functions(&mut function_registry, &table_arena)?;
 
->>>>>>> cursor/w2-pr1-function-registry-2064
         let scala_functions = function_registry.scalar_functions().clone();
         let table_functions = function_registry
             .table_functions()
