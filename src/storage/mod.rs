@@ -593,10 +593,10 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                     async |key, _| self.get_borrowed(key).await,
                 )
                 .await?;
-            
+
             if let Some(bytes) = display_bytes {
                 let meta = TableCodec::decode_display_types::<Self>(bytes.as_ref(), plan_arena)?;
-                drop(bytes);  // Explicitly drop to end the borrow
+                drop(bytes); // Explicitly drop to end the borrow
                 meta
             } else {
                 crate::catalog::DisplayTypesMeta::new()
@@ -714,9 +714,10 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                         async |key, _| self.get_borrowed(key).await,
                     )
                     .await?;
-                
+
                 if let Some(bytes) = display_bytes {
-                    let meta = TableCodec::decode_display_types::<Self>(bytes.as_ref(), plan_arena)?;
+                    let meta =
+                        TableCodec::decode_display_types::<Self>(bytes.as_ref(), plan_arena)?;
                     drop(bytes);
                     meta
                 } else {
@@ -795,9 +796,10 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                     async |key, _| self.get_borrowed(key).await,
                 )
                 .await?;
-            
+
             if let Some(bytes) = display_bytes {
-                let mut display_meta = TableCodec::decode_display_types::<Self>(bytes.as_ref(), plan_arena)?;
+                let mut display_meta =
+                    TableCodec::decode_display_types::<Self>(bytes.as_ref(), plan_arena)?;
                 drop(bytes);
                 display_meta.remove(&column_id);
                 Some(display_meta)
