@@ -863,47 +863,36 @@ impl<S: Storage> State<S> {
             &mut PlanArena<'a>,
         ) -> Result<LogicalPlan, DatabaseError>,
     {
-        let State {
-            scala_functions,
-            table_functions,
-            meta_cache,
-            table_arena,
-            optimizer_pipeline,
-            histogram_buckets,
-            hll_precision,
-            statistics_relative_error,
-            ..
-        } = self;
-        let arena = table_arena.borrow();
+        let arena = self.table_arena.borrow();
         let table_cache = &arena.tables;
-        let mut plan_arena = PlanArena::new(table_arena);
+        let mut plan_arena = PlanArena::new(&self.table_arena);
         let mut binder = Binder::new(
             BinderContext::new(
                 &arena.names,
                 table_cache,
                 &arena.views,
                 transaction,
-                scala_functions,
-                table_functions,
+                &self.scala_functions,
+                &self.table_functions,
             ),
             &params,
             None,
         );
         let source_plan = build(&mut binder, &mut plan_arena)?;
         drop(binder);
-        let mut plan = optimizer_pipeline
+        let mut plan = self.optimizer_pipeline
             .instantiate(source_plan)
-            .find_best(Some(&StatisticMetaLoader::new(meta_cache)), &mut plan_arena)?;
+            .find_best(Some(&StatisticMetaLoader::new(&self.meta_cache)), &mut plan_arena)?;
 
         if let Operator::Analyze(op) = &mut plan.operator {
             if op.histogram_buckets.is_none() {
-                op.histogram_buckets = *histogram_buckets;
+                op.histogram_buckets = self.histogram_buckets;
             }
             if op.hll_precision.is_none() {
-                op.hll_precision = *hll_precision;
+                op.hll_precision = self.hll_precision;
             }
             if op.statistics_relative_error.is_none() {
-                op.statistics_relative_error = *statistics_relative_error;
+                op.statistics_relative_error = self.statistics_relative_error;
             }
         }
 
