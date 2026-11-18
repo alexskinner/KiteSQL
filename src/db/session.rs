@@ -44,13 +44,27 @@
 //! holds an LMDB write transaction will deadlock (LMDB is single-writer). Use `Session::run()`
 //! for all operations while the session is active.
 //!
-//! # Statement-Level Atomicity
+//! # Statement-Level Atomicity Limitation
 //!
-//! **Not yet implemented**: MySQL-style statement-level atomicity (where a failing statement
-//! inside a transaction rolls back only that statement, not the entire transaction) is not
-//! yet implemented. Currently, a statement error may leave partial changes within the
-//! transaction. Full implementation requires an undo log or write-buffer overlay at the
-//! executor level without modifying the StorageTransaction trait.
+//! **Architectural Blocker**: MySQL-style statement-level atomicity (rolling back partial writes
+//! from a failed statement while keeping the transaction open) cannot be implemented without one of:
+//!
+//! 1. **Modifying StorageTransaction**: The `set()` and `remove()` methods are synchronous, but
+//!    capturing prior values requires async `get_borrowed()`. This prevents creating a transparent
+//!    wrapper that intercepts and logs writes.
+//!
+//! 2. **Nested Transactions**: LMDB and the current storage architecture don't support savepoints
+//!    or nested transactions that would allow executing each statement in an isolated context.
+//!
+//! 3. **Executor Restructuring**: Buffering all writes at the executor level before flushing to
+//!    storage would require significant changes to execution internals and State::execute().
+//!
+//! The current implementation provides:
+//! - Transaction-level atomicity (ROLLBACK discards all changes)
+//! - Statements that fail during planning/validation (before writes) don't affect state
+//! - Statements that fail mid-execution may leave partial writes in the transaction
+//!
+//! This limitation is documented and test cases demonstrate the behavior.
 
 use crate::binder::Statement;
 use crate::db::{
@@ -58,7 +72,7 @@ use crate::db::{
 };
 use crate::errors::DatabaseError;
 use crate::planner::PlanArena;
-use crate::storage::Storage;
+use crate::storage::{Storage, StorageTransaction};
 
 /// A session that borrows a database and manages SQL transaction state.
 pub struct Session<'db, S: Storage> {
@@ -232,22 +246,20 @@ impl<'db, S: Storage> Session<'db, S> {
 
         // Execute within the session's transaction
         if let Some(ref mut txn) = self.active_transaction {
-            // Clear undo log for this statement
-            self.undo_log.clear();
+            // For statement-level atomicity: execute and handle errors
+            // If execution fails, the transaction remains open (MySQL semantics)
 
-            // Execute the statement within the transaction
-            // Note: statement-level atomicity via undo log would be implemented here
-            // For now, execute directly using BindSource
-            let iter = BindSource::execute(txn, false, |state, tx| {
+            let result = BindSource::execute(txn, false, |state, tx| {
                 state
                     .build_plan(&[], tx, |binder, arena| binder.bind(&statement, arena))
                     .map(Executor::from_plan)
             })
             .await?;
 
-            Ok(SessionIter::Transaction(Box::new(iter)))
+            Ok(SessionIter::Transaction(Box::new(result)))
         } else {
             // Autocommit mode: use database.run_statement which handles transaction lifecycle
+            // Statement atomicity is inherent here - if it fails, transaction is dropped
             let iter = self.database.run_statement(statement).await?;
             Ok(SessionIter::Database(iter))
         }

@@ -4,7 +4,7 @@
 
 #![cfg(all(not(feature = "async"), feature = "lmdb"))]
 
-use kite_sql::db::DataBaseBuilder;
+use kite_sql::db::{DataBaseBuilder, ResultIter};
 use kite_sql::errors::DatabaseError;
 use tempfile::TempDir;
 
@@ -110,13 +110,21 @@ fn test_session_transaction_control_integration() -> Result<(), DatabaseError> {
     Ok(())
 }
 
-// Statement-level atomicity tests commented out pending implementation
-// These tests verify MySQL-style statement atomicity where a failing statement
-// inside a transaction rolls back only that statement, not the entire transaction.
-// Implementation requires an undo log or write-buffer overlay at the executor level.
+// Statement-level atomicity tests - SKIPPED due to architectural limitation
+//
+// These tests verify MySQL behavior where a statement that fails mid-execution should
+// roll back its own partial writes while keeping the transaction open.
+//
+// BLOCKER: Implementing this requires one of:
+// - Making StorageTransaction::set/remove async so we can capture prior values
+// - Adding nested transaction/savepoint support to the storage layer
+// - Restructuring the executor to buffer writes
+//
+// None of these can be done without modifying StorageTransaction trait or core execution.
+// Tests are commented out to document the expected behavior.
 
-/*
 #[test]
+#[ignore = "Statement-level atomicity not implemented - see module documentation"]
 fn test_statement_atomicity_insert() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
     let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
@@ -166,6 +174,7 @@ fn test_statement_atomicity_insert() -> Result<(), DatabaseError> {
 }
 
 #[test]
+#[ignore = "Statement-level atomicity not implemented - see module documentation"]
 fn test_statement_atomicity_update() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
     let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
@@ -204,4 +213,3 @@ fn test_statement_atomicity_update() -> Result<(), DatabaseError> {
 
     Ok(())
 }
-*/
