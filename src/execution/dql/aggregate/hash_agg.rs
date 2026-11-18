@@ -123,7 +123,8 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for HashAggExecutor<'a>
                         groups.insert_unique(hash, group, |&group| {
                             hasher.hash_one(&keys[group * len..][..len])
                         });
-                        push_accumulators(&mut self.accs, self.agg_calls, plan_arena)?;
+                        let registry = arena.function_registry();
+                        push_accumulators(&mut self.accs, self.agg_calls, plan_arena, registry)?;
                         group
                     }
                 };

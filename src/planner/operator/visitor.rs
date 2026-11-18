@@ -786,6 +786,7 @@ pub(crate) mod tests {
                 table_name: "t1".into(),
                 columns: vec![column],
                 if_not_exists: false,
+                unique_constraints: Vec::new(),
             }),
             Operator::CreateIndex(CreateIndexOperator {
                 table_id: 0,

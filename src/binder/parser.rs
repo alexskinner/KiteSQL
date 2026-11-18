@@ -835,6 +835,7 @@ where
         for (i, column) in create.columns.into_iter().enumerate() {
             columns.push(self.bind_column(column, Some(i))?);
         }
+        let mut unique_constraints = Vec::new();
         for constraint in create.constraints {
             match constraint {
                 TableConstraint::PrimaryKey(primary) => {
@@ -843,9 +844,29 @@ where
                     })?;
                 }
                 TableConstraint::Unique(unique) => {
-                    self.bind_constraint(&mut columns, unique.columns, |_, desc| {
-                        desc.set_unique()
-                    })?;
+                    if unique.columns.len() > 1 {
+                        // Composite unique constraint - collect it for later index creation
+                        let column_names: Result<Vec<String>, DatabaseError> = unique
+                            .columns
+                            .iter()
+                            .map(|index_col| {
+                                if let Expr::Identifier(ident) = &index_col.column.expr {
+                                    Ok(lower_ident(ident).into_owned())
+                                } else {
+                                    Err(DatabaseError::UnsupportedStmt(
+                                        "only identifier columns are supported in UNIQUE"
+                                            .to_string(),
+                                    ))
+                                }
+                            })
+                            .collect();
+                        unique_constraints.push(column_names?);
+                    } else {
+                        // Single-column unique - mark the column as unique
+                        self.bind_constraint(&mut columns, unique.columns, |_, desc| {
+                            desc.set_unique()
+                        })?;
+                    }
                 }
                 constraint => {
                     return Err(DatabaseError::UnsupportedStmt(format!(
@@ -855,8 +876,12 @@ where
             }
         }
 
-        self.binder
-            .bind_create_table(table_name, columns, create.if_not_exists)
+        self.binder.bind_create_table(
+            table_name,
+            columns,
+            create.if_not_exists,
+            unique_constraints,
+        )
     }
 
     fn bind_column(
@@ -1100,8 +1125,30 @@ where
             or,
             replace_into,
             source,
+            on,
+            returning,
+            assignments,
             ..
         } = insert;
+
+        if on.is_some() {
+            return Err(DatabaseError::UnsupportedStmt(
+                "INSERT ... ON CONFLICT / ON DUPLICATE KEY UPDATE is not supported".to_string(),
+            ));
+        }
+
+        if returning.is_some() {
+            return Err(DatabaseError::UnsupportedStmt(
+                "INSERT ... RETURNING is not supported".to_string(),
+            ));
+        }
+
+        if !assignments.is_empty() {
+            return Err(DatabaseError::UnsupportedStmt(
+                "INSERT ... SET is not supported".to_string(),
+            ));
+        }
+
         let is_overwrite =
             *overwrite || *replace_into || matches!(or, Some(SqliteOnConflict::Replace));
         let table_name = match table {
@@ -2794,7 +2841,20 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                 .map_err(|err| attach_span_if_absent(err, func_span));
         }
 
-        let result = if let Some(kind) = AggKind::from_name(&function_name) {
+        let arg_types: Vec<_> = args
+            .iter()
+            .map(|arg| arg.return_type(arena).into_owned())
+            .collect();
+        let arg_type_refs: Vec<_> = arg_types.iter().collect();
+
+        let result = if let Ok(agg_impl) = self
+            .context
+            .function_registry
+            .resolve_aggregate(&function_name, &arg_type_refs)
+        {
+            let kind = agg_impl.kind();
+            self.bind_aggregate_function(kind, args, is_distinct, arena)
+        } else if let Some(kind) = AggKind::from_name(&function_name) {
             self.bind_aggregate_function(kind, args, is_distinct, arena)
         } else {
             self.bind_function_call(function_name, args, arena)
@@ -2949,6 +3009,7 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
             qualify,
             ..
         } = select;
+
         if !named_window.is_empty() {
             return Err(DatabaseError::UnsupportedStmt(
                 "named windows are not supported".to_string(),
@@ -3364,6 +3425,12 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
             }
         }
         let is_plain_select = matches!(query.body.as_ref(), SetExpr::Select(_));
+        let top_from_select = if let SetExpr::Select(select) = query.body.as_ref() {
+            select.top.clone()
+        } else {
+            None
+        };
+
         let mut plan = match query.body.as_ref() {
             SetExpr::Select(select) => self.bind_select(select, order_by_exprs, arena),
             SetExpr::Query(query) => self.bind_query(query, arena),
@@ -3389,6 +3456,26 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
 
         if let Some(limit_clause) = &query.limit_clause {
             plan = self.bind_limit(plan, limit_clause, arena)?;
+        }
+
+        if let Some(top) = top_from_select {
+            use sqlparser::ast::TopQuantity;
+            let limit = match &top.quantity {
+                Some(TopQuantity::Expr(expr)) => {
+                    Some(self.bind_non_negative_limit_value(expr, arena)?)
+                }
+                Some(TopQuantity::Constant(n)) => Some(*n as usize),
+                None => Some(1),
+            };
+            plan = self.bind_limit_values(plan, None, limit)?;
+        }
+
+        if let Some(fetch) = &query.fetch {
+            let limit = match fetch.quantity {
+                Some(ref expr) => Some(self.bind_non_negative_limit_value(expr, arena)?),
+                None => Some(1),
+            };
+            plan = self.bind_limit_values(plan, None, limit)?;
         }
 
         self.context.restore_ctes(cte_checkpoint);

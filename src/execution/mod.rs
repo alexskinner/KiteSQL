@@ -727,6 +727,7 @@ pub(crate) struct ExecArena<'a, 't, T: StorageTransaction + 'a> {
     ddl_apply: Vec<DDLApply>,
     recursive_input: Option<RecursiveInput>,
     iters: Vec<StorageIter<'t, T>>,
+    function_registry: Option<&'a crate::function::registry::FunctionRegistry>,
     _lifetimes: PhantomData<&'t &'a ()>,
 }
 
@@ -872,8 +873,17 @@ impl<'a, 't, T: StorageTransaction + 'a> ExecArena<'a, 't, T> {
             ddl_apply: Vec::new(),
             recursive_input: None,
             iters: Vec::new(),
+            function_registry: None,
             _lifetimes: PhantomData,
         }
+    }
+
+    pub(crate) fn with_function_registry(
+        mut self,
+        registry: &'a crate::function::registry::FunctionRegistry,
+    ) -> Self {
+        self.function_registry = Some(registry);
+        self
     }
 
     pub(crate) fn with_iters(mut self, iters: Vec<StorageIter<'t, T>>) -> Self {
@@ -909,6 +919,12 @@ impl<'c, 'a, 't, T: StorageTransaction + 'a> ExecContext<'c, 'a, 't, T> {
 
     pub(crate) fn table_cache(&self) -> &'a TableCache {
         self.arena.table_cache
+    }
+
+    pub(crate) fn function_registry(
+        &self,
+    ) -> Option<&'a crate::function::registry::FunctionRegistry> {
+        self.arena.function_registry
     }
 
     pub(crate) fn iter_mut(&mut self, slot: IterSlot) -> &mut StorageIter<'t, T> {

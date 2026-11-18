@@ -1,0 +1,56 @@
+# Bug #2: Table-level UNIQUE(a,b) was enforced per column instead of as composite
+# Now it creates a composite unique index correctly
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, a INT, b INT, UNIQUE(a, b))
+
+# Test that (1,1) and (1,2) are both allowed (different composite values)
+statement ok
+INSERT INTO t VALUES (1, 1, 1)
+
+statement ok
+INSERT INTO t VALUES (2, 1, 2)
+
+# Test that (1,1) twice is rejected (duplicate composite value)
+statement error
+INSERT INTO t VALUES (3, 1, 1)
+
+# Test that (2,1) is allowed (different from (1,1) and (1,2))
+statement ok
+INSERT INTO t VALUES (4, 2, 1)
+
+# Verify the data
+query III rowsort
+SELECT * FROM t
+----
+1 1 1
+2 1 2
+4 2 1
+
+# Test with NULLs - note: NULL = NULL in unique indexes currently
+statement ok
+INSERT INTO t VALUES (5, NULL, 1)
+
+# According to probe results, NULLs are treated as equal in unique indexes
+# So a second (NULL, 1) should be rejected
+statement error
+INSERT INTO t VALUES (6, NULL, 1)
+
+statement ok
+DROP TABLE t
+
+# Test single-column UNIQUE still works as before
+statement ok
+CREATE TABLE t2 (id INT PRIMARY KEY, email VARCHAR(50) UNIQUE)
+
+statement ok
+INSERT INTO t2 VALUES (1, 'a@example.com')
+
+statement error
+INSERT INTO t2 VALUES (2, 'a@example.com')
+
+statement ok
+INSERT INTO t2 VALUES (3, 'b@example.com')
+
+statement ok
+DROP TABLE t2

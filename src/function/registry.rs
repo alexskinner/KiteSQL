@@ -13,6 +13,8 @@
 // limitations under the License.
 
 use crate::errors::DatabaseError;
+use crate::expression::agg::AggKind;
+use crate::expression::agg_function::AggregateFunctionImpl;
 use crate::expression::function::scala::ScalarFunctionImpl;
 use crate::expression::function::table::TableFunctionCatalog;
 use crate::expression::function::FunctionSummary;
@@ -41,6 +43,7 @@ pub struct FunctionRegistry {
     scalar_functions: HashMap<FunctionSummary, Arc<dyn ScalarFunctionImpl>>,
     pub(crate) table_functions: HashMap<FunctionSummary, Arc<TableFunctionCatalog>>,
     builtin_functions: HashSet<FunctionKey>,
+    aggregate_functions: HashMap<FunctionSummary, Arc<dyn AggregateFunctionImpl>>,
 }
 
 impl FunctionRegistry {
@@ -112,6 +115,67 @@ impl FunctionRegistry {
 
     pub fn table_functions(&self) -> &HashMap<FunctionSummary, Arc<TableFunctionCatalog>> {
         &self.table_functions
+    }
+
+    pub fn register_aggregate(
+        &mut self,
+        function: Arc<dyn AggregateFunctionImpl>,
+    ) -> Result<(), DatabaseError> {
+        self.register_aggregate_with_options(function, false)
+    }
+
+    pub fn register_aggregate_with_options(
+        &mut self,
+        function: Arc<dyn AggregateFunctionImpl>,
+        allow_override: bool,
+    ) -> Result<(), DatabaseError> {
+        let name = match function.kind() {
+            AggKind::Udf(ref id) => id.name.clone(),
+            kind => format!("{:?}", kind).to_lowercase(),
+        };
+        let summary = FunctionSummary {
+            name: Arc::from(name),
+            arg_types: vec![function.input_type().clone()],
+            persistence: crate::expression::function::PersistencePolicy::Transient,
+        };
+        if !allow_override && self.aggregate_functions.contains_key(&summary) {
+            return Err(DatabaseError::FunctionAlreadyExists(
+                summary.name.to_string(),
+            ));
+        }
+        self.aggregate_functions.insert(summary, function);
+        Ok(())
+    }
+
+    pub fn get_aggregate(
+        &self,
+        summary: &FunctionSummary,
+    ) -> Option<&Arc<dyn AggregateFunctionImpl>> {
+        self.aggregate_functions.get(summary)
+    }
+
+    pub fn resolve_aggregate(
+        &self,
+        name: &str,
+        arg_types: &[&LogicalType],
+    ) -> Result<Arc<dyn AggregateFunctionImpl>, DatabaseError> {
+        for (summary, func) in &self.aggregate_functions {
+            if summary.name.as_ref() == name && summary.arg_types.len() == arg_types.len() {
+                let all_match = summary
+                    .arg_types
+                    .iter()
+                    .zip(arg_types.iter())
+                    .all(|(expected, actual)| expected == *actual);
+                if all_match {
+                    return Ok(func.clone());
+                }
+            }
+        }
+        Err(DatabaseError::function_not_found(name))
+    }
+
+    pub fn aggregate_functions(&self) -> &HashMap<FunctionSummary, Arc<dyn AggregateFunctionImpl>> {
+        &self.aggregate_functions
     }
 
     pub(crate) fn load_scalar(&mut self, function: Arc<dyn ScalarFunctionImpl>) {

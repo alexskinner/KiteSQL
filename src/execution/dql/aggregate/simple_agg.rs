@@ -70,7 +70,8 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for SimpleAggExecutor<'
             return Ok(());
         }
 
-        prepare_accumulators(&mut self.accs, self.agg_calls, plan_arena)?;
+        let registry = arena.function_registry();
+        prepare_accumulators(&mut self.accs, self.agg_calls, plan_arena, registry)?;
         while self.input.next_tuple(arena, plan_arena).await? {
             let tuple = arena.result_tuple();
             update_accumulators(&mut self.accs, self.agg_calls, tuple, plan_arena)?;

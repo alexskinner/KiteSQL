@@ -103,6 +103,20 @@ pub(crate) type Execution<'a, 'p, A, T> = (ExecMetaArena<A>, (Executor<'p>, Exec
 pub(crate) type ScalaFunctions = HashMap<FunctionSummary, Arc<dyn ScalarFunctionImpl>>;
 pub(crate) type TableFunctions = HashMap<FunctionSummary, TableFunctionCatalog>;
 
+struct BuildParams {
+    histogram_buckets: Option<usize>,
+    hll_precision: Option<u8>,
+    statistics_relative_error: Option<f64>,
+    parser_recursion_limit: Option<usize>,
+    #[cfg(feature = "parser")]
+    dialect_registry: crate::dialect::DialectRegistry,
+    transaction_isolation: Option<TransactionIsolationLevel>,
+    scalar_functions: Vec<Arc<dyn ScalarFunctionImpl>>,
+    table_functions: Vec<Arc<dyn TableFunctionImpl>>,
+    aggregate_functions: Vec<Arc<dyn crate::expression::agg_function::AggregateFunctionImpl>>,
+    function_packs: Vec<Arc<dyn crate::function::pack::FunctionPack>>,
+}
+
 pub enum CatalogKind {
     Table(crate::catalog::TableName),
     View(crate::catalog::TableName),
@@ -160,6 +174,7 @@ pub struct DataBaseBuilder {
     lmdb_config: LmdbConfig,
     scalar_functions: Vec<Arc<dyn ScalarFunctionImpl>>,
     table_functions: Vec<Arc<dyn TableFunctionImpl>>,
+    aggregate_functions: Vec<Arc<dyn crate::expression::agg_function::AggregateFunctionImpl>>,
     function_packs: Vec<Arc<dyn crate::function::pack::FunctionPack>>,
 }
 
@@ -199,6 +214,7 @@ impl DataBaseBuilder {
             lmdb_config: Default::default(),
             scalar_functions: Vec::new(),
             table_functions: Vec::new(),
+            aggregate_functions: Vec::new(),
             function_packs: Vec::new(),
         }
     }
@@ -274,6 +290,18 @@ impl DataBaseBuilder {
     /// Register a table function that will be available in the database.
     pub fn register_table_function(mut self, function: Arc<dyn TableFunctionImpl>) -> Self {
         self.table_functions.push(function);
+        self
+    }
+
+    /// Register an aggregate function that will be available in the database.
+    ///
+    /// A registered aggregate function with the same name as a built-in aggregate (e.g. `sum`, `count`)
+    /// overrides the built-in, following the same policy as scalar functions.
+    pub fn register_aggregate_function(
+        mut self,
+        function: Arc<dyn crate::expression::agg_function::AggregateFunctionImpl>,
+    ) -> Self {
+        self.aggregate_functions.push(function);
         self
     }
 
@@ -368,18 +396,21 @@ impl DataBaseBuilder {
 
     /// Builds a database using a custom storage implementation.
     pub fn build_with_storage<T: Storage>(self, storage: T) -> Result<Database<T>, DatabaseError> {
-        Self::_build::<T>(
+        Self::_build(
             storage,
-            self.histogram_buckets,
-            self.hll_precision,
-            self.statistics_relative_error,
-            self.parser_recursion_limit,
-            #[cfg(feature = "parser")]
-            self.dialect_registry,
-            self.transaction_isolation,
-            self.scalar_functions,
-            self.table_functions,
-            self.function_packs,
+            BuildParams {
+                histogram_buckets: self.histogram_buckets,
+                hll_precision: self.hll_precision,
+                statistics_relative_error: self.statistics_relative_error,
+                parser_recursion_limit: self.parser_recursion_limit,
+                #[cfg(feature = "parser")]
+                dialect_registry: self.dialect_registry,
+                transaction_isolation: self.transaction_isolation,
+                scalar_functions: self.scalar_functions,
+                table_functions: self.table_functions,
+                aggregate_functions: self.aggregate_functions,
+                function_packs: self.function_packs,
+            },
         )
     }
 
@@ -388,13 +419,19 @@ impl DataBaseBuilder {
     pub fn build(self) -> Result<Database<MemoryStorage>, DatabaseError> {
         let storage = MemoryStorage::new();
 
-        Self::_build::<MemoryStorage>(
+        Self::_build(
             storage,
-            self.histogram_buckets,
-            self.hll_precision,
-            self.statistics_relative_error,
-            self.parser_recursion_limit,
-            self.transaction_isolation,
+            BuildParams {
+                histogram_buckets: self.histogram_buckets,
+                hll_precision: self.hll_precision,
+                statistics_relative_error: self.statistics_relative_error,
+                parser_recursion_limit: self.parser_recursion_limit,
+                transaction_isolation: self.transaction_isolation,
+                scalar_functions: self.scalar_functions,
+                table_functions: self.table_functions,
+                aggregate_functions: self.aggregate_functions,
+                function_packs: self.function_packs,
+            },
         )
     }
 
@@ -403,18 +440,21 @@ impl DataBaseBuilder {
     pub fn build_rocksdb(self) -> Result<Database<RocksStorage>, DatabaseError> {
         let storage = RocksStorage::with_config(self.path, self.storage_config)?;
 
-        Self::_build::<RocksStorage>(
+        Self::_build(
             storage,
-            self.histogram_buckets,
-            self.hll_precision,
-            self.statistics_relative_error,
-            self.parser_recursion_limit,
-            #[cfg(feature = "parser")]
-            self.dialect_registry,
-            self.transaction_isolation,
-            self.scalar_functions,
-            self.table_functions,
-            self.function_packs,
+            BuildParams {
+                histogram_buckets: self.histogram_buckets,
+                hll_precision: self.hll_precision,
+                statistics_relative_error: self.statistics_relative_error,
+                parser_recursion_limit: self.parser_recursion_limit,
+                #[cfg(feature = "parser")]
+                dialect_registry: self.dialect_registry,
+                transaction_isolation: self.transaction_isolation,
+                scalar_functions: self.scalar_functions,
+                table_functions: self.table_functions,
+                aggregate_functions: self.aggregate_functions,
+                function_packs: self.function_packs,
+            },
         )
     }
 
@@ -425,18 +465,21 @@ impl DataBaseBuilder {
     pub fn build_in_memory(self) -> Result<Database<MemoryStorage>, DatabaseError> {
         let storage = MemoryStorage::new();
 
-        Self::_build::<MemoryStorage>(
+        Self::_build(
             storage,
-            self.histogram_buckets,
-            self.hll_precision,
-            self.statistics_relative_error,
-            self.parser_recursion_limit,
-            #[cfg(feature = "parser")]
-            self.dialect_registry,
-            self.transaction_isolation,
-            self.scalar_functions,
-            self.table_functions,
-            self.function_packs,
+            BuildParams {
+                histogram_buckets: self.histogram_buckets,
+                hll_precision: self.hll_precision,
+                statistics_relative_error: self.statistics_relative_error,
+                parser_recursion_limit: self.parser_recursion_limit,
+                #[cfg(feature = "parser")]
+                dialect_registry: self.dialect_registry,
+                transaction_isolation: self.transaction_isolation,
+                scalar_functions: self.scalar_functions,
+                table_functions: self.table_functions,
+                aggregate_functions: self.aggregate_functions,
+                function_packs: self.function_packs,
+            },
         )
     }
 
@@ -445,55 +488,62 @@ impl DataBaseBuilder {
     pub fn build_lmdb(self) -> Result<Database<LmdbStorage>, DatabaseError> {
         let storage = LmdbStorage::with_config(self.path, self.lmdb_config)?;
 
-        Self::_build::<LmdbStorage>(
+        Self::_build(
             storage,
-            self.histogram_buckets,
-            self.hll_precision,
-            self.statistics_relative_error,
-            self.parser_recursion_limit,
-            #[cfg(feature = "parser")]
-            self.dialect_registry,
-            self.transaction_isolation,
-            self.scalar_functions,
-            self.table_functions,
-            self.function_packs,
+            BuildParams {
+                histogram_buckets: self.histogram_buckets,
+                hll_precision: self.hll_precision,
+                statistics_relative_error: self.statistics_relative_error,
+                parser_recursion_limit: self.parser_recursion_limit,
+                #[cfg(feature = "parser")]
+                dialect_registry: self.dialect_registry,
+                transaction_isolation: self.transaction_isolation,
+                scalar_functions: self.scalar_functions,
+                table_functions: self.table_functions,
+                aggregate_functions: self.aggregate_functions,
+                function_packs: self.function_packs,
+            },
         )
     }
 
     #[cfg(all(not(target_arch = "wasm32"), feature = "rocksdb"))]
     /// Builds a RocksDB-backed database that uses optimistic transactions.
-    #[cfg(all(not(target_arch = "wasm32"), feature = "rocksdb"))]
     pub fn build_optimistic(self) -> Result<Database<OptimisticRocksStorage>, DatabaseError> {
         let storage = OptimisticRocksStorage::with_config(self.path, self.storage_config)?;
 
-        Self::_build::<OptimisticRocksStorage>(
+        Self::_build(
             storage,
-            self.histogram_buckets,
-            self.hll_precision,
-            self.statistics_relative_error,
-            self.parser_recursion_limit,
-            #[cfg(feature = "parser")]
-            self.dialect_registry,
-            self.transaction_isolation,
-            self.scalar_functions,
-            self.table_functions,
-            self.function_packs,
+            BuildParams {
+                histogram_buckets: self.histogram_buckets,
+                hll_precision: self.hll_precision,
+                statistics_relative_error: self.statistics_relative_error,
+                parser_recursion_limit: self.parser_recursion_limit,
+                #[cfg(feature = "parser")]
+                dialect_registry: self.dialect_registry,
+                transaction_isolation: self.transaction_isolation,
+                scalar_functions: self.scalar_functions,
+                table_functions: self.table_functions,
+                aggregate_functions: self.aggregate_functions,
+                function_packs: self.function_packs,
+            },
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
-    fn _build<T: Storage>(
-        storage: T,
-        histogram_buckets: Option<usize>,
-        hll_precision: Option<u8>,
-        statistics_relative_error: Option<f64>,
-        parser_recursion_limit: Option<usize>,
-        #[cfg(feature = "parser")] dialect_registry: crate::dialect::DialectRegistry,
-        transaction_isolation: Option<TransactionIsolationLevel>,
-        scalar_functions: Vec<Arc<dyn ScalarFunctionImpl>>,
-        table_functions: Vec<Arc<dyn TableFunctionImpl>>,
-        function_packs: Vec<Arc<dyn crate::function::pack::FunctionPack>>,
-    ) -> Result<Database<T>, DatabaseError> {
+    fn _build<T: Storage>(storage: T, params: BuildParams) -> Result<Database<T>, DatabaseError> {
+        let BuildParams {
+            histogram_buckets,
+            hll_precision,
+            statistics_relative_error,
+            parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            dialect_registry,
+            transaction_isolation,
+            scalar_functions,
+            table_functions,
+            aggregate_functions,
+            function_packs,
+        } = params;
+
         if matches!(histogram_buckets, Some(0)) {
             return Err(DatabaseError::InvalidValue(
                 "histogram buckets must be >= 1".to_string(),
@@ -544,6 +594,10 @@ impl DataBaseBuilder {
                 schema,
             };
             function_registry.register_table(Arc::new(catalog))?;
+        }
+
+        for function in aggregate_functions {
+            function_registry.register_aggregate(function)?;
         }
 
         for pack in function_packs {
@@ -753,13 +807,20 @@ async fn start_execution<'a, 'p, T: StorageTransaction + 'p, A: MetaArena + 'p>(
     transaction: &'a mut T,
     mut executor: Executor<'p>,
     plan_arena: A,
+    function_registry: Option<&'p crate::function::registry::FunctionRegistry>,
 ) -> Result<Execution<'a, 'p, A, T>, DatabaseError>
 where
     'p: 'a,
 {
     let mut plan_arena = ExecMetaArena::new(plan_arena);
-    let arena =
-        start_execution_inner(table_cache, transaction, &mut executor, &mut plan_arena).await?;
+    let arena = start_execution_inner(
+        table_cache,
+        transaction,
+        &mut executor,
+        &mut plan_arena,
+        function_registry,
+    )
+    .await?;
 
     Ok((plan_arena, (executor, arena)))
 }
@@ -770,6 +831,7 @@ async fn start_execution_inner<'a, 'p, T: StorageTransaction + 'p, A: MetaArena 
     transaction: &'a mut T,
     executor: &mut Executor<'p>,
     plan_arena: &mut ExecMetaArena<A>,
+    function_registry: Option<&'p crate::function::registry::FunctionRegistry>,
 ) -> Result<ExecArena<'p, 'a, T>, DatabaseError>
 where
     'p: 'a,
@@ -777,6 +839,9 @@ where
     let stamp = statement_stamp(transaction, executor.plan())?;
     let iters = executor.buffer.iter_slots(executor.iters());
     let mut arena = ExecArena::new(table_cache, transaction).with_iters(iters);
+    if let Some(registry) = function_registry {
+        arena = arena.with_function_registry(registry);
+    }
     executor.buffer.set_statement_stamp(stamp);
     executor.start(&mut arena, plan_arena).await?;
 
@@ -950,7 +1015,14 @@ impl<S: Storage> State<S> {
         'txn: 'p,
         'p: 'a,
     {
-        start_execution(self.table_cache(), transaction, executor, plan_arena).await
+        start_execution(
+            self.table_cache(),
+            transaction,
+            executor,
+            plan_arena,
+            Some(&self.function_registry),
+        )
+        .await
     }
 
     pub(crate) async fn execute_mut<'a, 'txn, A, F>(
@@ -1002,7 +1074,14 @@ impl<S: Storage> State<S> {
 
         plan.populate_output_schema_recursive(&mut plan_arena);
         let executor = Executor::new(plan, &plan_arena);
-        start_execution(table_cache, transaction, executor, plan_arena).await
+        start_execution(
+            table_cache,
+            transaction,
+            executor,
+            plan_arena,
+            Some(&self.function_registry),
+        )
+        .await
     }
 }
 
@@ -2284,6 +2363,7 @@ pub(crate) mod test {
                 "t1".to_string(),
                 columns,
                 false,
+                Vec::new(),
             )
             .await?
         {
