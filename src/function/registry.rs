@@ -18,6 +18,7 @@ use crate::expression::function::table::{
     ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl,
 };
 use crate::expression::function::FunctionSummary;
+use crate::types::LogicalType;
 use std::collections::HashMap;
 use std::sync::Arc;
 
@@ -84,5 +85,64 @@ impl FunctionRegistry {
     pub(crate) fn load_table(&mut self, catalog: Arc<TableFunctionCatalog>) {
         let summary = catalog.inner.summary().clone();
         self.table_functions.insert(summary, catalog);
+    }
+
+    pub fn resolve_scalar(
+        &self,
+        name: &str,
+        arg_types: &[LogicalType],
+    ) -> Result<Arc<dyn ScalarFunctionImpl>, DatabaseError> {
+        let candidates: Vec<_> = self
+            .scalar_functions
+            .iter()
+            .filter(|(summary, _)| summary.name.as_ref() == name)
+            .filter(|(summary, _)| summary.arg_types.len() == arg_types.len())
+            .collect();
+
+        if candidates.is_empty() {
+            return Err(DatabaseError::function_not_found(name));
+        }
+
+        #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+        enum MatchQuality {
+            ExactMatch,
+            ImplicitCast,
+            NullLiteral,
+        }
+
+        let mut scored_candidates = Vec::new();
+
+        for (summary, function) in candidates {
+            let mut overall_quality = MatchQuality::ExactMatch;
+            let mut compatible = true;
+
+            for (provided, expected) in arg_types.iter().zip(summary.arg_types.iter()) {
+                if provided == expected {
+                    continue;
+                } else if provided == &LogicalType::SqlNull {
+                    overall_quality = overall_quality.max(MatchQuality::NullLiteral);
+                } else if LogicalType::can_implicit_cast(provided, expected) {
+                    overall_quality = overall_quality.max(MatchQuality::ImplicitCast);
+                } else {
+                    compatible = false;
+                    break;
+                }
+            }
+
+            if compatible {
+                scored_candidates.push((overall_quality, function.clone()));
+            }
+        }
+
+        if scored_candidates.is_empty() {
+            return Err(DatabaseError::function_not_found(format!(
+                "{} with argument types {:?}",
+                name, arg_types
+            )));
+        }
+
+        scored_candidates.sort_by_key(|(quality, _)| *quality);
+
+        Ok(scored_candidates[0].1.clone())
     }
 }
