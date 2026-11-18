@@ -63,7 +63,7 @@ pub(crate) fn create_accumulator(
     ty: &crate::types::LogicalType,
     distinct: bool,
 ) -> Result<Box<dyn Accumulator>, DatabaseError> {
-    Ok(match (kind, distinct) {
+    Ok(match (&kind, distinct) {
         (AggKind::Count, false) => Box::new(CountAccumulator::new()),
         (AggKind::Count, true) => Box::new(DistinctCountAccumulator::new()),
         (AggKind::Sum, false) => Box::new(SumAccumulator::new(Cow::Borrowed(ty))?),
@@ -73,6 +73,11 @@ pub(crate) fn create_accumulator(
         (AggKind::Avg, distinct) => Box::new(AvgAccumulator::new(distinct)),
         (AggKind::Total, distinct) => Box::new(TotalAccumulator::new(distinct)),
         (AggKind::GroupConcat, distinct) => Box::new(GroupConcatAccumulator::new(distinct)),
+        (AggKind::Udf(_), _) => {
+            return Err(DatabaseError::UnsupportedStmt(
+                "User-defined aggregate functions not yet fully implemented".to_string(),
+            ));
+        }
     })
 }
 
@@ -89,7 +94,7 @@ pub(crate) fn push_accumulators(
         else {
             unreachable!("push_accumulators called with non-aggregate expression {expr}")
         };
-        accs.push(create_accumulator(*kind, ty, *distinct)?);
+        accs.push(create_accumulator(kind.clone(), ty, *distinct)?);
     }
     Ok(())
 }

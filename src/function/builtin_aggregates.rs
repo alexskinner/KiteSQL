@@ -108,7 +108,7 @@ impl MinMaxAggregate {
 
 impl AggregateFunctionImpl for MinMaxAggregate {
     fn kind(&self) -> AggKind {
-        self.kind
+        self.kind.clone()
     }
     
     fn input_type(&self) -> &LogicalType {
