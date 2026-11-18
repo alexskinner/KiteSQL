@@ -252,6 +252,25 @@ mod tests {
     }
 
     #[test]
+    fn test_udaf_empty_table() -> Result<(), DatabaseError> {
+        use tempfile::TempDir;
+
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let mut database = DataBaseBuilder::path(temp_dir.path())
+            .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
+            .build_in_memory()?;
+
+        database.ddl("CREATE TABLE empty_table_test (id INT PRIMARY KEY, value INT)")?;
+
+        let mut iter = database.run("select sum_times_10(value) from empty_table_test")?;
+        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple[0], DataValue::Null);
+        iter.done()?;
+
+        Ok(())
+    }
+
+    #[test]
     fn test_udaf_all_null_group() -> Result<(), DatabaseError> {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");

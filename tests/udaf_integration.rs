@@ -178,3 +178,133 @@ fn test_external_udaf_null_handling() -> Result<(), DatabaseError> {
 
     Ok(())
 }
+
+#[test]
+fn test_external_udaf_in_view() -> Result<(), DatabaseError> {
+    use kite_sql::Model;
+
+    #[derive(Debug, Clone, Model)]
+    #[model(table = "product_data")]
+    struct ProductData {
+        #[model(primary_key)]
+        id: i32,
+        category: String,
+        multiplier: i32,
+    }
+
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let mut database = DataBaseBuilder::path(temp_dir.path())
+        .register_aggregate_function(ProductAggregate::new(LogicalType::Integer))
+        .build_in_memory()?;
+
+    database.create_table_if_not_exists::<ProductData>()?;
+    database.insert(&ProductData {
+        id: 1,
+        category: "X".to_string(),
+        multiplier: 2,
+    })?;
+    database.insert(&ProductData {
+        id: 2,
+        category: "X".to_string(),
+        multiplier: 3,
+    })?;
+    database.insert(&ProductData {
+        id: 3,
+        category: "Y".to_string(),
+        multiplier: 5,
+    })?;
+
+    database
+        .ddl("CREATE VIEW product_view AS SELECT category, product(multiplier) as total FROM product_data GROUP BY category")?;
+
+    let mut iter = database.run("SELECT category, total FROM product_view ORDER BY category")?;
+
+    let tuple_x = next_tuple_owned(&mut iter)?.unwrap();
+    assert_eq!(tuple_x[1], DataValue::Int32(6));
+
+    let tuple_y = next_tuple_owned(&mut iter)?.unwrap();
+    assert_eq!(tuple_y[1], DataValue::Int32(5));
+
+    iter.done()?;
+    Ok(())
+}
+
+#[cfg(feature = "lmdb")]
+#[test]
+fn test_external_udaf_lmdb_persist_with_view() -> Result<(), DatabaseError> {
+    use kite_sql::db::CatalogKind;
+
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+
+    {
+        let mut database = DataBaseBuilder::path(temp_dir.path())
+            .register_aggregate_function(ProductAggregate::new(LogicalType::Integer))
+            .build_lmdb()?;
+
+        database.ddl("CREATE TABLE test_data (id INT PRIMARY KEY, val INT)")?;
+        database
+            .run("INSERT INTO test_data (id, val) VALUES (1, 3), (2, 4)")?
+            .done()?;
+
+        database
+            .ddl("CREATE VIEW product_summary AS SELECT product(val) as total FROM test_data")?;
+
+        let mut iter = database.run("SELECT product(val) FROM test_data")?;
+        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple[0], DataValue::Int32(12));
+        iter.done()?;
+
+        let mut iter2 = database.run("SELECT total FROM product_summary")?;
+        let tuple2 = next_tuple_owned(&mut iter2)?.unwrap();
+        assert_eq!(tuple2[0], DataValue::Int32(12));
+        iter2.done()?;
+    }
+
+    {
+        let mut database = DataBaseBuilder::path(temp_dir.path())
+            .register_aggregate_function(ProductAggregate::new(LogicalType::Integer))
+            .build_lmdb()?;
+
+        database.load(CatalogKind::Table("test_data".into()))?;
+        database.load(CatalogKind::View("product_summary".into()))?;
+
+        let mut iter = database.run("SELECT product(val) FROM test_data")?;
+        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple[0], DataValue::Int32(12));
+        iter.done()?;
+
+        let mut iter2 = database.run("SELECT total FROM product_summary")?;
+        let tuple2 = next_tuple_owned(&mut iter2)?.unwrap();
+        assert_eq!(tuple2[0], DataValue::Int32(12));
+        iter2.done()?;
+    }
+
+    Ok(())
+}
+
+#[test]
+fn test_external_udaf_empty_table() -> Result<(), DatabaseError> {
+    use kite_sql::Model;
+
+    #[derive(Debug, Clone, Model)]
+    #[model(table = "empty_test")]
+    struct EmptyTest {
+        #[model(primary_key)]
+        id: i32,
+        value: i32,
+    }
+
+    let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+    let mut database = DataBaseBuilder::path(temp_dir.path())
+        .register_aggregate_function(ProductAggregate::new(LogicalType::Integer))
+        .build_in_memory()?;
+
+    database.create_table_if_not_exists::<EmptyTest>()?;
+
+    let mut iter = database.run("SELECT product(value) FROM empty_test")?;
+    let tuple = next_tuple_owned(&mut iter)?.unwrap();
+    assert_eq!(tuple[0], DataValue::Null);
+    iter.done()?;
+
+    Ok(())
+}
