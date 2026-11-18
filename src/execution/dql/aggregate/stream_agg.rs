@@ -90,8 +90,9 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for StreamAggExecutor<'
         plan_arena: &mut ExecMetaArena<A>,
     ) -> Result<(), DatabaseError> {
         let len = self.groupby_exprs.len();
+        let registry = arena.function_registry();
         if mem::take(&mut self.carried) {
-            prepare_accumulators(&mut self.accs, self.agg_calls, plan_arena)?;
+            prepare_accumulators(&mut self.accs, self.agg_calls, plan_arena, registry)?;
             for (acc, arg) in self.accs.iter_mut().zip(&self.carried_args) {
                 acc.update_value(arg)?;
             }
@@ -121,7 +122,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for StreamAggExecutor<'
 
             if !self.in_group {
                 self.in_group = true;
-                prepare_accumulators(&mut self.accs, self.agg_calls, plan_arena)?;
+                prepare_accumulators(&mut self.accs, self.agg_calls, plan_arena, registry)?;
                 update_accumulators(&mut self.accs, self.agg_calls, tuple, plan_arena)?;
             } else if self.group_keys[..len] == self.group_keys[len..] {
                 self.group_keys.truncate(len);

@@ -18,7 +18,7 @@ use crate::planner::ExprRef;
 use crate::types::LogicalType;
 use kite_sql_serde_macros::ReferenceSerialization;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ReferenceSerialization)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, ReferenceSerialization)]
 pub enum WindowFunctionKind {
     RowNumber,
     Rank,
@@ -36,11 +36,11 @@ impl WindowFunctionKind {
         }
     }
 
-    pub(crate) fn name(self) -> &'static str {
+    pub(crate) fn name(&self) -> std::borrow::Cow<'static, str> {
         match self {
-            Self::RowNumber => "row_number",
-            Self::Rank => "rank",
-            Self::DenseRank => "dense_rank",
+            Self::RowNumber => "row_number".into(),
+            Self::Rank => "rank".into(),
+            Self::DenseRank => "dense_rank".into(),
             Self::Aggregate(kind) => kind.name(),
         }
     }

@@ -46,6 +46,31 @@ pub trait Accumulator: MaybeSend {
     /// updates the accumulator's state from a vector of arrays.
     fn update_value(&mut self, value: &DataValue) -> Result<(), DatabaseError>;
 
+    /// updates the accumulator's state from multiple values (batch operation).
+    /// Default implementation calls update_value for each value.
+    fn update_values(&mut self, values: &[DataValue]) -> Result<(), DatabaseError> {
+        for value in values {
+            self.update_value(value)?;
+        }
+        Ok(())
+    }
+
+    /// Merges another accumulator's state into this one (for distributed aggregation).
+    ///
+    /// This method is provided for future distributed or parallel aggregation paths.
+    /// Currently, KiteSQL does not invoke merge() during query execution:
+    /// - HashAggExecutor accumulates all input locally without splitting work
+    /// - SimpleAggExecutor processes a single stream without parallelization
+    /// - StreamAggExecutor operates on pre-sorted input without distribution
+    ///
+    /// Aggregates that wish to support merge for future use should override this method.
+    /// The default implementation returns an error indicating merge is not supported.
+    fn merge(&mut self, _other: &dyn Accumulator) -> Result<(), DatabaseError> {
+        Err(DatabaseError::UnsupportedStmt(
+            "merge not supported for this accumulator".to_string(),
+        ))
+    }
+
     /// evaluates its result based on its current state.
     fn evaluate(&mut self) -> Result<(), DatabaseError> {
         Ok(())
@@ -62,8 +87,9 @@ pub(crate) fn create_accumulator(
     kind: AggKind,
     ty: &crate::types::LogicalType,
     distinct: bool,
+    registry: Option<&crate::function::registry::FunctionRegistry>,
 ) -> Result<Box<dyn Accumulator>, DatabaseError> {
-    Ok(match (kind, distinct) {
+    Ok(match (&kind, distinct) {
         (AggKind::Count, false) => Box::new(CountAccumulator::new()),
         (AggKind::Count, true) => Box::new(DistinctCountAccumulator::new()),
         (AggKind::Sum, false) => Box::new(SumAccumulator::new(Cow::Borrowed(ty))?),
@@ -73,6 +99,16 @@ pub(crate) fn create_accumulator(
         (AggKind::Avg, distinct) => Box::new(AvgAccumulator::new(distinct)),
         (AggKind::Total, distinct) => Box::new(TotalAccumulator::new(distinct)),
         (AggKind::GroupConcat, distinct) => Box::new(GroupConcatAccumulator::new(distinct)),
+        (AggKind::Udf(id), _) => {
+            let registry = registry.ok_or_else(|| {
+                DatabaseError::UnsupportedStmt(
+                    "Function registry required for UDAF execution".to_string(),
+                )
+            })?;
+            let arg_types: Vec<_> = id.arg_types.iter().collect();
+            let agg_impl = registry.resolve_aggregate(&id.name, &arg_types)?;
+            agg_impl.create_accumulator(distinct)?
+        }
     })
 }
 
@@ -81,6 +117,7 @@ pub(crate) fn push_accumulators(
     accs: &mut Vec<Box<dyn Accumulator>>,
     exprs: &[ExprRef],
     arena: &(dyn MetaArena + '_),
+    registry: Option<&crate::function::registry::FunctionRegistry>,
 ) -> Result<(), DatabaseError> {
     for expr in exprs {
         let ScalarExpression::AggCall {
@@ -89,7 +126,7 @@ pub(crate) fn push_accumulators(
         else {
             unreachable!("push_accumulators called with non-aggregate expression {expr}")
         };
-        accs.push(create_accumulator(*kind, ty, *distinct)?);
+        accs.push(create_accumulator(kind.clone(), ty, *distinct, registry)?);
     }
     Ok(())
 }
@@ -98,9 +135,10 @@ pub(crate) fn prepare_accumulators(
     accs: &mut Vec<Box<dyn Accumulator>>,
     exprs: &[ExprRef],
     arena: &(dyn MetaArena + '_),
+    registry: Option<&crate::function::registry::FunctionRegistry>,
 ) -> Result<(), DatabaseError> {
     if accs.is_empty() {
-        return push_accumulators(accs, exprs, arena);
+        return push_accumulators(accs, exprs, arena, registry);
     }
     for acc in accs {
         acc.reset();
