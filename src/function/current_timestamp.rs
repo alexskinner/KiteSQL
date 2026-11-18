@@ -38,6 +38,7 @@ impl CurrentTimeStamp {
             summary: FunctionSummary {
                 name: function_name.into(),
                 arg_types: Vec::new(),
+                persistence: crate::expression::function::PersistencePolicy::Durable,
             },
         })
     }
@@ -54,7 +55,7 @@ impl ScalarFunctionImpl for CurrentTimeStamp {
     }
 
     fn monotonicity(&self) -> Option<FuncMonotonicity> {
-        todo!()
+        None
     }
 
     fn return_type(&self) -> &LogicalType {

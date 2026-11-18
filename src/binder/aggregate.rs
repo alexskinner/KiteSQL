@@ -528,8 +528,7 @@ mod tests {
     async fn test_validate_having_orderby_rejects_missing_group_expr() -> Result<(), DatabaseError>
     {
         let tables = build_t1_table().await?;
-        let scala_functions = Default::default();
-        let table_functions = Default::default();
+        let function_registry = crate::function::registry::FunctionRegistry::new();
         let transaction = tables.storage.transaction()?;
         let arena = tables.table_arena.borrow();
         let args: [(usize, LogicalType); 0] = [];
@@ -539,8 +538,7 @@ mod tests {
                 &arena.tables,
                 &arena.views,
                 &transaction,
-                &scala_functions,
-                &table_functions,
+                &function_registry,
             ),
             &args,
             None,
