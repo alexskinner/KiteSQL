@@ -128,6 +128,7 @@ fn test_custom_dialect_type_mapping() -> Result<(), Box<dyn std::error::Error>> 
 #[test]
 #[cfg(feature = "parser")]
 fn test_custom_dialect_parsing_and_rewrite() -> Result<(), Box<dyn std::error::Error>> {
+    use kite_sql::parser::parse_sql_with_dialect;
     use kite_sql::storage::lmdb::LmdbStorage;
 
     let temp_dir = tempfile::tempdir()?;
@@ -137,6 +138,25 @@ fn test_custom_dialect_parsing_and_rewrite() -> Result<(), Box<dyn std::error::E
         .register_dialect(toy_dialect.clone())
         .default_dialect("toy")?
         .build_with_storage(storage)?;
+
+    // Demonstrate parsing works with custom ToyParserDialect
+    // ToyParserDialect supports backticks (is_delimited_identifier_start returns true for '`')
+    let toy_parse = parse_sql_with_dialect(
+        "CREATE TABLE `backtick_table` (id INT)",
+        toy_dialect.parser_dialect(),
+    );
+    assert!(
+        toy_parse.is_ok(),
+        "ToyParserDialect should successfully parse backtick identifiers"
+    );
+
+    // Verify the parsing produces a valid statement
+    let statements = toy_parse.unwrap();
+    assert_eq!(statements.len(), 1, "Should parse exactly one statement");
+
+    // Compare: Generic dialect behavior is the same for backticks (both support it)
+    // but the custom dialect can implement other parsing differences as needed.
+    // The key demonstration here is that we can use a custom parser dialect.
 
     // Demonstrate the rewrite hook: CUSTOMTABLE gets rewritten to rewritten_table
     // The CREATE TABLE statement with "CUSTOMTABLE" will be rewritten to "rewritten_table"
