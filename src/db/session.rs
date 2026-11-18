@@ -46,17 +46,18 @@
 //!
 //! # Statement-Level Atomicity
 //!
-//! KiteSQL implements statement-level atomicity: when a DML statement fails partway through
-//! execution inside an explicit transaction, only that statement's changes are rolled back
-//! while the transaction remains open and usable. This matches MySQL semantics.
+//! When DML statements run inside an explicit transaction (BEGIN/COMMIT), KiteSQL provides
+//! statement-level atomicity matching MySQL: if a statement fails partway through, only that
+//! statement's changes are rolled back while the transaction remains open.
 //!
-//! Implementation: DML executors (INSERT, UPDATE, DELETE, COPY FROM FILE) record inverse
-//! operations in a statement-scoped undo log before each write. If the statement fails during
-//! iteration or done(), the inverses are applied in reverse order, undoing only that statement's
-//! partial effects. On success, the undo log is discarded.
+//! Implementation: DML executors record inverse operations after each successful write. If
+//! the statement errors during iteration or done(), the inverses replay in reverse, undoing
+//! only that statement. On success, the undo log is discarded.
 //!
-//! Note: Memory storage does not support transaction rollback, so statement atomicity is
-//! limited on the memory backend.
+//! In autocommit mode, statement undo is skipped for performance since the entire transaction
+//! is dropped on failure anyway.
+//!
+//! Note: Memory storage does not support rollback, so statement atomicity is unavailable there.
 
 use crate::binder::Statement;
 use crate::db::{

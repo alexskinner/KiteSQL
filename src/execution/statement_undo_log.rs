@@ -30,6 +30,7 @@ pub(crate) enum UndoOp {
         table_id: TableId,
         tuple: TupleImpl,
         serializers: Vec<TupleValueSerializableImpl>,
+        overwrite: bool,
     },
     DeleteIndex {
         table_id: TableId,
@@ -71,6 +72,21 @@ impl StatementUndoLog {
             table_id,
             tuple,
             serializers,
+            overwrite: false,
+        });
+    }
+
+    pub(crate) fn record_append_tuple_overwrite(
+        &mut self,
+        table_id: TableId,
+        tuple: TupleImpl,
+        serializers: Vec<TupleValueSerializableImpl>,
+    ) {
+        self.ops.push(UndoOp::AppendTuple {
+            table_id,
+            tuple,
+            serializers,
+            overwrite: true,
         });
     }
 
@@ -125,9 +141,10 @@ impl StatementUndoLog {
                     table_id,
                     tuple,
                     serializers,
+                    overwrite,
                 } => {
                     transaction
-                        .append_tuple(table_codec, table_id, &tuple, &serializers, false)
+                        .append_tuple(table_codec, table_id, &tuple, &serializers, overwrite)
                         .await?;
                 }
                 UndoOp::DeleteIndex {

@@ -86,14 +86,13 @@ impl SqlDialect for ToyDialect {
         // Rewrite table names that are exactly "customtable" to "rewritten_table"
         match statement {
             Statement::CreateTable(create) => {
-                if let Some(name_part) = create.name.0.first() {
-                    if let sqlparser::ast::ObjectNamePart::Identifier(ident) = name_part {
-                        if ident.value.eq_ignore_ascii_case("customtable") {
-                            create.name =
-                                ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
-                                    Ident::new("rewritten_table"),
-                                )]);
-                        }
+                if let Some(sqlparser::ast::ObjectNamePart::Identifier(ident)) =
+                    create.name.0.first()
+                {
+                    if ident.value.eq_ignore_ascii_case("customtable") {
+                        create.name = ObjectName(vec![sqlparser::ast::ObjectNamePart::Identifier(
+                            Ident::new("rewritten_table"),
+                        )]);
                     }
                 }
                 Ok(())

@@ -730,6 +730,7 @@ pub(crate) struct ExecArena<'a, 't, T: StorageTransaction + 'a> {
     iters: Vec<StorageIter<'t, T>>,
     function_registry: Option<&'a crate::function::registry::FunctionRegistry>,
     statement_undo_log: statement_undo_log::StatementUndoLog,
+    enable_statement_undo: bool,
     _lifetimes: PhantomData<&'t &'a ()>,
 }
 
@@ -791,13 +792,13 @@ impl<'t, T: StorageTransaction + 't> StorageIter<'t, T> {
 }
 
 pub(crate) struct ExecArenaLocalState<'b, 'a, 't, T: StorageTransaction + 'a> {
-    transaction: TxnPtr<T>,
+    pub(crate) transaction: TxnPtr<T>,
     pub(crate) table_codec: &'b mut TableCodec,
     pub(crate) bound_buffers: &'b mut [Bytes; 2],
     pub(crate) result: &'b mut ExecResult,
     pub(crate) plan_arena: &'b (dyn MetaArena + 'a),
     pub(crate) iters: &'b mut [StorageIter<'t, T>],
-    ddl_apply: &'b mut Vec<DDLApply>,
+    pub(crate) ddl_apply: &'b mut Vec<DDLApply>,
 }
 
 impl<'b, 'a, 't, T: StorageTransaction + 'a> ExecArenaLocalState<'b, 'a, 't, T> {
@@ -877,8 +878,14 @@ impl<'a, 't, T: StorageTransaction + 'a> ExecArena<'a, 't, T> {
             iters: Vec::new(),
             function_registry: None,
             statement_undo_log: statement_undo_log::StatementUndoLog::new(),
+            enable_statement_undo: false,
             _lifetimes: PhantomData,
         }
+    }
+
+    pub(crate) fn with_statement_undo(mut self, enable: bool) -> Self {
+        self.enable_statement_undo = enable;
+        self
     }
 
     pub(crate) fn with_function_registry(
@@ -902,16 +909,8 @@ impl<'a, 't, T: StorageTransaction + 'a> ExecArena<'a, 't, T> {
         self.statement_undo_log.clear();
     }
 
-    #[maybe_async]
-    pub(crate) async fn rollback_statement_undo_log(
-        &mut self,
-        executor: &mut Executor<'_>,
-    ) -> Result<(), DatabaseError> {
-        let undo_log = mem::take(&mut self.statement_undo_log);
-        let transaction = unsafe { &mut *self.transaction.0 };
-        undo_log
-            .rollback(transaction, &mut executor.buffer.table_codec)
-            .await
+    pub(crate) fn take_undo_log(&mut self) -> statement_undo_log::StatementUndoLog {
+        mem::take(&mut self.statement_undo_log)
     }
 
     pub(crate) fn release_iters(&mut self, buffer: Option<&mut ExecBuffer>) {
@@ -978,6 +977,10 @@ impl<'c, 'a, 't, T: StorageTransaction + 'a> ExecContext<'c, 'a, 't, T> {
 
     pub(crate) fn undo_log(&mut self) -> &mut statement_undo_log::StatementUndoLog {
         self.arena.undo_log()
+    }
+
+    pub(crate) fn should_record_undo(&self) -> bool {
+        self.arena.enable_statement_undo
     }
 
     pub(crate) fn push_runtime_probe(&mut self, value: RuntimeIndexProbe) {

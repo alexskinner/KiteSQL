@@ -111,6 +111,218 @@ fn test_session_transaction_control_integration() -> Result<(), DatabaseError> {
 }
 
 #[test]
+fn test_statement_atomicity_earlier_row_survives() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    session.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+
+    {
+        let iter = session.run("INSERT INTO test VALUES (2, 200), (1, 999)")?;
+        let result = iter.done();
+        assert!(
+            result.is_err(),
+            "Second insert should fail on duplicate key"
+        );
+    }
+
+    let mut iter = session.run("SELECT * FROM test ORDER BY id")?;
+    let mut results = Vec::new();
+    while let Some((id, val)) = iter.next_tuple(|_, row| {
+        Some((
+            row.get(0).unwrap().i32().unwrap(),
+            row.get(1).unwrap().i32().unwrap(),
+        ))
+    })? {
+        results.push((id, val));
+    }
+    iter.done()?;
+
+    assert_eq!(results.len(), 1, "Should have 1 row");
+    assert_eq!(results[0], (1, 100), "Original row should remain");
+
+    session.run("COMMIT")?.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_statement_atomicity_unique_index_preserved() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT UNIQUE)")?;
+    database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    {
+        let iter = session.run("INSERT INTO test VALUES (2, 100)")?;
+        let result = iter.done();
+        assert!(result.is_err(), "Duplicate unique value should fail");
+    }
+
+    let mut iter = session.run("SELECT * FROM test WHERE val = 100")?;
+    let mut count = 0;
+    let mut id = 0;
+    while let Some(row_id) = iter.next_tuple(|_, row| row.get(0).unwrap().i32())? {
+        count += 1;
+        id = row_id;
+    }
+    iter.done()?;
+
+    assert_eq!(count, 1, "Should find original row by index");
+    assert_eq!(id, 1, "Should be original row");
+
+    {
+        let iter = session.run("INSERT INTO test VALUES (3, 100)")?;
+        let result = iter.done();
+        assert!(result.is_err(), "Duplicate should still be rejected");
+    }
+
+    session.run("ROLLBACK")?.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_statement_atomicity_update_values_and_indexes() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT UNIQUE)")?;
+
+    database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+    database.run("INSERT INTO test VALUES (2, 200)")?.done()?;
+    database.run("INSERT INTO test VALUES (3, 300)")?.done()?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    {
+        let iter = session.run("UPDATE test SET val = val + 50")?;
+        let result = iter.done();
+        assert!(result.is_err(), "Update violating unique should fail");
+    }
+
+    let mut iter = session.run("SELECT val FROM test ORDER BY id")?;
+    let mut vals = Vec::new();
+    while let Some(val) = iter.next_tuple(|_, row| row.get(0).unwrap().i32())? {
+        vals.push(val);
+    }
+    iter.done()?;
+
+    assert_eq!(vals, vec![100, 200, 300], "Values should be unchanged");
+
+    let mut iter = session.run("SELECT id FROM test WHERE val = 200")?;
+    let id = iter
+        .next_tuple(|_, row| row.get(0).unwrap().i32())?
+        .expect("Index lookup should find row");
+    iter.done()?;
+    assert_eq!(id, 2, "Index lookup should return correct row");
+
+    session.run("ROLLBACK")?.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_statement_atomicity_pk_changing_update() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+
+    database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+    database.run("INSERT INTO test VALUES (2, 200)")?.done()?;
+    database.run("INSERT INTO test VALUES (3, 300)")?.done()?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    {
+        let iter = session.run("UPDATE test SET id = id + 10")?;
+        let result = iter.done();
+        assert!(
+            result.is_err(),
+            "PK-changing update creating duplicate should fail"
+        );
+    }
+
+    let mut iter = session.run("SELECT id, val FROM test ORDER BY id")?;
+    let mut results = Vec::new();
+    while let Some((id, val)) = iter.next_tuple(|_, row| {
+        Some((
+            row.get(0).unwrap().i32().unwrap(),
+            row.get(1).unwrap().i32().unwrap(),
+        ))
+    })? {
+        results.push((id, val));
+    }
+    iter.done()?;
+
+    assert_eq!(
+        results,
+        vec![(1, 100), (2, 200), (3, 300)],
+        "All rows should be restored"
+    );
+
+    session.run("ROLLBACK")?.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_statement_after_failed_statement() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    session.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+
+    {
+        let iter = session.run("INSERT INTO test VALUES (1, 200)")?;
+        let result = iter.done();
+        assert!(result.is_err(), "Duplicate key should fail");
+    }
+
+    assert!(
+        session.in_transaction(),
+        "Transaction should remain open after failed statement"
+    );
+
+    session.run("INSERT INTO test VALUES (2, 200)")?.done()?;
+
+    let mut iter = session.run("SELECT * FROM test ORDER BY id")?;
+    let mut results = Vec::new();
+    while let Some((id, val)) = iter.next_tuple(|_, row| {
+        Some((
+            row.get(0).unwrap().i32().unwrap(),
+            row.get(1).unwrap().i32().unwrap(),
+        ))
+    })? {
+        results.push((id, val));
+    }
+    iter.done()?;
+
+    assert_eq!(results, vec![(1, 100), (2, 200)], "Both inserts should be visible");
+
+    session.run("COMMIT")?.done()?;
+
+    Ok(())
+}
+
+#[test]
 fn test_statement_atomicity_insert() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
     let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;

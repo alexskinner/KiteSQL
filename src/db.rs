@@ -20,7 +20,7 @@ pub use crate::binder::Statement;
 use crate::binder::{Binder, BinderContext};
 use crate::errors::DatabaseError;
 pub use crate::execution::Executor;
-use crate::execution::{DDLApply, ExecArena, ExecBuffer, TxnPtr};
+use crate::execution::{DDLApply, ExecArena, ExecArenaLocalState, ExecBuffer, TxnPtr};
 use crate::expression::function::scala::ScalarFunctionImpl;
 use crate::expression::function::table::{
     ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl,
@@ -824,6 +824,32 @@ where
         &mut executor,
         &mut plan_arena,
         function_registry,
+        false,
+    )
+    .await?;
+
+    Ok((plan_arena, (executor, arena)))
+}
+
+#[maybe_async]
+async fn start_execution_with_undo<'a, 'p, T: StorageTransaction + 'p, A: MetaArena + 'p>(
+    table_cache: &'p TableCache,
+    transaction: &'a mut T,
+    mut executor: Executor<'p>,
+    plan_arena: A,
+    function_registry: Option<&'p crate::function::registry::FunctionRegistry>,
+) -> Result<Execution<'a, 'p, A, T>, DatabaseError>
+where
+    'p: 'a,
+{
+    let mut plan_arena = ExecMetaArena::new(plan_arena);
+    let arena = start_execution_inner(
+        table_cache,
+        transaction,
+        &mut executor,
+        &mut plan_arena,
+        function_registry,
+        true,
     )
     .await?;
 
@@ -837,13 +863,16 @@ async fn start_execution_inner<'a, 'p, T: StorageTransaction + 'p, A: MetaArena 
     executor: &mut Executor<'p>,
     plan_arena: &mut ExecMetaArena<A>,
     function_registry: Option<&'p crate::function::registry::FunctionRegistry>,
+    enable_statement_undo: bool,
 ) -> Result<ExecArena<'p, 'a, T>, DatabaseError>
 where
     'p: 'a,
 {
     let stamp = statement_stamp(transaction, executor.plan())?;
     let iters = executor.buffer.iter_slots(executor.iters());
-    let mut arena = ExecArena::new(table_cache, transaction).with_iters(iters);
+    let mut arena = ExecArena::new(table_cache, transaction)
+        .with_iters(iters)
+        .with_statement_undo(enable_statement_undo);
     if let Some(registry) = function_registry {
         arena = arena.with_function_registry(registry);
     }
@@ -1029,7 +1058,7 @@ impl<S: Storage> State<S> {
         'txn: 'p,
         'p: 'a,
     {
-        start_execution(
+        start_execution_with_undo(
             self.table_cache(),
             transaction,
             executor,
@@ -1980,10 +2009,34 @@ impl<'p, T: StorageTransaction + 'p> TransactionGuard<'_, 'p, T> {
                 self.finish(Some(&mut executor.buffer));
                 Ok(None)
             }
-            Err(err) => {
-                self.arena.rollback_statement_undo_log(executor).await?;
-                self.finish(Some(&mut executor.buffer));
-                Err(err)
+            Err(original_err) => {
+                let undo_log = self.arena.take_undo_log();
+                let rollback_result = {
+                    let state = ExecArenaLocalState {
+                        transaction: self.arena.transaction,
+                        table_codec: &mut executor.buffer.table_codec,
+                        bound_buffers: &mut executor.buffer.bound_buffers,
+                        result: &mut executor.buffer.result,
+                        plan_arena: &() as &dyn MetaArena,
+                        iters: &mut self.arena.iters,
+                        ddl_apply: &mut self.arena.ddl_apply,
+                    };
+                    let (transaction, table_codec) = state.transaction_codec_mut();
+                    undo_log.rollback(transaction, table_codec).await
+                };
+                match rollback_result {
+                    Ok(()) => {
+                        self.finish(Some(&mut executor.buffer));
+                        Err(original_err)
+                    }
+                    Err(rollback_err) => {
+                        self.finish(Some(&mut executor.buffer));
+                        Err(DatabaseError::Internal(format!(
+                            "Statement failed: {}. Rollback also failed: {}. Transaction needs ROLLBACK.",
+                            original_err, rollback_err
+                        )))
+                    }
+                }
             }
         }
     }
