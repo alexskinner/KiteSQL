@@ -668,15 +668,15 @@ impl TableCodec {
     }
 
     /// Key: `{TableId}{DISPLAY_TYPES_TAG}{BOUND_MIN_TAG}`.
-    pub fn with_display_types<R>(
+    pub async fn with_display_types<R>(
         &mut self,
         table_id: TableId,
         meta: Option<&crate::catalog::DisplayTypesMeta>,
         arena: &(impl MetaArena + ?Sized),
-        f: impl FnOnce(&[u8], &[u8]) -> Result<R, DatabaseError>,
+        f: impl AsyncFnOnce(&[u8], &[u8]) -> Result<R, DatabaseError>,
     ) -> Result<R, DatabaseError> {
         self.clear_buffers();
-        self.with_table_buffers(table_id, |lower, prefix, value| {
+        let (lower, value) = self.with_table_buffers(table_id, |lower, prefix, value| {
             Self::write_key_prefix(lower, CodecType::DisplayTypes, prefix);
             lower.push(BOUND_MIN_TAG);
 
@@ -684,8 +684,10 @@ impl TableCodec {
                 meta.encode(value, true, arena)?;
             }
 
-            f(lower.as_slice(), value.as_slice())
-        })
+            Ok((lower.clone(), value.clone()))
+        })?;
+
+        f(lower.as_slice(), value.as_slice()).await
     }
 
     pub fn decode_display_types<T: StorageTransaction>(

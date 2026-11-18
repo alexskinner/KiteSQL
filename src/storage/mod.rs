@@ -586,20 +586,6 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         // Update display types if changed
         if let (Some(column_id), Some(display)) = (changed_column_id, new_display_type) {
             updated_table.set_display_type(column_id, display.clone());
-        } else if let Some(_column_id) = changed_column_id {
-            // Column type changed but no display type provided - keep existing or clear
-            // Load existing display types from storage
-            let existing_display_types = table_codec
-                .with_display_types(
-                    updated_table.id(),
-                    None::<&crate::catalog::DisplayTypesMeta>,
-                    plan_arena,
-                    |key, _| Ok(None), // Empty - we'll load it from storage properly below
-                )?;
-            if let Some(bytes) = existing_display_types {
-                let meta = TableCodec::decode_display_types::<Self>(bytes.as_ref(), plan_arena)?;
-                updated_table.load_display_types(meta);
-            }
         }
 
         self.rewrite_table_metadata(table_codec, plan_arena, &updated_table)
@@ -824,9 +810,12 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         let display_meta = table_catalog.collect_display_types();
         if !display_meta.is_empty() {
             table_codec
-                .with_display_types(table_id, Some(&display_meta), plan_arena, async |key, value| {
-                    self.set(key, value)
-                })
+                .with_display_types(
+                    table_id,
+                    Some(&display_meta),
+                    plan_arena,
+                    async |key, value| self.set(key, value),
+                )
                 .await?;
         }
 
