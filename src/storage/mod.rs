@@ -24,7 +24,7 @@ pub(crate) mod table_codec;
 
 use crate::catalog::view::View;
 use crate::catalog::{ColumnCatalog, ColumnRef, TableCatalog, TableId, TableMeta, TableName};
-use crate::db::{ScalaFunctions, TableFunctions};
+
 use crate::errors::DatabaseError;
 use crate::expression::range_detacher::{Range, RangeValue};
 use crate::expression::TypeCast;
@@ -955,11 +955,10 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         names: &NameMapping,
         table_cache: &'a TableCache,
         view_cache: &'a ViewCache,
-        scala_functions: &'a ScalaFunctions,
-        table_functions: &'a TableFunctions,
+        function_registry: &'a crate::function::registry::FunctionRegistry,
         view_name: &str,
     ) -> Result<Option<&'a View>, DatabaseError> {
-        let _ = (table_cache, scala_functions, table_functions);
+        let _ = (table_cache, function_registry);
         Ok(names.view(view_cache, view_name))
     }
 
@@ -967,8 +966,7 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         &self,
         table_codec: &mut TableCodec,
         table_arena: &TableArenaCell,
-        scala_functions: &ScalaFunctions,
-        table_functions: &TableFunctions,
+        function_registry: &crate::function::registry::FunctionRegistry,
         view_name: TableName,
     ) -> Result<Option<(TableId, View)>, DatabaseError> {
         let Some(meta) = self
@@ -985,8 +983,7 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                 };
                 TableCodec::decode_view::<Self>(
                     bytes.as_ref(),
-                    scala_functions,
-                    table_functions,
+                    function_registry,
                     table_arena.borrow_mut(),
                 )
                 .map(|view| Some((meta.id, view)))
@@ -3799,8 +3796,7 @@ mod test {
     #[test]
     async fn test_view_create_drop() -> Result<(), DatabaseError> {
         let table_state = build_t1_table().await?;
-        let scala_functions = Default::default();
-        let table_functions = Default::default();
+        let function_registry = crate::function::registry::FunctionRegistry::new();
 
         let view_name: TableName = "v1".to_string();
         let mut plan_arena = PlanArena::new(&table_state.table_arena);
@@ -3830,8 +3826,7 @@ mod test {
                     &names,
                     &table_state.table_arena.borrow().tables,
                     &view_cache,
-                    &scala_functions,
-                    &table_functions,
+                    &function_registry,
                     &view_name,
                 )?
                 .unwrap()
@@ -3843,8 +3838,7 @@ mod test {
                     &names,
                     &crate::storage::TableCache::default(),
                     &view_cache,
-                    &scala_functions,
-                    &table_functions,
+                    &function_registry,
                     &view_name,
                 )?
                 .unwrap()
@@ -3867,8 +3861,7 @@ mod test {
                 &names,
                 &table_state.table_arena.borrow().tables,
                 &view_cache,
-                &scala_functions,
-                &table_functions,
+                &function_registry,
                 &view_name,
             )?
             .is_none());

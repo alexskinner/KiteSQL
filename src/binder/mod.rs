@@ -63,7 +63,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::catalog::view::View;
 use crate::catalog::{ColumnRef, TableCatalog, TableId, TableName};
-use crate::db::{ScalaFunctions, TableFunctions};
+
 use crate::errors::DatabaseError;
 use crate::expression::{ScalarExpression, TypeCast};
 use crate::planner::operator::join::JoinType;
@@ -259,8 +259,7 @@ pub(crate) struct BoundScalarQuery {
 }
 
 pub struct BinderContext<'a, T: StorageTransaction> {
-    pub(crate) scala_functions: &'a ScalaFunctions,
-    pub(crate) table_functions: &'a TableFunctions,
+    pub(crate) function_registry: &'a crate::function::registry::FunctionRegistry,
     pub(crate) names: &'a NameMapping,
     pub(crate) table_cache: &'a TableCache,
     pub(crate) view_cache: &'a ViewCache,
@@ -331,12 +330,10 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
         table_cache: &'a TableCache,
         view_cache: &'a ViewCache,
         transaction: &'a T,
-        scala_functions: &'a ScalaFunctions,
-        table_functions: &'a TableFunctions,
+        function_registry: &'a crate::function::registry::FunctionRegistry,
     ) -> Self {
         BinderContext {
-            scala_functions,
-            table_functions,
+            function_registry,
             names,
             table_cache,
             view_cache,
@@ -366,8 +363,7 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
     /// same local sources and aliases while keeping their mutations isolated.
     pub(crate) fn fork(&self) -> Self {
         BinderContext {
-            scala_functions: self.scala_functions,
-            table_functions: self.table_functions,
+            function_registry: self.function_registry,
             names: self.names,
             table_cache: self.table_cache,
             view_cache: self.view_cache,
@@ -401,8 +397,7 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
             self.table_cache,
             self.view_cache,
             self.transaction,
-            self.scala_functions,
-            self.table_functions,
+            self.function_registry,
         );
         context.ctes = self.ctes.clone();
         context.cte_depth = self.cte_depth;
@@ -485,8 +480,7 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
             self.names,
             self.table_cache,
             self.view_cache,
-            self.scala_functions,
-            self.table_functions,
+            self.function_registry,
             view_name,
         )
     }
@@ -827,8 +821,7 @@ pub mod test {
             sql: T,
             plan_arena: &mut PlanArena,
         ) -> Result<LogicalPlan, DatabaseError> {
-            let scala_functions = Default::default();
-            let table_functions = Default::default();
+            let function_registry = crate::function::registry::FunctionRegistry::new();
             let transaction = self.storage.transaction()?;
             let arena = self.table_arena.borrow();
             let mut binder = Binder::new(
@@ -837,8 +830,7 @@ pub mod test {
                     &arena.tables,
                     &arena.views,
                     &transaction,
-                    &scala_functions,
-                    &table_functions,
+                    &function_registry,
                 ),
                 &[],
                 None,
@@ -942,15 +934,13 @@ pub mod test {
         let arena = state.table_arena.borrow();
         let plan_arena = PlanArena::new(&state.table_arena);
         let transaction = state.storage.transaction()?;
-        let scala_functions = Default::default();
-        let table_functions = Default::default();
+        let function_registry = crate::function::registry::FunctionRegistry::new();
         let mut context = BinderContext::new(
             &arena.names,
             &arena.tables,
             &arena.views,
             &transaction,
-            &scala_functions,
-            &table_functions,
+            &function_registry,
         );
         let c1 = state.table.get_column_by_name("c1").unwrap();
         let c2 = state.table.get_column_by_name("c2").unwrap();

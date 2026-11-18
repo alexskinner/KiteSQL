@@ -125,6 +125,8 @@ pub mod errors;
 pub mod execution;
 pub mod expression;
 mod function;
+pub use function::pack::FunctionPack;
+pub use function::registry::FunctionRegistry;
 pub(crate) mod iter_ext;
 #[cfg(feature = "macros")]
 pub mod macros;

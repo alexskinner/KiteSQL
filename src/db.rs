@@ -23,17 +23,8 @@ use crate::expression::function::scala::ScalarFunctionImpl;
 use crate::expression::function::table::{
     ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl,
 };
-use crate::expression::function::FunctionSummary;
-use crate::function::abs::Abs;
-use crate::function::char_length::CharLength;
-#[cfg(feature = "time")]
-use crate::function::current_date::CurrentDate;
-#[cfg(feature = "time")]
-use crate::function::current_timestamp::CurrentTimeStamp;
-use crate::function::lower::Lower;
-use crate::function::numbers::Numbers;
-use crate::function::octet_length::OctetLength;
-use crate::function::upper::Upper;
+use crate::function::core::install_core_functions;
+use crate::function::registry::FunctionRegistry;
 use crate::maybe_async::MaybeSend;
 use crate::optimizer::core::hll;
 use crate::optimizer::core::statistics_meta::StatisticMetaLoader;
@@ -62,7 +53,7 @@ use crate::types::LogicalType;
 use ordered_float::OrderedFloat;
 pub use program::{Param, Program, ProgramIter};
 use std::borrow::Cow;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::Deref;
@@ -103,9 +94,6 @@ impl<T> Drop for OwnedPtr<T> {
 }
 
 pub(crate) type Execution<'a, 'p, A, T> = (ExecMetaArena<A>, (Executor<'p>, ExecArena<'p, 'a, T>));
-
-pub(crate) type ScalaFunctions = HashMap<FunctionSummary, Arc<dyn ScalarFunctionImpl>>;
-pub(crate) type TableFunctions = HashMap<FunctionSummary, TableFunctionCatalog>;
 
 pub enum CatalogKind {
     Table(crate::catalog::TableName),
@@ -162,6 +150,9 @@ pub struct DataBaseBuilder {
     storage_config: StorageConfig,
     #[cfg(all(not(target_arch = "wasm32"), feature = "lmdb"))]
     lmdb_config: LmdbConfig,
+    scalar_functions: Vec<Arc<dyn ScalarFunctionImpl>>,
+    table_functions: Vec<Arc<dyn TableFunctionImpl>>,
+    function_packs: Vec<Arc<dyn crate::function::pack::FunctionPack>>,
 }
 
 impl DataBaseBuilder {
@@ -198,6 +189,9 @@ impl DataBaseBuilder {
             storage_config: Default::default(),
             #[cfg(all(not(target_arch = "wasm32"), feature = "lmdb"))]
             lmdb_config: Default::default(),
+            scalar_functions: Vec::new(),
+            table_functions: Vec::new(),
+            function_packs: Vec::new(),
         }
     }
 
@@ -252,6 +246,43 @@ impl DataBaseBuilder {
     /// Sets the transaction isolation level used by database-created transactions.
     pub fn transaction_isolation(mut self, isolation: TransactionIsolationLevel) -> Self {
         self.transaction_isolation = Some(isolation);
+        self
+    }
+
+    /// Register a scalar function that will be available in the database.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let db = DataBaseBuilder::path("./data")
+    ///     .register_scalar_function(MyFunction::new())
+    ///     .build()?;
+    /// ```
+    pub fn register_scalar_function(mut self, function: Arc<dyn ScalarFunctionImpl>) -> Self {
+        self.scalar_functions.push(function);
+        self
+    }
+
+    /// Register a table function that will be available in the database.
+    pub fn register_table_function(mut self, function: Arc<dyn TableFunctionImpl>) -> Self {
+        self.table_functions.push(function);
+        self
+    }
+
+    /// Install a function pack, adding all functions from the pack to the database.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let db = DataBaseBuilder::path("./data")
+    ///     .with_function_pack(Arc::new(MyDialectFunctions))
+    ///     .build()?;
+    /// ```
+    pub fn with_function_pack(
+        mut self,
+        pack: Arc<dyn crate::function::pack::FunctionPack>,
+    ) -> Self {
+        self.function_packs.push(pack);
         self
     }
 
@@ -338,6 +369,9 @@ impl DataBaseBuilder {
             #[cfg(feature = "parser")]
             self.dialect_registry,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
@@ -370,6 +404,9 @@ impl DataBaseBuilder {
             #[cfg(feature = "parser")]
             self.dialect_registry,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
@@ -389,6 +426,9 @@ impl DataBaseBuilder {
             #[cfg(feature = "parser")]
             self.dialect_registry,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
@@ -406,6 +446,9 @@ impl DataBaseBuilder {
             #[cfg(feature = "parser")]
             self.dialect_registry,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
@@ -424,9 +467,13 @@ impl DataBaseBuilder {
             #[cfg(feature = "parser")]
             self.dialect_registry,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn _build<T: Storage>(
         storage: T,
         histogram_buckets: Option<usize>,
@@ -435,6 +482,9 @@ impl DataBaseBuilder {
         parser_recursion_limit: Option<usize>,
         #[cfg(feature = "parser")] dialect_registry: crate::dialect::DialectRegistry,
         transaction_isolation: Option<TransactionIsolationLevel>,
+        scalar_functions: Vec<Arc<dyn ScalarFunctionImpl>>,
+        table_functions: Vec<Arc<dyn TableFunctionImpl>>,
+        function_packs: Vec<Arc<dyn crate::function::pack::FunctionPack>>,
     ) -> Result<Database<T>, DatabaseError> {
         if matches!(histogram_buckets, Some(0)) {
             return Err(DatabaseError::InvalidValue(
@@ -469,9 +519,31 @@ impl DataBaseBuilder {
         let meta_cache = StatisticsMetaCache::default();
         let table_arena = TableArenaCell::default();
 
-        let mut state = State {
-            scala_functions: Arc::new(Default::default()),
-            table_functions: Arc::new(Default::default()),
+        let mut function_registry = FunctionRegistry::new();
+        install_core_functions(&mut function_registry, table_arena.borrow_mut())?;
+
+        function_registry.mark_builtins_loaded();
+
+        for function in scalar_functions {
+            function_registry.register_scalar(function)?;
+        }
+
+        for function in table_functions {
+            let mut schema = Schema::new();
+            function.output_schema_into(table_arena.borrow_mut(), &mut schema);
+            let catalog = TableFunctionCatalog {
+                inner: ArcTableFunctionImpl(function),
+                schema,
+            };
+            function_registry.register_table(Arc::new(catalog))?;
+        }
+
+        for pack in function_packs {
+            pack.install(&mut function_registry)?;
+        }
+
+        let state = State {
+            function_registry,
             meta_cache,
             table_arena,
             optimizer_pipeline: optimizer_pipeline(),
@@ -483,20 +555,6 @@ impl DataBaseBuilder {
             dialect_registry,
             _p: Default::default(),
         };
-
-        for ty in Abs::types() {
-            state.load_scalar_function(Abs::new(ty));
-        }
-        state.load_scalar_function(CharLength::new("char_length".to_lowercase()));
-        state.load_scalar_function(CharLength::new("character_length".to_lowercase()));
-        #[cfg(feature = "time")]
-        state.load_scalar_function(CurrentDate::new());
-        #[cfg(feature = "time")]
-        state.load_scalar_function(CurrentTimeStamp::new());
-        state.load_scalar_function(Lower::new());
-        state.load_scalar_function(OctetLength::new());
-        state.load_scalar_function(Upper::new());
-        state.load_table_function(Numbers::new())?;
 
         Ok(Database {
             storage,
@@ -718,8 +776,7 @@ where
 }
 
 pub(crate) struct State<S> {
-    scala_functions: Arc<ScalaFunctions>,
-    table_functions: Arc<TableFunctions>,
+    function_registry: FunctionRegistry,
     meta_cache: StatisticsMetaCache,
     table_arena: TableArenaCell,
     optimizer_pipeline: HepOptimizerPipeline,
@@ -744,17 +801,22 @@ impl<S: Storage> State<S> {
         &self.dialect_registry
     }
 
-    fn scala_functions(&self) -> &ScalaFunctions {
-        &self.scala_functions
+    pub(crate) fn function_registry(&self) -> &FunctionRegistry {
+        &self.function_registry
     }
-    fn table_functions(&self) -> &TableFunctions {
-        &self.table_functions
+
+    pub(crate) fn scala_functions_arc(&self) -> Arc<ScalaFunctions> {
+        Arc::new(self.function_registry.scalar_functions().clone())
     }
-    pub(crate) fn scala_functions_arc(&self) -> &Arc<ScalaFunctions> {
-        &self.scala_functions
-    }
-    pub(crate) fn table_functions_arc(&self) -> &Arc<TableFunctions> {
-        &self.table_functions
+
+    pub(crate) fn table_functions_arc(&self) -> Arc<TableFunctions> {
+        Arc::new(
+            self.function_registry
+                .table_functions()
+                .iter()
+                .map(|(k, v)| (k.clone(), (**v).clone()))
+                .collect(),
+        )
     }
     pub(crate) fn meta_cache(&self) -> &StatisticsMetaCache {
         &self.meta_cache
@@ -773,23 +835,20 @@ impl<S: Storage> State<S> {
     }
 
     fn load_scalar_function(&mut self, function: Arc<dyn ScalarFunctionImpl>) {
-        Arc::make_mut(&mut self.scala_functions).insert(function.summary().clone(), function);
+        self.function_registry.load_scalar(function);
     }
 
     fn load_table_function(
         &mut self,
         function: Arc<dyn TableFunctionImpl>,
     ) -> Result<(), DatabaseError> {
-        let summary = function.summary().clone();
         let mut schema = Schema::new();
         function.output_schema_into(self.table_arena.borrow_mut(), &mut schema);
-        Arc::make_mut(&mut self.table_functions).insert(
-            summary,
-            TableFunctionCatalog {
-                schema,
-                inner: ArcTableFunctionImpl(function),
-            },
-        );
+        let catalog = TableFunctionCatalog {
+            inner: ArcTableFunctionImpl(function),
+            schema,
+        };
+        self.function_registry.load_table(Arc::new(catalog));
         Ok(())
     }
 
@@ -810,7 +869,7 @@ impl<S: Storage> State<S> {
                 view.visit_column_refs(table_arena, &mut live)?;
             }
 
-            for function in self.table_functions.values() {
+            for function in self.function_registry.table_functions().values() {
                 for column in &function.schema {
                     live(column);
                 }
@@ -841,8 +900,7 @@ impl<S: Storage> State<S> {
                 self.table_cache(),
                 self.view_cache(),
                 transaction,
-                self.scala_functions(),
-                self.table_functions(),
+                self.function_registry(),
             ),
             &params,
             None,
@@ -910,8 +968,7 @@ impl<S: Storage> State<S> {
                 table_cache,
                 &arena.views,
                 transaction,
-                &self.scala_functions,
-                &self.table_functions,
+                &self.function_registry,
             ),
             &params,
             None,
@@ -1185,8 +1242,7 @@ impl<S: Storage> Database<S> {
                     .load_view(
                         &mut table_codec,
                         &self.state.table_arena,
-                        &self.state.scala_functions,
-                        &self.state.table_functions,
+                        &self.state.function_registry,
                         name.clone(),
                     )
                     .await?
@@ -2376,8 +2432,7 @@ pub(crate) mod test {
                 kite_sql.state.table_cache(),
                 kite_sql.state.view_cache(),
                 &transaction,
-                kite_sql.state.scala_functions(),
-                kite_sql.state.table_functions(),
+                kite_sql.state.function_registry(),
             ),
             &[],
             None,
@@ -2466,8 +2521,7 @@ pub(crate) mod test {
                 kite_sql.state.table_cache(),
                 kite_sql.state.view_cache(),
                 &transaction,
-                kite_sql.state.scala_functions(),
-                kite_sql.state.table_functions(),
+                kite_sql.state.function_registry(),
             ),
             &[],
             None,

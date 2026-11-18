@@ -2127,12 +2127,50 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
         arena: &mut PlanArena,
     ) -> Result<LogicalPlan, DatabaseError> {
         match table {
-            TableFactor::Table { name, alias, .. } => self.bind_base_table_ref(
-                joint_type,
-                sql_table_name(name.clone())?,
-                sql_optional_table_alias(alias.clone()),
-                arena,
-            ),
+            TableFactor::Table {
+                name, alias, args, ..
+            } => {
+                let table_name = sql_table_name(name.clone())?;
+                if let Some(fn_args) = args {
+                    let mut call_args = Vec::new();
+                    for arg in &fn_args.args {
+                        let arg_expr = match arg {
+                            sqlparser::ast::FunctionArg::Named { arg, .. } => arg,
+                            sqlparser::ast::FunctionArg::ExprNamed { arg, .. } => arg,
+                            sqlparser::ast::FunctionArg::Unnamed(arg) => arg,
+                        };
+                        match arg_expr {
+                            sqlparser::ast::FunctionArgExpr::Expr(expr) => {
+                                let expr = self.bind_expr(expr, arena)?;
+                                call_args.push(arena.alloc_expression(expr))
+                            }
+                            _ => {
+                                return Err(DatabaseError::UnsupportedStmt(
+                                    "unsupported table function argument".to_string(),
+                                ))
+                            }
+                        }
+                    }
+
+                    if let Ok(ScalarExpression::TableFunction(function)) =
+                        self.bind_function_call(table_name.clone(), call_args, arena)
+                    {
+                        return self.bind_table_function_source(
+                            ScalarExpression::TableFunction(function),
+                            sql_optional_table_alias(alias.clone()),
+                            joint_type,
+                            arena,
+                        );
+                    }
+                }
+
+                self.bind_base_table_ref(
+                    joint_type,
+                    table_name,
+                    sql_optional_table_alias(alias.clone()),
+                    arena,
+                )
+            }
             TableFactor::Derived { lateral: true, .. } => Err(DatabaseError::UnsupportedStmt(
                 "LATERAL derived tables are not supported".to_string(),
             )),
@@ -3630,8 +3668,7 @@ mod tests {
             if_exists: false,
             drop_behavior: None,
         }];
-        let scala_functions = Default::default();
-        let table_functions = Default::default();
+        let function_registry = crate::function::registry::FunctionRegistry::new();
         let transaction = tables.storage.transaction()?;
         let arena = tables.table_arena.borrow();
         let mut binder = Binder::new(
@@ -3640,8 +3677,7 @@ mod tests {
                 &arena.tables,
                 &arena.views,
                 &transaction,
-                &scala_functions,
-                &table_functions,
+                &function_registry,
             ),
             &[],
             None,
