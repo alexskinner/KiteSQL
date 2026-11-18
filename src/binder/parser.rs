@@ -2073,10 +2073,7 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
     ) -> Result<LogicalPlan, DatabaseError> {
         match table {
             TableFactor::Table {
-                name,
-                alias,
-                args,
-                ..
+                name, alias, args, ..
             } => {
                 let table_name = sql_table_name(name.clone())?;
                 if let Some(fn_args) = args {
@@ -2100,16 +2097,15 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                         }
                     }
 
-                    match self.bind_function_call(table_name.clone(), call_args, arena) {
-                        Ok(ScalarExpression::TableFunction(function)) => {
-                            return self.bind_table_function_source(
-                                ScalarExpression::TableFunction(function),
-                                sql_optional_table_alias(alias.clone()),
-                                joint_type,
-                                arena,
-                            );
-                        }
-                        Ok(_) | Err(_) => {}
+                    if let Ok(ScalarExpression::TableFunction(function)) =
+                        self.bind_function_call(table_name.clone(), call_args, arena)
+                    {
+                        return self.bind_table_function_source(
+                            ScalarExpression::TableFunction(function),
+                            sql_optional_table_alias(alias.clone()),
+                            joint_type,
+                            arena,
+                        );
                     }
                 }
 
