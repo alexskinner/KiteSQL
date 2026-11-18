@@ -343,8 +343,11 @@ fn test_statement_atomicity_preserves_original_error() -> Result<(), DatabaseErr
 
     let iter = session.run("UPDATE test SET id = 1")?;
     let result = iter.done();
-    
-    assert!(result.is_err(), "PK-changing update creating duplicate should fail");
+
+    assert!(
+        result.is_err(),
+        "PK-changing update creating duplicate should fail"
+    );
     let err_msg = result.unwrap_err().to_string();
     assert!(
         err_msg.contains("DuplicatePrimaryKey") || err_msg.contains("duplicate"),

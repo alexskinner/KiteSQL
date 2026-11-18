@@ -101,12 +101,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CopyFromFile<'a> {
 
             tuple_builder.build_with_row(chunk.output_mut(), record.iter().take(column_count))?;
             let tuple_id = if enable_undo {
-                Some(
-                    chunk
-                        .pk()
-                        .ok_or(DatabaseError::PrimaryKeyNotFound)?
-                        .clone(),
-                )
+                Some(chunk.pk().ok_or(DatabaseError::PrimaryKeyNotFound)?.clone())
             } else {
                 None
             };

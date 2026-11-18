@@ -853,10 +853,6 @@ impl ExecBuffer {
         &mut self.result.tuple
     }
 
-    pub(crate) fn table_codec_mut(&mut self) -> &mut TableCodec {
-        &mut self.table_codec
-    }
-
     pub(crate) fn iter_slots<'t, T: StorageTransaction + 't>(
         &mut self,
         len: usize,

@@ -152,7 +152,9 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                     arena.undo_log().record_append_tuple(
                         table.table_id,
                         old_tuple.clone(),
-                        serializers_arc.clone().expect("serializers_arc must be Some when old_tuple is Some"),
+                        serializers_arc
+                            .clone()
+                            .expect("serializers_arc must be Some when old_tuple is Some"),
                     );
                 }
             }
@@ -215,7 +217,9 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                     arena.undo_log().record_append_tuple_overwrite(
                         table.table_id,
                         old_tuple,
-                        serializers_arc.clone().expect("serializers_arc must be Some when old_tuple is Some"),
+                        serializers_arc
+                            .clone()
+                            .expect("serializers_arc must be Some when old_tuple is Some"),
                     );
                 }
             }

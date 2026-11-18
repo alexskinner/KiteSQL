@@ -1378,7 +1378,7 @@ impl<S: Storage> Database<S> {
     /// A `read_only` transaction rejects statements that write; on LMDB it runs
     /// alongside the single writer instead of waiting for it.
     /// Creates a new transaction.
-    /// 
+    ///
     /// `enable_undo`: Whether to enable statement-level undo for this transaction.
     /// Should be true for explicit transactions (BEGIN/autocommit=0) to allow
     /// statements to be rolled back individually while keeping the transaction open.
@@ -2015,7 +2015,7 @@ impl<'p, T: StorageTransaction + 'p> TransactionGuard<'_, 'p, T> {
             Err(original_err) => {
                 // Release iterators before rollback to avoid &mut aliasing
                 self.arena.release_iters(Some(&mut executor.buffer));
-                
+
                 let undo_log = self.arena.take_undo_log();
                 let rollback_result = {
                     // Now safe to access transaction mutably since iters are released
