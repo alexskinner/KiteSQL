@@ -87,6 +87,8 @@ mod tests {
                 &view_cache,
                 &transaction,
                 &function_registry,
+                #[cfg(feature = "parser")]
+                "generic",
             ),
             &[],
             None,

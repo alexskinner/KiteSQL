@@ -264,6 +264,8 @@ pub struct BinderContext<'a, T: StorageTransaction> {
     pub(crate) table_cache: &'a TableCache,
     pub(crate) view_cache: &'a ViewCache,
     pub(crate) transaction: &'a T,
+    #[cfg(feature = "parser")]
+    pub(crate) dialect_name: &'a str,
     // Tips: retain binding order so wildcard expansion and position derivation
     // follow FROM/JOIN order directly.
     pub(crate) bind_table: Vec<BoundSource<'a>>,
@@ -331,6 +333,8 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
         view_cache: &'a ViewCache,
         transaction: &'a T,
         function_registry: &'a crate::function::registry::FunctionRegistry,
+        #[cfg(feature = "parser")]
+        dialect_name: &'a str,
     ) -> Self {
         BinderContext {
             function_registry,
@@ -338,6 +342,8 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
             table_cache,
             view_cache,
             transaction,
+            #[cfg(feature = "parser")]
+            dialect_name,
             bind_table: Default::default(),
             name_bindings: Vec::new(),
             source_scope_start: 0,
@@ -368,6 +374,8 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
             table_cache: self.table_cache,
             view_cache: self.view_cache,
             transaction: self.transaction,
+            #[cfg(feature = "parser")]
+            dialect_name: self.dialect_name,
             bind_table: self.bind_table.clone(),
             name_bindings: self.name_bindings.clone(),
             source_scope_start: self.bind_table.len(),
@@ -398,6 +406,8 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
             self.view_cache,
             self.transaction,
             self.function_registry,
+            #[cfg(feature = "parser")]
+            self.dialect_name,
         );
         context.ctes = self.ctes.clone();
         context.cte_depth = self.cte_depth;
@@ -831,6 +841,8 @@ pub mod test {
                     &arena.views,
                     &transaction,
                     &function_registry,
+                    #[cfg(feature = "parser")]
+                    "generic",
                 ),
                 &[],
                 None,
@@ -941,6 +953,8 @@ pub mod test {
             &arena.views,
             &transaction,
             &function_registry,
+            #[cfg(feature = "parser")]
+            "generic",
         );
         let c1 = state.table.get_column_by_name("c1").unwrap();
         let c2 = state.table.get_column_by_name("c2").unwrap();

@@ -866,6 +866,8 @@ mod tests {
                 database.state.view_cache(),
                 &transaction,
                 &function_registry,
+                #[cfg(feature = "parser")]
+                "generic",
             ),
             &[],
             None,

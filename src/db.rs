@@ -546,6 +546,9 @@ impl DataBaseBuilder {
             pack.install(&mut function_registry)?;
         }
 
+        #[cfg(feature = "parser")]
+        let dialect_name_cache = dialect_registry.default_dialect().name().to_string();
+
         let state = State {
             function_registry,
             meta_cache,
@@ -557,6 +560,8 @@ impl DataBaseBuilder {
             parser_recursion_limit,
             #[cfg(feature = "parser")]
             dialect_registry,
+            #[cfg(feature = "parser")]
+            dialect_name_cache,
             _p: Default::default(),
         };
 
@@ -791,6 +796,8 @@ pub(crate) struct State<S> {
     parser_recursion_limit: Option<usize>,
     #[cfg(feature = "parser")]
     dialect_registry: crate::dialect::DialectRegistry,
+    #[cfg(feature = "parser")]
+    dialect_name_cache: String,
     _p: PhantomData<S>,
 }
 
@@ -803,6 +810,11 @@ impl<S: Storage> State<S> {
     #[cfg(feature = "parser")]
     pub(crate) fn dialect_registry(&self) -> &crate::dialect::DialectRegistry {
         &self.dialect_registry
+    }
+
+    #[cfg(feature = "parser")]
+    pub(crate) fn dialect_name(&self) -> &str {
+        &self.dialect_name_cache
     }
 
     pub(crate) fn function_registry(&self) -> &FunctionRegistry {
@@ -905,6 +917,8 @@ impl<S: Storage> State<S> {
                 self.view_cache(),
                 transaction,
                 self.function_registry(),
+                #[cfg(feature = "parser")]
+                self.dialect_name(),
             ),
             &params,
             None,
@@ -973,6 +987,8 @@ impl<S: Storage> State<S> {
                 &arena.views,
                 transaction,
                 &self.function_registry,
+                #[cfg(feature = "parser")]
+                self.dialect_name(),
             ),
             &params,
             None,
@@ -2437,6 +2453,8 @@ pub(crate) mod test {
                 kite_sql.state.view_cache(),
                 &transaction,
                 kite_sql.state.function_registry(),
+                #[cfg(feature = "parser")]
+                kite_sql.state.dialect_name(),
             ),
             &[],
             None,
@@ -2526,6 +2544,8 @@ pub(crate) mod test {
                 kite_sql.state.view_cache(),
                 &transaction,
                 kite_sql.state.function_registry(),
+                #[cfg(feature = "parser")]
+                kite_sql.state.dialect_name(),
             ),
             &[],
             None,

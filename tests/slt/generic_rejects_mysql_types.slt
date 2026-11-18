@@ -1,0 +1,21 @@
+# Test that Generic dialect rejects MySQL-specific types
+
+# mediumtext should be rejected
+statement error
+CREATE TABLE test_mediumtext (id INT, col MEDIUMTEXT)
+
+# longtext should be rejected
+statement error
+CREATE TABLE test_longtext (id INT, col LONGTEXT)
+
+# tinytext should be rejected
+statement error
+CREATE TABLE test_tinytext (id INT, col TINYTEXT)
+
+# bit(n) should be rejected
+statement error
+CREATE TABLE test_bit (id INT, col BIT(1))
+
+# serial should be rejected
+statement error
+CREATE TABLE test_serial (id SERIAL)

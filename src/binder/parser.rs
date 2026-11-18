@@ -632,7 +632,11 @@ where
                             ));
                         }
                         (
-                            LogicalType::try_from(data_type)?,
+                            data_type_to_logical_type(
+                                data_type,
+                                #[cfg(feature = "parser")]
+                                self.binder.context.dialect_name,
+                            )?,
                             DefaultChange::NoChange,
                             NotNullChange::NoChange,
                         )
@@ -698,7 +702,11 @@ where
                         })?;
                 }
                 let old_column_name = old_column_name.into_owned();
-                let data_type = LogicalType::try_from(data_type)?;
+                let data_type = data_type_to_logical_type(
+                    data_type,
+                    #[cfg(feature = "parser")]
+                    self.binder.context.dialect_name,
+                )?;
                 let (default_change, not_null_change) =
                     self.bind_change_column_options(options, &data_type)?;
 
@@ -743,7 +751,11 @@ where
                         "illegal column naming".to_string(),
                     ));
                 }
-                let data_type = LogicalType::try_from(data_type)?;
+                let data_type = data_type_to_logical_type(
+                    data_type,
+                    #[cfg(feature = "parser")]
+                    self.binder.context.dialect_name,
+                )?;
                 let (default_change, not_null_change) =
                     self.bind_change_column_options(options, &data_type)?;
 
@@ -866,7 +878,11 @@ where
     ) -> Result<ColumnCatalog, DatabaseError> {
         let column_name = lower_ident(&column_def.name).into_owned();
         let mut column_desc = ColumnDesc::new(
-            LogicalType::try_from(column_def.data_type)?,
+            data_type_to_logical_type(
+                column_def.data_type,
+                #[cfg(feature = "parser")]
+                self.binder.context.dialect_name,
+            )?,
             None,
             false,
             None,
@@ -1773,11 +1789,57 @@ impl TryFrom<&Value> for DataValue {
     }
 }
 
-impl TryFrom<DataType> for LogicalType {
-    type Error = DatabaseError;
+pub(crate) fn data_type_to_logical_type(
+    data_type: DataType,
+    #[cfg(feature = "parser")]
+    dialect_name: &str,
+) -> Result<LogicalType, DatabaseError> {
+    #[cfg(feature = "parser")]
+    if dialect_name == "mysql" {
+        match &data_type {
+            DataType::Custom(name, _) if name.0.len() == 1 => {
+                let type_name = match &name.0[0] {
+                    ObjectNamePart::Identifier(ident) => &ident.value,
+                    _ => return Err(DatabaseError::UnsupportedStmt(format!(
+                        "unsupported data type: {:?}", data_type
+                    ))),
+                };
+                match type_name.to_lowercase().as_str() {
+                    "mediumtext" | "longtext" | "tinytext" => {
+                        return Ok(LogicalType::Varchar(None, CharLengthUnits::Characters));
+                    }
+                    "serial" => {
+                        // TODO: serial should also apply NOT NULL UNIQUE AUTO_INCREMENT constraints
+                        // Currently only the type mapping (BIGINT UNSIGNED) is implemented
+                        return Ok(LogicalType::UBigint);
+                    }
+                    _ => {}
+                }
+            }
+            DataType::Custom(name, modifiers) if name.0.len() == 1 && !modifiers.is_empty() => {
+                let type_name = match &name.0[0] {
+                    ObjectNamePart::Identifier(ident) => &ident.value,
+                    _ => return Err(DatabaseError::UnsupportedStmt(format!(
+                        "unsupported data type: {:?}", data_type
+                    ))),
+                };
+                if type_name.to_lowercase() == "bit" {
+                    if modifiers.len() == 1 {
+                        if let Ok(size) = modifiers[0].parse::<u32>() {
+                            if size == 1 {
+                                return Ok(LogicalType::Boolean);
+                            } else {
+                                return Ok(LogicalType::UBigint);
+                            }
+                        }
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
 
-    fn try_from(value: DataType) -> Result<Self, Self::Error> {
-        match value {
+    match data_type {
             DataType::Char(char_len) | DataType::Character(char_len) => {
                 let mut len = 1;
                 let mut char_unit = None;
@@ -1794,7 +1856,7 @@ impl TryFrom<DataType> for LogicalType {
                         }
                     }
                 }
-                Ok(Self::Char(
+                Ok(LogicalType::Char(
                     len as u32,
                     char_unit
                         .map(Into::into)
@@ -1819,7 +1881,7 @@ impl TryFrom<DataType> for LogicalType {
                         }
                     }
                 }
-                Ok(Self::Varchar(
+                Ok(LogicalType::Varchar(
                     len,
                     char_unit
                         .map(Into::into)
@@ -1831,47 +1893,47 @@ impl TryFrom<DataType> for LogicalType {
                     Some(BinaryLength::IntegerLength { length }) => Some(u32::try_from(length)?),
                     None | Some(BinaryLength::Max) => None,
                 };
-                Ok(Self::Varbinary(len))
+                Ok(LogicalType::Varbinary(len))
             }
             DataType::Blob(length) | DataType::Bytes(length) => {
-                Ok(Self::Varbinary(length.map(u32::try_from).transpose()?))
+                Ok(LogicalType::Varbinary(length.map(u32::try_from).transpose()?))
             }
-            DataType::Bytea => Ok(Self::Varbinary(None)),
+            DataType::Bytea => Ok(LogicalType::Varbinary(None)),
             DataType::String(_) | DataType::Text => {
-                Ok(Self::Varchar(None, CharLengthUnits::Characters))
+                Ok(LogicalType::Varchar(None, CharLengthUnits::Characters))
             }
             DataType::Float(_) | DataType::Float4 | DataType::Float32 | DataType::Real => {
-                Ok(Self::Float)
+                Ok(LogicalType::Float)
             }
             DataType::Double(_)
             | DataType::DoublePrecision
             | DataType::Float8
-            | DataType::Float64 => Ok(Self::Double),
-            DataType::TinyInt(_) => Ok(Self::Tinyint),
-            DataType::TinyIntUnsigned(_) | DataType::UTinyInt => Ok(Self::UTinyint),
-            DataType::SmallInt(_) | DataType::Int2(_) => Ok(Self::Smallint),
+            | DataType::Float64 => Ok(LogicalType::Double),
+            DataType::TinyInt(_) => Ok(LogicalType::Tinyint),
+            DataType::TinyIntUnsigned(_) | DataType::UTinyInt => Ok(LogicalType::UTinyint),
+            DataType::SmallInt(_) | DataType::Int2(_) => Ok(LogicalType::Smallint),
             DataType::SmallIntUnsigned(_) | DataType::Int2Unsigned(_) | DataType::USmallInt => {
-                Ok(Self::USmallint)
+                Ok(LogicalType::USmallint)
             }
             DataType::Int(_) | DataType::Integer(_) | DataType::Int4(_) | DataType::Int32 => {
-                Ok(Self::Integer)
+                Ok(LogicalType::Integer)
             }
             DataType::IntUnsigned(_)
             | DataType::IntegerUnsigned(_)
             | DataType::Int4Unsigned(_)
             | DataType::Unsigned
             | DataType::UnsignedInteger
-            | DataType::UInt32 => Ok(Self::UInteger),
-            DataType::BigInt(_) | DataType::Int8(_) | DataType::Int64 => Ok(Self::Bigint),
+            | DataType::UInt32 => Ok(LogicalType::UInteger),
+            DataType::BigInt(_) | DataType::Int8(_) | DataType::Int64 => Ok(LogicalType::Bigint),
             DataType::BigIntUnsigned(_)
             | DataType::Int8Unsigned(_)
             | DataType::UBigInt
-            | DataType::UInt64 => Ok(Self::UBigint),
-            DataType::Boolean => Ok(Self::Boolean),
+            | DataType::UInt64 => Ok(LogicalType::UBigint),
+            DataType::Boolean => Ok(LogicalType::Boolean),
             DataType::Date => {
                 #[cfg(feature = "time")]
                 {
-                    Ok(Self::Date)
+                    Ok(LogicalType::Date)
                 }
                 #[cfg(not(feature = "time"))]
                 {
@@ -1888,7 +1950,7 @@ impl TryFrom<DataType> for LogicalType {
                             "time's precision".to_string(),
                         ));
                     }
-                    Ok(Self::DateTime)
+                    Ok(LogicalType::DateTime)
                 }
                 #[cfg(not(feature = "time"))]
                 {
@@ -1914,7 +1976,7 @@ impl TryFrom<DataType> for LogicalType {
                             "time's zone is not supported".to_string(),
                         ));
                     }
-                    Ok(Self::Time(precision))
+                    Ok(LogicalType::Time(precision))
                 }
                 #[cfg(not(feature = "time"))]
                 {
@@ -1939,7 +2001,7 @@ impl TryFrom<DataType> for LogicalType {
                     if matches!(info, sqlparser::ast::TimezoneInfo::WithTimeZone) {
                         zone = true;
                     }
-                    Ok(Self::TimeStamp(precision, zone))
+                    Ok(LogicalType::TimeStamp(precision, zone))
                 }
                 #[cfg(not(feature = "time"))]
                 {
@@ -1957,12 +2019,12 @@ impl TryFrom<DataType> for LogicalType {
                 #[cfg(feature = "decimal")]
                 {
                     match info {
-                        sqlparser::ast::ExactNumberInfo::None => Ok(Self::Decimal(None, None)),
+                        sqlparser::ast::ExactNumberInfo::None => Ok(LogicalType::Decimal(None, None)),
                         sqlparser::ast::ExactNumberInfo::Precision(p) => {
-                            Ok(Self::Decimal(Some(p as u8), None))
+                            Ok(LogicalType::Decimal(Some(p as u8), None))
                         }
                         sqlparser::ast::ExactNumberInfo::PrecisionAndScale(p, s) => {
-                            Ok(Self::Decimal(Some(p as u8), Some(s as u8)))
+                            Ok(LogicalType::Decimal(Some(p as u8), Some(s as u8)))
                         }
                     }
                 }
@@ -1977,6 +2039,20 @@ impl TryFrom<DataType> for LogicalType {
             other => Err(DatabaseError::UnsupportedStmt(format!(
                 "unsupported data type: {other}"
             ))),
+        }
+}
+
+impl TryFrom<DataType> for LogicalType {
+    type Error = DatabaseError;
+
+    fn try_from(value: DataType) -> Result<Self, Self::Error> {
+        #[cfg(feature = "parser")]
+        {
+            data_type_to_logical_type(value, "generic")
+        }
+        #[cfg(not(feature = "parser"))]
+        {
+            data_type_to_logical_type(value)
         }
     }
 }
@@ -2432,13 +2508,22 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
             }
             Expr::Cast {
                 expr, data_type, ..
-            } => self
-                .bind_expr(expr, arena)?
-                .type_cast(Cow::Owned(LogicalType::try_from(data_type.clone())?), arena),
+            } => self.bind_expr(expr, arena)?.type_cast(
+                Cow::Owned(data_type_to_logical_type(
+                    data_type.clone(),
+                    #[cfg(feature = "parser")]
+                    self.context.dialect_name,
+                )?),
+                arena,
+            ),
             Expr::TypedString(TypedString {
                 data_type, value, ..
             }) => {
-                let logical_type = LogicalType::try_from(data_type.clone())?;
+                let logical_type = data_type_to_logical_type(
+                    data_type.clone(),
+                    #[cfg(feature = "parser")]
+                    self.context.dialect_name,
+                )?;
                 let raw = value.clone().into_string().ok_or_else(|| {
                     DatabaseError::InvalidValue("typed string literal must be a string".to_string())
                 })?;
@@ -3677,6 +3762,8 @@ mod tests {
                 &arena.views,
                 &transaction,
                 &function_registry,
+                #[cfg(feature = "parser")]
+                "generic",
             ),
             &[],
             None,

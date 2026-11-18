@@ -539,6 +539,8 @@ mod tests {
                 &arena.views,
                 &transaction,
                 &function_registry,
+                #[cfg(feature = "parser")]
+                "generic",
             ),
             &args,
             None,
