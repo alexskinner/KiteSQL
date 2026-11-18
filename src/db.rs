@@ -24,16 +24,8 @@ use crate::expression::function::table::{
     ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl,
 };
 use crate::expression::function::FunctionSummary;
-use crate::function::abs::Abs;
-use crate::function::char_length::CharLength;
-#[cfg(feature = "time")]
-use crate::function::current_date::CurrentDate;
-#[cfg(feature = "time")]
-use crate::function::current_timestamp::CurrentTimeStamp;
-use crate::function::lower::Lower;
-use crate::function::numbers::Numbers;
-use crate::function::octet_length::OctetLength;
-use crate::function::upper::Upper;
+use crate::function::core::install_core_functions;
+use crate::function::registry::FunctionRegistry;
 use crate::maybe_async::MaybeSend;
 use crate::optimizer::core::hll;
 use crate::optimizer::core::statistics_meta::StatisticMetaLoader;
@@ -440,9 +432,20 @@ impl DataBaseBuilder {
         let meta_cache = StatisticsMetaCache::default();
         let table_arena = TableArenaCell::default();
 
-        let mut state = State {
-            scala_functions: Default::default(),
-            table_functions: Default::default(),
+        let mut function_registry = FunctionRegistry::new();
+        install_core_functions(&mut function_registry, &mut table_arena.borrow_mut())?;
+
+        let scala_functions = function_registry.scalar_functions().clone();
+        let table_functions = function_registry
+            .table_functions()
+            .iter()
+            .map(|(k, v)| (k.clone(), v.as_ref().clone()))
+            .collect();
+
+        let state = State {
+            function_registry,
+            scala_functions,
+            table_functions,
             meta_cache,
             table_arena,
             optimizer_pipeline: optimizer_pipeline(),
@@ -452,20 +455,6 @@ impl DataBaseBuilder {
             parser_recursion_limit,
             _p: Default::default(),
         };
-
-        for ty in Abs::types() {
-            state.load_scalar_function(Abs::new(ty));
-        }
-        state.load_scalar_function(CharLength::new("char_length".to_lowercase()));
-        state.load_scalar_function(CharLength::new("character_length".to_lowercase()));
-        #[cfg(feature = "time")]
-        state.load_scalar_function(CurrentDate::new());
-        #[cfg(feature = "time")]
-        state.load_scalar_function(CurrentTimeStamp::new());
-        state.load_scalar_function(Lower::new());
-        state.load_scalar_function(OctetLength::new());
-        state.load_scalar_function(Upper::new());
-        state.load_table_function(Numbers::new())?;
 
         Ok(Database {
             storage,
@@ -687,6 +676,7 @@ where
 }
 
 pub(crate) struct State<S> {
+    function_registry: FunctionRegistry,
     scala_functions: ScalaFunctions,
     table_functions: TableFunctions,
     meta_cache: StatisticsMetaCache,
@@ -712,6 +702,12 @@ impl<S: Storage> State<S> {
     fn table_functions(&self) -> &TableFunctions {
         &self.table_functions
     }
+    pub(crate) fn function_registry(&self) -> &FunctionRegistry {
+        &self.function_registry
+    }
+    pub(crate) fn function_registry_mut(&mut self) -> &mut FunctionRegistry {
+        &mut self.function_registry
+    }
     pub(crate) fn meta_cache(&self) -> &StatisticsMetaCache {
         &self.meta_cache
     }
@@ -729,8 +725,9 @@ impl<S: Storage> State<S> {
     }
 
     fn load_scalar_function(&mut self, function: Arc<dyn ScalarFunctionImpl>) {
-        self.scala_functions
-            .insert(function.summary().clone(), function);
+        let summary = function.summary().clone();
+        self.scala_functions.insert(summary, function.clone());
+        self.function_registry.load_scalar(function);
     }
 
     fn load_table_function(
@@ -740,13 +737,14 @@ impl<S: Storage> State<S> {
         let summary = function.summary().clone();
         let mut schema = Schema::new();
         function.output_schema_into(self.table_arena.borrow_mut(), &mut schema);
-        self.table_functions.insert(
-            summary,
-            TableFunctionCatalog {
-                schema,
-                inner: ArcTableFunctionImpl(function),
-            },
-        );
+        let catalog = TableFunctionCatalog {
+            inner: ArcTableFunctionImpl(function),
+            schema,
+        };
+        let catalog_arc = Arc::new(catalog);
+        self.table_functions
+            .insert(summary, catalog_arc.as_ref().clone());
+        self.function_registry.load_table(catalog_arc);
         Ok(())
     }
 
