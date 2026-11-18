@@ -1053,9 +1053,9 @@ where
 {
     static EMPTY_BIND_PARAMS: &[(usize, LogicalType)] = &[];
     executor
-        .execute(read_only, |state, tx| {
+        .execute(read_only, |state, catalog, tx| {
             state
-                .build_plan(EMPTY_BIND_PARAMS, tx, |binder, arena| {
+                .build_plan_in(catalog, EMPTY_BIND_PARAMS, tx, |binder, arena| {
                     let mut context = OrmContext { binder, arena };
                     build(&mut context)
                 })
@@ -3530,9 +3530,9 @@ fn extract_projected_tuple<T: FromQueryTuple>(
 #[maybe_async]
 async fn orm_analyze<E: BindSource, M: Model>(executor: E) -> Result<(), DatabaseError> {
     executor
-        .execute(false, |state, tx| {
+        .execute(false, |state, catalog, tx| {
             state
-                .build_plan(&[], tx, |binder, arena| {
+                .build_plan_in(catalog, &[], tx, |binder, arena| {
                     binder.bind_analyze(M::table_name(), arena)
                 })
                 .map(Executor::from_plan)
@@ -3546,9 +3546,9 @@ async fn orm_analyze<E: BindSource, M: Model>(executor: E) -> Result<(), Databas
 async fn orm_insert<E: BindSource, M: Model>(executor: E, model: &M) -> Result<(), DatabaseError> {
     let params = model.params();
     executor
-        .execute(false, |state, tx| {
+        .execute(false, |state, catalog, tx| {
             state
-                .build_plan(&[], tx, |binder, arena| {
+                .build_plan_in(catalog, &[], tx, |binder, arena| {
                     bind_orm_insert_model::<_, _, M>(binder, params, arena)
                 })
                 .map(Executor::from_plan)

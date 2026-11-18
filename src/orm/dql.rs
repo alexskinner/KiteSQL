@@ -25,8 +25,9 @@ impl<S: Storage> Database<S> {
         let transaction = self
             .storage
             .transaction_with_isolation(self.transaction_isolation, true)?;
+        let catalog = self.state.catalog();
         self.state
-            .prepare_plan_with(params, &transaction, |binder, arena| {
+            .prepare_plan_with(self.id.clone(), catalog, params, &transaction, |binder, arena| {
                 let mut context = OrmContext { binder, arena };
                 build(&mut context)
             })
@@ -215,7 +216,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
         ) -> Result<LogicalPlan, DatabaseError>,
     {
         self.state
-            .prepare_plan_with(params, &self.inner, |binder, arena| {
+            .prepare_plan_with(self.db_id.clone(), self.catalog, params, &self.inner, |binder, arena| {
                 let mut context = OrmContext { binder, arena };
                 build(&mut context)
             })

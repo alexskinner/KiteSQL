@@ -137,6 +137,7 @@ pub(crate) trait BindSource {
     where
         F: for<'s> FnOnce(
                 &'s State<Self::Storage>,
+                CatalogRef<'s>,
                 &Self::Transaction,
             ) -> Result<(Executor<'s>, PlanArena<'s>), DatabaseError>
             + MaybeSend;
@@ -628,6 +629,7 @@ impl DataBaseBuilder {
             storage,
             transaction_isolation,
             state,
+            id: Arc::new(()),
         })
     }
 }
@@ -986,18 +988,7 @@ impl<S: Storage> State<S> {
         }
     }
 
-    pub(crate) fn meta_cache(&self) -> &StatisticsMetaCache {
-        self.catalog().meta
-    }
-    pub(crate) fn names(&self) -> &NameMapping {
-        &self.catalog().arena.borrow().names
-    }
-    pub(crate) fn table_cache(&self) -> &TableCache {
-        &self.catalog().arena.borrow().tables
-    }
-    pub(crate) fn view_cache(&self) -> &ViewCache {
-        &self.catalog().arena.borrow().views
-    }
+
     pub(crate) fn table_arena(&self) -> &TableArenaCell {
         self.catalog().arena
     }
@@ -1299,6 +1290,8 @@ pub struct Database<S: Storage> {
     pub(crate) storage: S,
     pub(crate) transaction_isolation: TransactionIsolationLevel,
     pub(crate) state: State<S>,
+    /// Unique identity for this database instance, used to detect cross-database program usage.
+    pub(crate) id: Arc<()>,
 }
 
 impl DDLApply {
@@ -1638,6 +1631,7 @@ impl<S: Storage> Database<S> {
             catalog,
             read_only,
             enable_undo,
+            db_id: self.id.clone(),
         })
     }
 
@@ -1700,6 +1694,7 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
     where
         F: for<'s> FnOnce(
                 &'s State<S>,
+                CatalogRef<'s>,
                 &Self::Transaction,
             ) -> Result<(Executor<'s>, PlanArena<'s>), DatabaseError>
             + MaybeSend,
@@ -1712,7 +1707,8 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
         )?);
         // SAFETY: the transaction stays boxed, and so in place, until the iterator is gone.
         let tx = unsafe { &mut *transaction.get() };
-        let (executor, arena) = build(&self.state, tx)?;
+        let catalog = self.state.catalog();
+        let (executor, arena) = build(&self.state, catalog, tx)?;
         // Disable undo for autocommit: entire transaction is dropped on failure
         let (arena, executor) = self.state.execute(tx, executor, arena, false).await?;
         Ok(DatabaseIter {
@@ -2149,6 +2145,8 @@ pub struct Transaction<'a, S: Storage + 'a> {
     pub(crate) catalog: CatalogRef<'a>,
     pub(crate) read_only: bool,
     pub(crate) enable_undo: bool,
+    /// Database instance ID this transaction belongs to.
+    pub(crate) db_id: Arc<()>,
 }
 
 #[maybe_async]
@@ -2172,15 +2170,14 @@ impl<'a, 'txn, S: Storage> BindSource for &'a mut Transaction<'txn, S> {
     where
         F: for<'s> FnOnce(
                 &'s State<S>,
+                CatalogRef<'s>,
                 &Self::Transaction,
             ) -> Result<(Executor<'s>, PlanArena<'s>), DatabaseError>
             + MaybeSend,
     {
-        // Note: This BindSource impl is for compatibility with generic code that uses
-        // the trait. The build closure receives &State and may call state.build_plan,
-        // which will use the latest catalog. For correct generation pinning, prefer
-        // Transaction::run() which uses build_plan_in with the pinned catalog.
-        let (executor, arena) = build(self.state, &self.inner)?;
+        // Pass the transaction's pinned catalog to the build closure, ensuring ORM
+        // operations bind against the same generation throughout the transaction.
+        let (executor, arena) = build(self.state, self.catalog, &self.inner)?;
         if self.read_only && !executor.plan().operator.command_type().is_read_only() {
             return Err(DatabaseError::UnsupportedStmt(
                 "cannot write in a read-only transaction".into(),

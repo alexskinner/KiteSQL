@@ -274,8 +274,7 @@ fn iterator_from_database_keeps_consistent_generation_across_publish() -> Result
 }
 
 #[test]
-fn read_only_transaction_pins_catalog_and_survives_schema_mismatch(
-) -> Result<(), DatabaseError> {
+fn read_only_transaction_pins_catalog_and_survives_schema_mismatch() -> Result<(), DatabaseError> {
     let dir = TempDir::new().unwrap();
     let mut db = DataBaseBuilder::path(dir.path()).build_lmdb()?;
     db.ddl("CREATE TABLE t (id INT PRIMARY KEY, name VARCHAR(20))")?;
@@ -297,4 +296,3 @@ fn read_only_transaction_pins_catalog_and_survives_schema_mismatch(
     assert_eq!(latest, ["1|Alice|NULL", "2|Bob|NULL"]);
     Ok(())
 }
-

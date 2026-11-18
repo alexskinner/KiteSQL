@@ -141,6 +141,7 @@ pub enum DatabaseError {
     SharedNotAlign,
     SourceNotFound,
     StaleCatalog,
+    ForeignProgram,
     TableExists,
     TableNotFound,
     TransactionAlreadyExists,
@@ -269,6 +270,7 @@ impl fmt::Display for DatabaseError {
             }
             Self::SourceNotFound => f.write_str("the table or view not found"),
             Self::StaleCatalog => f.write_str("prepared program was bound to an older catalog generation and cannot be reused after DDL. prepare a new program to see the latest schema"),
+            Self::ForeignProgram => f.write_str("prepared program was created on a different database instance and cannot be executed here. prepare a new program on this database"),
             Self::TableExists => f.write_str("the table already exists"),
             Self::TableNotFound => f.write_str("the table not found"),
             Self::TransactionAlreadyExists => f.write_str("transaction already exists"),
