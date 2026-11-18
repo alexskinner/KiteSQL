@@ -450,10 +450,8 @@ impl DataBaseBuilder {
         statistics_relative_error: Option<f64>,
         parser_recursion_limit: Option<usize>,
         transaction_isolation: Option<TransactionIsolationLevel>,
-        #[cfg(feature = "parser")]
-        dialect: Option<crate::dialect::Dialect>,
-        #[cfg(not(feature = "parser"))]
-        _dialect: Option<()>,
+        #[cfg(feature = "parser")] dialect: Option<crate::dialect::Dialect>,
+        #[cfg(not(feature = "parser"))] _dialect: Option<()>,
     ) -> Result<Database<T>, DatabaseError> {
         if matches!(histogram_buckets, Some(0)) {
             return Err(DatabaseError::InvalidValue(
@@ -746,6 +744,7 @@ pub(crate) struct State<S> {
     statistics_relative_error: Option<OrderedFloat<f64>>,
     #[cfg_attr(not(feature = "parser"), allow(dead_code))]
     parser_recursion_limit: Option<usize>,
+    #[allow(dead_code)]
     dialect: crate::dialect::Dialect,
     _p: PhantomData<S>,
 }

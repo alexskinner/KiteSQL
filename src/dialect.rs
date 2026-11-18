@@ -24,18 +24,13 @@ use std::fmt;
 ///
 /// Determines which SQL dialect to use for parsing and planning.
 /// The default is `Generic`, which provides maximum compatibility.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Dialect {
     /// Generic SQL dialect (default) - maximum compatibility
+    #[default]
     Generic,
     /// MySQL-compatible SQL dialect
     MySql,
-}
-
-impl Default for Dialect {
-    fn default() -> Self {
-        Self::Generic
-    }
 }
 
 impl Dialect {
@@ -48,6 +43,7 @@ impl Dialect {
     }
 
     /// Get a static string name for this dialect (for cache keys).
+    #[allow(dead_code)]
     pub(crate) fn cache_key(&self) -> &'static str {
         match self {
             Dialect::Generic => "generic",
