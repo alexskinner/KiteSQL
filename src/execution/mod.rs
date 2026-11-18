@@ -663,11 +663,11 @@ pub(crate) type IterSlot = usize;
 
 #[derive(Default)]
 pub(crate) struct ExecBuffer {
-    result: ExecResult,
-    table_codec: TableCodec,
+    pub(crate) result: ExecResult,
+    pub(crate) table_codec: TableCodec,
     runtime_probe_stack: Vec<RuntimeIndexProbe>,
     restarting: bool,
-    bound_buffers: [Bytes; 2],
+    pub(crate) bound_buffers: [Bytes; 2],
     spare_iters: Option<SpareIters>,
 }
 
@@ -724,10 +724,10 @@ impl Drop for SpareIters {
 
 pub(crate) struct ExecArena<'a, 't, T: StorageTransaction + 'a> {
     table_cache: &'a TableCache,
-    transaction: TxnPtr<T>,
-    ddl_apply: Vec<DDLApply>,
+    pub(crate) transaction: TxnPtr<T>,
+    pub(crate) ddl_apply: Vec<DDLApply>,
     recursive_input: Option<RecursiveInput>,
-    iters: Vec<StorageIter<'t, T>>,
+    pub(crate) iters: Vec<StorageIter<'t, T>>,
     function_registry: Option<&'a crate::function::registry::FunctionRegistry>,
     statement_undo_log: statement_undo_log::StatementUndoLog,
     enable_statement_undo: bool,

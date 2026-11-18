@@ -347,7 +347,7 @@ impl<S: Storage> Database<S> {
                     .state
                     .build_plan(&[], tx, |binder, arena| binder.bind(&statement, arena))?;
                 let executor = Executor::new(plan, &arena);
-                self.state.execute(tx, executor, arena).await
+                self.state.execute(tx, executor, arena, false).await
             }
             .await
             {

@@ -156,7 +156,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Delete<'a> {
                 }
                 arena
                     .undo_log()
-                    .record_append_tuple(table_id, tuple, Arc::clone(serializers.as_ref().unwrap()));
+                    .record_append_tuple(table_id, tuple, Arc::clone(serializers));
             }
 
             deleted_count += 1;

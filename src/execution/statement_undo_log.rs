@@ -145,7 +145,7 @@ impl StatementUndoLog {
                     overwrite,
                 } => {
                     transaction
-                        .append_tuple(table_codec, table_id, &tuple, &serializers, overwrite)
+                        .append_tuple(table_codec, table_id, &tuple, serializers.as_slice(), overwrite)
                         .await?;
                 }
                 UndoOp::DeleteIndex {

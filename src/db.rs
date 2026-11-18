@@ -20,7 +20,7 @@ pub use crate::binder::Statement;
 use crate::binder::{Binder, BinderContext};
 use crate::errors::DatabaseError;
 pub use crate::execution::Executor;
-use crate::execution::{DDLApply, ExecArena, ExecBuffer, TxnPtr};
+use crate::execution::{DDLApply, ExecArena, ExecArenaLocalState, ExecBuffer, TxnPtr};
 use crate::expression::function::scala::ScalarFunctionImpl;
 use crate::expression::function::table::{
     ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl,
@@ -807,30 +807,6 @@ fn statement_stamp<T: StorageTransaction>(
 }
 
 #[maybe_async]
-async fn start_execution<'a, 'p, T: StorageTransaction + 'p, A: MetaArena + 'p>(
-    table_cache: &'p TableCache,
-    transaction: &'a mut T,
-    mut executor: Executor<'p>,
-    plan_arena: A,
-    function_registry: Option<&'p crate::function::registry::FunctionRegistry>,
-) -> Result<Execution<'a, 'p, A, T>, DatabaseError>
-where
-    'p: 'a,
-{
-    let mut plan_arena = ExecMetaArena::new(plan_arena);
-    let arena = start_execution_inner(
-        table_cache,
-        transaction,
-        &mut executor,
-        &mut plan_arena,
-        function_registry,
-        false,
-    )
-    .await?;
-
-    Ok((plan_arena, (executor, arena)))
-}
-
 #[maybe_async]
 async fn start_execution<'a, 'p, T: StorageTransaction + 'p, A: MetaArena + 'p>(
     table_cache: &'p TableCache,
@@ -1076,6 +1052,7 @@ impl<S: Storage> State<S> {
         transaction: &'a mut S::TransactionType<'txn>,
         params: A,
         build: F,
+        enable_undo: bool,
     ) -> Result<Execution<'a, 'a, PlanArena<'a>, S::TransactionType<'txn>>, DatabaseError>
     where
         S: 'txn,
@@ -1128,6 +1105,7 @@ impl<S: Storage> State<S> {
             executor,
             plan_arena,
             Some(&self.function_registry),
+            enable_undo,
         )
         .await
     }
@@ -1245,7 +1223,7 @@ impl<S: Storage> Database<S> {
         let state = TxnPtr::new(std::ptr::from_mut(&mut self.state));
         let (plan_arena, executor) = unsafe {
             (&*state.get())
-                .execute_mut(&mut *transaction.get(), params, build)
+                .execute_mut(&mut *transaction.get(), params, build, false)
                 .await
         }
         .map_err(|err| err.with_sql_context(context))?;
@@ -2041,7 +2019,15 @@ impl<'p, T: StorageTransaction + 'p> TransactionGuard<'_, 'p, T> {
                 let undo_log = self.arena.take_undo_log();
                 let rollback_result = {
                     // Now safe to access transaction mutably since iters are released
-                    let mut state = self.arena.local_state(plan_arena);
+                    let mut state = ExecArenaLocalState {
+                        transaction: self.arena.transaction,
+                        table_codec: &mut executor.buffer.table_codec,
+                        bound_buffers: &mut executor.buffer.bound_buffers,
+                        result: &mut executor.buffer.result,
+                        plan_arena,
+                        iters: &mut self.arena.iters,
+                        ddl_apply: &mut self.arena.ddl_apply,
+                    };
                     let (transaction, table_codec) = state.transaction_codec_mut();
                     undo_log.rollback(transaction, table_codec).await
                 };

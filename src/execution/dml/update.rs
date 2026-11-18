@@ -152,7 +152,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                     arena.undo_log().record_append_tuple(
                         table.table_id,
                         old_tuple.clone(),
-                        Arc::clone(serializers_arc.as_ref().unwrap()),
+                        serializers_arc.clone().expect("serializers_arc must be Some when old_tuple is Some"),
                     );
                 }
             }
@@ -215,7 +215,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                     arena.undo_log().record_append_tuple_overwrite(
                         table.table_id,
                         old_tuple,
-                        Arc::clone(serializers_arc.as_ref().unwrap()),
+                        serializers_arc.clone().expect("serializers_arc must be Some when old_tuple is Some"),
                     );
                 }
             }
