@@ -565,7 +565,7 @@ async fn execute_change_column<S: Storage>(
                 old_column_name,
                 new_column_name,
                 data_type,
-                None,
+                crate::planner::operator::alter_table::change_column::DisplayTypeChange::Keep,
                 default_change,
                 not_null_change,
             )

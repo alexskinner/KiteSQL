@@ -34,6 +34,13 @@ pub enum NotNullChange {
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash, ReferenceSerialization)]
+pub enum DisplayTypeChange {
+    Keep,
+    Set(Arc<str>),
+    Clear,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Hash, ReferenceSerialization)]
 pub struct ChangeColumnOperator {
     pub table_id: TableId,
     pub old_column_name: String,
@@ -41,9 +48,7 @@ pub struct ChangeColumnOperator {
     pub data_type: LogicalType,
     pub default_change: DefaultChange,
     pub not_null_change: NotNullChange,
-    /// Display type for introspection. This is serialized but ChangeColumnOperator
-    /// is never persisted (DDL is executed immediately), so this is safe.
-    pub display_type: Option<std::sync::Arc<str>>,
+    pub display_type_change: DisplayTypeChange,
 }
 
 impl Explain for ChangeColumnOperator {

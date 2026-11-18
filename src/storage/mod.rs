@@ -35,7 +35,9 @@ use crate::optimizer::core::cm_sketch::{
 };
 use crate::optimizer::core::histogram::HistogramMeta;
 use crate::optimizer::core::statistics_meta::IndexStatistics;
-use crate::planner::operator::alter_table::change_column::{DefaultChange, NotNullChange};
+use crate::planner::operator::alter_table::change_column::{
+    DefaultChange, DisplayTypeChange, NotNullChange,
+};
 use crate::planner::{MetaArena, TableArenaCell};
 use crate::storage::table_codec::{Bytes, IndexStatisticsCodecType, TableCodec, BOUND_MAX_TAG};
 use crate::types::index::{Index, IndexId, IndexMeta, IndexMetaRef, IndexType};
@@ -498,7 +500,7 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         old_column_name: &str,
         new_column_name: &str,
         new_data_type: &LogicalType,
-        new_display_type: &Option<std::sync::Arc<str>>,
+        display_type_change: &DisplayTypeChange,
         default_change: &DefaultChange,
         not_null_change: &NotNullChange,
     ) -> Result<TableCatalog, DatabaseError> {
@@ -605,12 +607,18 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
 
         // Update display type for changed column
         if let Some(column_id) = changed_column_id {
-            if let Some(display) = new_display_type {
-                // Set new display type
-                display_meta.set(column_id, display.clone());
-            } else {
-                // No display type means remove it (e.g., type changed to one without display mapping)
-                display_meta.remove(&column_id);
+            match display_type_change {
+                DisplayTypeChange::Keep => {
+                    // Keep existing display type - do nothing
+                }
+                DisplayTypeChange::Set(display) => {
+                    // Set new display type
+                    display_meta.set(column_id, display.clone());
+                }
+                DisplayTypeChange::Clear => {
+                    // Clear display type (e.g., type changed to one without display mapping)
+                    display_meta.remove(&column_id);
+                }
             }
         }
 

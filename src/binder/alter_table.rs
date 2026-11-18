@@ -17,7 +17,7 @@ use crate::catalog::ColumnCatalog;
 use crate::errors::DatabaseError;
 use crate::planner::operator::alter_table::add_column::AddColumnOperator;
 use crate::planner::operator::alter_table::change_column::{
-    ChangeColumnOperator, DefaultChange, NotNullChange,
+    ChangeColumnOperator, DefaultChange, DisplayTypeChange, NotNullChange,
 };
 use crate::planner::operator::alter_table::drop_column::DropColumnOperator;
 use crate::planner::operator::Operator;
@@ -67,7 +67,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         old_column_name: String,
         new_column_name: String,
         data_type: LogicalType,
-        display_type: Option<std::sync::Arc<str>>,
+        display_type_change: DisplayTypeChange,
         default_change: DefaultChange,
         not_null_change: NotNullChange,
     ) -> Result<LogicalPlan, DatabaseError> {
@@ -77,7 +77,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                 old_column_name,
                 new_column_name,
                 data_type,
-                display_type,
+                display_type_change,
                 default_change,
                 not_null_change,
             }),

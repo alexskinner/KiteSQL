@@ -58,7 +58,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for ChangeColumn<'a> {
             old_column_name,
             new_column_name,
             data_type,
-            display_type,
+            display_type_change,
             default_change,
             not_null_change,
         } = self.op;
@@ -172,7 +172,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for ChangeColumn<'a> {
                     old_column_name,
                     new_column_name,
                     data_type,
-                    display_type,
+                    display_type_change,
                     default_change,
                     not_null_change,
                 )

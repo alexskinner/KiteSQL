@@ -32,7 +32,9 @@ use crate::expression::visitor_mut::ExprVisitorMut;
 use crate::expression::window::WindowFunctionKind;
 use crate::expression::{AliasType, ScalarExpression, TypeCast};
 use crate::iter_ext::Itertools;
-use crate::planner::operator::alter_table::change_column::{DefaultChange, NotNullChange};
+use crate::planner::operator::alter_table::change_column::{
+    DefaultChange, DisplayTypeChange, NotNullChange,
+};
 use crate::planner::operator::join::{JoinCondition, JoinOperator as LJoinOperator, JoinType};
 use crate::planner::operator::mark_apply::MarkApplyQuantifier;
 use crate::planner::operator::project::ProjectOperator;
@@ -591,8 +593,6 @@ where
                     let col = self.arena.column(column);
                     col.datatype().clone()
                 };
-                // For RENAME COLUMN, preserve existing display type (None means no change)
-                let display_type = None;
 
                 if !is_valid_identifier(&new_column_name) {
                     return Err(DatabaseError::invalid_column(
@@ -605,7 +605,7 @@ where
                     old_column_name.into_owned(),
                     new_column_name,
                     data_type,
-                    display_type,
+                    DisplayTypeChange::Keep,
                     DefaultChange::NoChange,
                     NotNullChange::NoChange,
                 )
@@ -626,7 +626,7 @@ where
                         })?
                 };
 
-                let (data_type, display_type, default_change, not_null_change) = match op {
+                let (data_type, display_type_change, default_change, not_null_change) = match op {
                     AlterColumnOperation::SetDataType {
                         data_type, using, ..
                     } => {
@@ -640,34 +640,38 @@ where
                             #[cfg(feature = "parser")]
                             self.binder.context.dialect,
                         )?;
+                        let display_change = match type_spec.display {
+                            Some(d) => DisplayTypeChange::Set(d),
+                            None => DisplayTypeChange::Clear,
+                        };
                         (
                             type_spec.logical,
-                            type_spec.display,
+                            display_change,
                             DefaultChange::NoChange,
                             NotNullChange::NoChange,
                         )
                     }
                     AlterColumnOperation::SetDefault { value } => (
                         old_data_type.clone(),
-                        None, // Preserve existing display type
+                        DisplayTypeChange::Keep,
                         DefaultChange::Set(self.bind_alter_default_expr(value, &old_data_type)?),
                         NotNullChange::NoChange,
                     ),
                     AlterColumnOperation::DropDefault => (
                         old_data_type.clone(),
-                        None, // Preserve existing display type
+                        DisplayTypeChange::Keep,
                         DefaultChange::Drop,
                         NotNullChange::NoChange,
                     ),
                     AlterColumnOperation::SetNotNull => (
                         old_data_type.clone(),
-                        None, // Preserve existing display type
+                        DisplayTypeChange::Keep,
                         DefaultChange::NoChange,
                         NotNullChange::Set,
                     ),
                     AlterColumnOperation::DropNotNull => (
                         old_data_type.clone(),
-                        None, // Preserve existing display type
+                        DisplayTypeChange::Keep,
                         DefaultChange::NoChange,
                         NotNullChange::Drop,
                     ),
@@ -683,7 +687,7 @@ where
                     old_column_name.to_string(),
                     old_column_name.into_owned(),
                     data_type,
-                    display_type,
+                    display_type_change,
                     default_change,
                     not_null_change,
                 )
@@ -720,13 +724,17 @@ where
                 )?;
                 let (default_change, not_null_change) =
                     self.bind_change_column_options(options, &type_spec.logical)?;
+                let display_type_change = match type_spec.display {
+                    Some(d) => DisplayTypeChange::Set(d),
+                    None => DisplayTypeChange::Clear,
+                };
 
                 self.binder.bind_change_column(
                     &table_name,
                     old_column_name.clone(),
                     old_column_name,
                     type_spec.logical,
-                    type_spec.display,
+                    display_type_change,
                     default_change,
                     not_null_change,
                 )
@@ -770,13 +778,17 @@ where
                 )?;
                 let (default_change, not_null_change) =
                     self.bind_change_column_options(options, &type_spec.logical)?;
+                let display_type_change = match type_spec.display {
+                    Some(d) => DisplayTypeChange::Set(d),
+                    None => DisplayTypeChange::Clear,
+                };
 
                 self.binder.bind_change_column(
                     &table_name,
                     old_column_name.into_owned(),
                     new_column_name,
                     type_spec.logical,
-                    type_spec.display,
+                    display_type_change,
                     default_change,
                     not_null_change,
                 )
