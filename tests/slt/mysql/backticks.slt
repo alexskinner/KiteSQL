@@ -1,0 +1,18 @@
+# MySQL dialect test: backtick identifiers
+# This file tests MySQL-specific backtick identifier syntax
+# Run with: DataBaseBuilder::path(".").default_dialect("mysql")
+
+statement ok
+CREATE TABLE `users` (`id` INT PRIMARY KEY, `name` VARCHAR(50))
+
+statement ok
+INSERT INTO `users` VALUES (1, 'Alice'), (2, 'Bob')
+
+query IT
+SELECT `id`, `name` FROM `users` ORDER BY `id`
+----
+1	Alice
+2	Bob
+
+statement ok
+DROP TABLE `users`

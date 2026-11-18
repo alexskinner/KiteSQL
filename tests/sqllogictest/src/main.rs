@@ -67,6 +67,35 @@ fn main() {
 
     for slt_file in glob::glob(&args.path).expect("failed to find slt files") {
         let filepath = slt_file.expect("failed to read slt file");
+
+        #[cfg(not(feature = "async"))]
+        let is_mysql = filepath.to_str().map_or(false, |s| s.contains("/mysql/"));
+
+        #[cfg(not(feature = "async"))]
+        if is_mysql {
+            let temp_dir_mysql =
+                TempDir::new().expect("unable to create temporary working directory");
+            let mut tester_mysql = Runner::new(|| {
+                let db = DataBaseBuilder::path(temp_dir_mysql.path())
+                    .default_dialect("mysql")
+                    .expect("failed to set mysql dialect")
+                    .build_lmdb();
+                std::future::ready(db.map(|db| SQLBase { db }))
+            });
+
+            println!(
+                "-> Now the test file is: {} [MySQL dialect], num: {}",
+                filepath.display(),
+                file_num
+            );
+            if let Err(err) = tester_mysql.run_file(filepath) {
+                panic!("test error: {}", err);
+            }
+            println!("-> Pass!\n");
+            file_num += 1;
+            continue;
+        }
+
         println!(
             "-> Now the test file is: {}, num: {}",
             filepath.display(),
