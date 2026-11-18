@@ -1,0 +1,27 @@
+# Test GROUP_CONCAT with custom separator (MySQL extension)
+# This demonstrates the override capability for MySQL dialect support
+
+statement ok
+CREATE TABLE words (
+    id INT PRIMARY KEY,
+    word VARCHAR(50)
+)
+
+statement ok
+INSERT INTO words VALUES 
+    (1, 'foo'),
+    (2, 'bar'),
+    (3, 'baz')
+
+# Test default GROUP_CONCAT with comma separator
+query T
+SELECT GROUP_CONCAT(word) FROM words
+----
+foo,bar,baz
+
+# Future: GROUP_CONCAT with custom separator would be tested here
+# SELECT GROUP_CONCAT(word SEPARATOR ' | ') FROM words
+# Expected: foo | bar | baz
+
+statement ok
+DROP TABLE words

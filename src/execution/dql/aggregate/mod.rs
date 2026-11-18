@@ -46,6 +46,23 @@ pub trait Accumulator: MaybeSend {
     /// updates the accumulator's state from a vector of arrays.
     fn update_value(&mut self, value: &DataValue) -> Result<(), DatabaseError>;
 
+    /// updates the accumulator's state from multiple values (batch operation).
+    /// Default implementation calls update_value for each value.
+    fn update_values(&mut self, values: &[DataValue]) -> Result<(), DatabaseError> {
+        for value in values {
+            self.update_value(value)?;
+        }
+        Ok(())
+    }
+
+    /// merges another accumulator's state into this one (for distributed aggregation).
+    /// Default implementation is not supported; aggregates that support merge must override.
+    fn merge(&mut self, _other: &dyn Accumulator) -> Result<(), DatabaseError> {
+        Err(DatabaseError::UnsupportedStmt(
+            "merge not supported for this accumulator".to_string(),
+        ))
+    }
+
     /// evaluates its result based on its current state.
     fn evaluate(&mut self) -> Result<(), DatabaseError> {
         Ok(())
