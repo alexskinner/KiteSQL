@@ -333,8 +333,7 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
         view_cache: &'a ViewCache,
         transaction: &'a T,
         function_registry: &'a crate::function::registry::FunctionRegistry,
-        #[cfg(feature = "parser")]
-        dialect_name: &'a str,
+        #[cfg(feature = "parser")] dialect_name: &'a str,
     ) -> Self {
         BinderContext {
             function_registry,
