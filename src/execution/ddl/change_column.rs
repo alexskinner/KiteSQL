@@ -162,7 +162,10 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for ChangeColumn<'a> {
         }
 
         let apply = {
+            let scala_functions = arena.scala_functions();
+            let table_functions = arena.table_functions();
             let (transaction, table_codec) = arena.transaction_codec_mut();
+            table_codec.set_functions(scala_functions, table_functions);
             let table = transaction
                 .change_column(
                     table_codec,

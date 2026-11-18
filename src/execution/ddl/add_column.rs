@@ -81,7 +81,10 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for AddColumn<'a> {
         let default_value = column.default_value(plan_arena)?;
 
         let (unique_index_id, apply) = {
+            let scala_functions = arena.scala_functions();
+            let table_functions = arena.table_functions();
             let (transaction, table_codec) = arena.transaction_codec_mut();
+            table_codec.set_functions(scala_functions, table_functions);
             let (table, col_id) = transaction
                 .add_column(
                     table_codec,

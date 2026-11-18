@@ -305,10 +305,8 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         column_ids: Vec<ColumnId>,
         ty: IndexType,
     ) -> Result<(TableCatalog, IndexId), DatabaseError> {
-        let scala_functions = crate::db::ScalaFunctions::default();
-        let table_functions = crate::db::TableFunctions::default();
         let mut table = self
-            .load_table(table_codec, plan_arena, table_name, &scala_functions, &table_functions)
+            .load_table(table_codec, plan_arena, table_name, &ScalaFunctions::default(), &TableFunctions::default())
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         let index_meta = table.add_index_meta(index_name, column_ids, ty, plan_arena)?;
@@ -465,10 +463,8 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         default_change: &DefaultChange,
         not_null_change: &NotNullChange,
     ) -> Result<TableCatalog, DatabaseError> {
-        let scala_functions = ScalaFunctions::default();
-        let table_functions = TableFunctions::default();
         let table = self
-            .load_table(table_codec, plan_arena, table_name, &scala_functions, &table_functions)
+            .load_table(table_codec, plan_arena, table_name, &ScalaFunctions::default(), &TableFunctions::default())
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         let mut column_catalogs = Vec::with_capacity(table.columns_len());
@@ -565,10 +561,8 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         column: &ColumnCatalog,
         if_not_exists: bool,
     ) -> Result<(TableCatalog, ColumnId), DatabaseError> {
-        let scala_functions = ScalaFunctions::default();
-        let table_functions = TableFunctions::default();
         let mut table = self
-            .load_table(table_codec, plan_arena, table_name, &scala_functions, &table_functions)
+            .load_table(table_codec, plan_arena, table_name, &ScalaFunctions::default(), &TableFunctions::default())
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         if !column.nullable() && column.default_value(plan_arena)?.is_none() {
@@ -618,10 +612,8 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         table_name: &str,
         column_name: &str,
     ) -> Result<TableCatalog, DatabaseError> {
-        let scala_functions = ScalaFunctions::default();
-        let table_functions = TableFunctions::default();
         let table_catalog = self
-            .load_table(table_codec, plan_arena, table_name, &scala_functions, &table_functions)
+            .load_table(table_codec, plan_arena, table_name, &ScalaFunctions::default(), &TableFunctions::default())
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         let column_id = {
@@ -655,9 +647,7 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
             self.remove_index_statistics(table_codec, table_id, index_meta.id)
                 .await?;
         }
-        let scala_functions = ScalaFunctions::default();
-        let table_functions = TableFunctions::default();
-        self.load_table(table_codec, plan_arena, table_name, &scala_functions, &table_functions)
+        self.load_table(table_codec, plan_arena, table_name, &ScalaFunctions::default(), &TableFunctions::default())
             .await?
             .ok_or(DatabaseError::TableNotFound)
     }
@@ -807,10 +797,8 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         index_name: &str,
         if_exists: bool,
     ) -> Result<Option<(TableCatalog, IndexId)>, DatabaseError> {
-        let scala_functions = ScalaFunctions::default();
-        let table_functions = TableFunctions::default();
         let table = self
-            .load_table(table_codec, plan_arena, table_name, &scala_functions, &table_functions)
+            .load_table(table_codec, plan_arena, table_name, &ScalaFunctions::default(), &TableFunctions::default())
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
         let Some(index_meta_ref) = table
@@ -846,9 +834,7 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         self.remove_index_statistics(table_codec, table.id(), index_id)
             .await?;
 
-        let scala_functions = ScalaFunctions::default();
-        let table_functions = TableFunctions::default();
-        self.load_table(table_codec, plan_arena, table_name, &scala_functions, &table_functions)
+        self.load_table(table_codec, plan_arena, table_name, &ScalaFunctions::default(), &TableFunctions::default())
             .await?
             .map(|table| (table, index_id))
             .map(Some)
@@ -1243,13 +1229,12 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
 
                 let mut columns = Vec::new();
                 let mut index_metas = Vec::new();
-                let mut context = crate::serdes::ReferenceDecodeContext::with_functions(scala_functions, table_functions);
 
                 // Tips: only `Column`, `IndexMeta`, `TableMeta`
                 while let Some((key, value)) = column_iter.try_next().await.ok().flatten() {
                     if key.starts_with(table_min) {
                         let mut cursor = Cursor::new(value);
-                        columns.push(TableCodec::decode_column::<Self, _>(&mut cursor, Some(&mut context), arena)?);
+                        columns.push(TableCodec::decode_column::<Self, _>(&mut cursor, arena, Some(scala_functions), Some(table_functions))?);
                     } else {
                         index_metas.push(TableCodec::decode_index_meta::<Self>(value, arena)?);
                     }
@@ -3266,6 +3251,8 @@ mod test {
                 "i2".to_string(),
                 vec![c3_column_id, c2_column_id],
                 IndexType::Composite,
+                &scala_functions,
+                &table_functions,
             )
             .await?;
         let table = table.transplant_to_table_arena(&plan_arena)?;
@@ -3327,14 +3314,14 @@ mod test {
             assert!(iter.try_next().await?.is_none());
         }
         match transaction
-            .drop_index(&mut table_codec, &mut plan_arena, "t1", "pk_index", false)
+            .drop_index(&mut table_codec, &mut plan_arena, "t1", "pk_index", false, &scala_functions, &table_functions)
             .await
         {
             Err(DatabaseError::InvalidIndex) => (),
             _ => unreachable!(),
         }
         if let Some((table, _)) = transaction
-            .drop_index(&mut table_codec, &mut plan_arena, "t1", "i1", false)
+            .drop_index(&mut table_codec, &mut plan_arena, "t1", "i1", false, &scala_functions, &table_functions)
             .await?
         {
             let table = table.transplant_to_table_arena(&plan_arena)?;
@@ -3671,6 +3658,8 @@ mod test {
             true,
             ColumnDesc::new(LogicalType::Integer, None, false, None)?,
         );
+        let scala_functions = crate::db::ScalaFunctions::default();
+        let table_functions = crate::db::TableFunctions::default();
         let (table, new_column_id) = transaction
             .add_column(
                 &mut table_codec,
@@ -3678,6 +3667,8 @@ mod test {
                 &table_name,
                 &new_column,
                 false,
+                &scala_functions,
+                &table_functions,
             )
             .await?;
         let table = table.transplant_to_table_arena(&plan_arena)?;
@@ -3691,6 +3682,8 @@ mod test {
                     &table_name,
                     &new_column,
                     false,
+                    &scala_functions,
+                    &table_functions,
                 )
                 .await
                 .is_err());
@@ -3703,6 +3696,8 @@ mod test {
                         &table_name,
                         &new_column,
                         true,
+                        &scala_functions,
+                        &table_functions,
                     )
                     .await?
                     .1
@@ -3727,7 +3722,7 @@ mod test {
             assert_eq!(table_arena.borrow().column(column), &new_column);
         }
         let table = transaction
-            .drop_column(&mut table_codec, &mut plan_arena, &table_name, "c4")
+            .drop_column(&mut table_codec, &mut plan_arena, &table_name, "c4", &scala_functions, &table_functions)
             .await?;
         let table = table.transplant_to_table_arena(&plan_arena)?;
         names.insert_table(&mut table_cache, table);

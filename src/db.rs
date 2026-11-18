@@ -653,6 +653,8 @@ fn statement_stamp<T: StorageTransaction>(
 #[maybe_async]
 async fn start_execution<'a, 'p, T: StorageTransaction + 'p, A: MetaArena + 'p>(
     table_cache: &'p TableCache,
+    scala_functions: &'p ScalaFunctions,
+    table_functions: &'p TableFunctions,
     transaction: &'a mut T,
     mut executor: Executor<'p>,
     plan_arena: A,
@@ -662,7 +664,7 @@ where
 {
     let mut plan_arena = ExecMetaArena::new(plan_arena);
     let arena =
-        start_execution_inner(table_cache, transaction, &mut executor, &mut plan_arena).await?;
+        start_execution_inner(table_cache, scala_functions, table_functions, transaction, &mut executor, &mut plan_arena).await?;
 
     Ok((plan_arena, (executor, arena)))
 }
@@ -670,6 +672,8 @@ where
 #[maybe_async]
 async fn start_execution_inner<'a, 'p, T: StorageTransaction + 'p, A: MetaArena + 'p>(
     table_cache: &'p TableCache,
+    scala_functions: &'p ScalaFunctions,
+    table_functions: &'p TableFunctions,
     transaction: &'a mut T,
     executor: &mut Executor<'p>,
     plan_arena: &mut ExecMetaArena<A>,
@@ -679,7 +683,7 @@ where
 {
     let stamp = statement_stamp(transaction, executor.plan())?;
     let iters = executor.buffer.iter_slots(executor.iters());
-    let mut arena = ExecArena::new(table_cache, transaction).with_iters(iters);
+    let mut arena = ExecArena::new(table_cache, scala_functions, table_functions, transaction).with_iters(iters);
     executor.buffer.set_statement_stamp(stamp);
     executor.start(&mut arena, plan_arena).await?;
 
@@ -841,7 +845,7 @@ impl<S: Storage> State<S> {
         'txn: 'p,
         'p: 'a,
     {
-        start_execution(self.table_cache(), transaction, executor, plan_arena).await
+        start_execution(self.table_cache(), self.scala_functions(), self.table_functions(), transaction, executor, plan_arena).await
     }
 
     pub(crate) async fn execute_mut<'a, 'txn, A, F>(
@@ -904,7 +908,7 @@ impl<S: Storage> State<S> {
 
         plan.populate_output_schema_recursive(&mut plan_arena);
         let executor = Executor::new(plan, &plan_arena);
-        start_execution(table_cache, transaction, executor, plan_arena).await
+        start_execution(table_cache, scala_functions, table_functions, transaction, executor, plan_arena).await
     }
 }
 

@@ -72,6 +72,8 @@ pub struct TableCodec {
     buffers: [Bytes; 2],
     stamp: u64,
     bytes_pool: BytesPool,
+    scala_functions: Option<*const crate::db::ScalaFunctions>,
+    table_functions: Option<*const crate::db::TableFunctions>,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Hash)]
@@ -142,6 +144,22 @@ impl TableCodec {
     #[inline]
     pub(crate) fn bytes_pool(&mut self) -> &mut BytesPool {
         &mut self.bytes_pool
+    }
+
+    pub fn set_functions(
+        &mut self,
+        scala_functions: &crate::db::ScalaFunctions,
+        table_functions: &crate::db::TableFunctions,
+    ) {
+        self.scala_functions = Some(scala_functions as *const _);
+        self.table_functions = Some(table_functions as *const _);
+    }
+
+    fn get_functions(&self) -> Option<(&crate::db::ScalaFunctions, &crate::db::TableFunctions)> {
+        match (self.scala_functions, self.table_functions) {
+            (Some(sf), Some(tf)) => unsafe { Some((&*sf, &*tf)) },
+            _ => None,
+        }
     }
 
     pub(crate) fn set_stamp(&mut self, stamp: u64) {
@@ -976,11 +994,17 @@ impl TableCodec {
 
     pub fn decode_column<T: StorageTransaction, R: Read>(
         reader: &mut R,
-        context: Option<&mut ReferenceDecodeContext<'_, T>>,
         arena: &mut (impl MetaArena + ?Sized),
+        scala_functions: Option<&crate::db::ScalaFunctions>,
+        table_functions: Option<&crate::db::TableFunctions>,
     ) -> Result<ColumnCatalog, DatabaseError> {
-        // Pass through the context to allow decoding function-valued column DEFAULTs
-        ColumnCatalog::decode::<T, R, _>(reader, context, arena)
+        // Use function registries if provided
+        if let (Some(sf), Some(tf)) = (scala_functions, table_functions) {
+            let mut context = crate::serdes::ReferenceDecodeContext::with_functions(sf, tf);
+            ColumnCatalog::decode::<T, R, _>(reader, Some(&mut context), arena)
+        } else {
+            ColumnCatalog::decode::<T, R, _>(reader, None, arena)
+        }
     }
 
     pub fn decode_index_statistics<T: StorageTransaction>(
@@ -1557,7 +1581,7 @@ mod tests {
             .unwrap();
         let mut cursor = Cursor::new(bytes);
         let decode_col =
-            TableCodec::decode_column::<TestTransaction, _>(&mut cursor, None, &mut plan_arena)?;
+            TableCodec::decode_column::<TestTransaction, _>(&mut cursor, &mut plan_arena, None, None)?;
 
         assert_eq!(decode_col, expected_col);
 

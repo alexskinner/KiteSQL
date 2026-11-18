@@ -108,7 +108,10 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for DropColumn<'a> {
                 .await?;
             }
             {
+                let scala_functions = arena.scala_functions();
+                let table_functions = arena.table_functions();
                 let (transaction, table_codec) = arena.transaction_codec_mut();
+                table_codec.set_functions(scala_functions, table_functions);
                 let table = transaction
                     .drop_column(table_codec, plan_arena, table_catalog.name(), column_name)
                     .await?;

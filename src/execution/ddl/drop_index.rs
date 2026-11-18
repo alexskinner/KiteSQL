@@ -56,7 +56,10 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for DropIndex<'a> {
         } = self.op;
 
         let dropped = {
+            let scala_functions = arena.scala_functions();
+            let table_functions = arena.table_functions();
             let (transaction, table_codec) = arena.transaction_codec_mut();
+            table_codec.set_functions(scala_functions, table_functions);
             transaction
                 .drop_index(table_codec, plan_arena, table_name, index_name, *if_exists)
                 .await?

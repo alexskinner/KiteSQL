@@ -723,6 +723,8 @@ impl Drop for SpareIters {
 
 pub(crate) struct ExecArena<'a, 't, T: StorageTransaction + 'a> {
     table_cache: &'a TableCache,
+    scala_functions: &'a crate::db::ScalaFunctions,
+    table_functions: &'a crate::db::TableFunctions,
     transaction: TxnPtr<T>,
     ddl_apply: Vec<DDLApply>,
     recursive_input: Option<RecursiveInput>,
@@ -865,9 +867,16 @@ impl ExecBuffer {
 }
 
 impl<'a, 't, T: StorageTransaction + 'a> ExecArena<'a, 't, T> {
-    pub(crate) fn new(table_cache: &'a TableCache, transaction: &'t T) -> Self {
+    pub(crate) fn new(
+        table_cache: &'a TableCache,
+        scala_functions: &'a crate::db::ScalaFunctions,
+        table_functions: &'a crate::db::TableFunctions,
+        transaction: &'t T,
+    ) -> Self {
         Self {
             table_cache,
+            scala_functions,
+            table_functions,
             transaction: TxnPtr(transaction as *const T as *mut T),
             ddl_apply: Vec::new(),
             recursive_input: None,
@@ -909,6 +918,14 @@ impl<'c, 'a, 't, T: StorageTransaction + 'a> ExecContext<'c, 'a, 't, T> {
 
     pub(crate) fn table_cache(&self) -> &'a TableCache {
         self.arena.table_cache
+    }
+
+    pub(crate) fn scala_functions(&self) -> &'a crate::db::ScalaFunctions {
+        self.arena.scala_functions
+    }
+
+    pub(crate) fn table_functions(&self) -> &'a crate::db::TableFunctions {
+        self.arena.table_functions
     }
 
     pub(crate) fn iter_mut(&mut self, slot: IterSlot) -> &mut StorageIter<'t, T> {
@@ -1376,7 +1393,9 @@ mod test_utils {
         E: ReadExecutor<'a>,
     {
         let mut buffer = ExecBuffer::default();
-        let mut arena = ExecArena::new(cache, transaction);
+        let scala_functions = crate::db::ScalaFunctions::default();
+        let table_functions = crate::db::TableFunctions::default();
+        let mut arena = ExecArena::new(cache, &scala_functions, &table_functions, transaction);
         let root = <E as ReadExecutor<'a>>::into_executor(
             input,
             &mut ExecContext::new(&mut buffer, &mut arena),
@@ -1402,7 +1421,9 @@ mod test_utils {
         E: WriteExecutor<'a>,
     {
         let mut buffer = ExecBuffer::default();
-        let mut arena = ExecArena::new(cache, transaction);
+        let scala_functions = crate::db::ScalaFunctions::default();
+        let table_functions = crate::db::TableFunctions::default();
+        let mut arena = ExecArena::new(cache, &scala_functions, &table_functions, transaction);
         let root = <E as WriteExecutor<'a>>::into_executor(
             input,
             &mut ExecContext::new(&mut buffer, &mut arena),

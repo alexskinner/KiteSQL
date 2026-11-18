@@ -99,7 +99,10 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CreateIndex<'a> {
             })
             .unzip();
         let index_id_result = {
+            let scala_functions = arena.scala_functions();
+            let table_functions = arena.table_functions();
             let (transaction, table_codec) = arena.transaction_codec_mut();
+            table_codec.set_functions(scala_functions, table_functions);
             let (table, index_id) = transaction
                 .add_index_meta(
                     table_codec,

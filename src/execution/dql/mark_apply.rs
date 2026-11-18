@@ -569,7 +569,9 @@ mod tests {
         let transaction = storage.transaction()?;
         let context = &table_cache;
         let mut exec_buffer = crate::execution::ExecBuffer::default();
-        let mut exec_arena = crate::execution::ExecArena::new(context, &transaction);
+        let scala_functions = crate::db::ScalaFunctions::default();
+        let table_functions = crate::db::TableFunctions::default();
+        let mut exec_arena = crate::execution::ExecArena::new(context, &scala_functions, &table_functions, &transaction);
         let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
         let mut root = <MarkApply as ReadExecutor>::into_executor(
             (&op, &left, &right),
@@ -941,7 +943,9 @@ mod tests {
                         );
                     }
                     let mut exec_buffer = crate::execution::ExecBuffer::default();
-                    let mut exec_arena = crate::execution::ExecArena::new(cache, &transaction);
+                    let scala_functions = crate::db::ScalaFunctions::default();
+            let table_functions = crate::db::TableFunctions::default();
+            let mut exec_arena = crate::execution::ExecArena::new(cache, &scala_functions, &table_functions, &transaction);
                     let mut arena =
                         crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
                     let left_input = build_read(&mut arena, &meta, &left);
@@ -1026,7 +1030,9 @@ mod tests {
             op.materialize = materialize;
             op.guard = Some(meta.alloc_expression(ScalarExpression::column_expr(flag_column, 1)));
             let mut exec_buffer = crate::execution::ExecBuffer::default();
-            let mut exec_arena = crate::execution::ExecArena::new(cache, &transaction);
+            let scala_functions = crate::db::ScalaFunctions::default();
+            let table_functions = crate::db::TableFunctions::default();
+            let mut exec_arena = crate::execution::ExecArena::new(cache, &scala_functions, &table_functions, &transaction);
             let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
             let left_input = build_read(&mut arena, &meta, &left);
             let right_root = build_read(&mut arena, &meta, &right);
@@ -1098,7 +1104,9 @@ mod tests {
             op.materialize = true;
             let empty = build_values(&mut meta, "empty", vec![]);
             let mut exec_buffer = crate::execution::ExecBuffer::default();
-            let mut exec_arena = crate::execution::ExecArena::new(cache, &transaction);
+            let scala_functions = crate::db::ScalaFunctions::default();
+            let table_functions = crate::db::TableFunctions::default();
+            let mut exec_arena = crate::execution::ExecArena::new(cache, &scala_functions, &table_functions, &transaction);
             let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
             let left_input = build_read(&mut arena, &meta, &left);
             let right_root = build_read(&mut arena, &meta, &right);

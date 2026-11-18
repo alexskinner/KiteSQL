@@ -304,7 +304,9 @@ mod test {
             }],
         };
         let mut exec_buffer = crate::execution::ExecBuffer::default();
-        let mut exec_arena = crate::execution::ExecArena::new(cache, &transaction);
+        let scala_functions = crate::db::ScalaFunctions::default();
+        let table_functions = crate::db::TableFunctions::default();
+        let mut exec_arena = crate::execution::ExecArena::new(cache, &scala_functions, &table_functions, &transaction);
         let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
         // Select the memory executor explicitly even when the spill feature is enabled.
         let mut root = <Sort as ReadExecutor>::into_executor((&op, &plan), &mut arena, &metadata);

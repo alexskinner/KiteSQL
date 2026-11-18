@@ -183,8 +183,10 @@ pub(crate) mod test {
             cursor.seek(SeekFrom::Start(0))?;
 
             let mut table_codec = crate::storage::table_codec::TableCodec::default();
+            let scala_functions = crate::db::ScalaFunctions::default();
+            let table_functions = crate::db::TableFunctions::default();
             let table = transaction
-                .drop_column(&mut table_codec, &mut plan_arena, &table_name, "c3")
+                .drop_column(&mut table_codec, &mut plan_arena, &table_name, "c3", &scala_functions, &table_functions)
                 .await?;
             let table = table.transplant_to_table_arena(&plan_arena)?;
             names.insert_table(&mut table_cache, table);

@@ -470,7 +470,9 @@ mod tests {
                 continue;
             }
             let mut exec_buffer = crate::execution::ExecBuffer::default();
-            let mut exec_arena = crate::execution::ExecArena::new(context, &transaction);
+            let scala_functions = crate::db::ScalaFunctions::default();
+            let table_functions = crate::db::TableFunctions::default();
+            let mut exec_arena = crate::execution::ExecArena::new(context, &scala_functions, &table_functions, &transaction);
             let mut execution_arena =
                 crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
             let mut ranges = Cow::Owned(Range::Dummy);
