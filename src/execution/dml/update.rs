@@ -89,9 +89,23 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                 continue;
             };
 
+            let old_tuple = tuple.clone();
+
             for (index_meta, exprs) in table.index_exprs.iter() {
                 let index_meta = plan_arena.index(*index_meta);
                 arena.rewrite(exprs, plan_arena, Some(&tuple))?;
+                let index_values = {
+                    let mut state = arena.local_state(plan_arena);
+                    let (values, _, _) = state.tuple_transaction_codec_mut();
+                    values.clone()
+                };
+                arena.undo_log().record_add_index(
+                    table.table_id,
+                    index_meta.id,
+                    index_meta.ty,
+                    index_values,
+                    old_pk.clone(),
+                );
                 let mut state = arena.local_state(plan_arena);
                 let (values, transaction, table_codec) = state.tuple_transaction_codec_mut();
                 let old_index = Index::new(index_meta.id, values, index_meta.ty);
@@ -113,6 +127,11 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
             let new_pk = Tuple::primary_projection(&table.primary_key_indices, &tuple);
             let primary_key_changed = new_pk != old_pk;
             if primary_key_changed {
+                arena.undo_log().record_append_tuple(
+                    table.table_id,
+                    old_tuple.clone(),
+                    table.serializers.clone(),
+                );
                 let mut state = arena.local_state(plan_arena);
                 let (transaction, table_codec) = state.transaction_codec_mut();
                 transaction
@@ -124,6 +143,18 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
             for (index_meta, exprs) in table.index_exprs.iter() {
                 let index_meta = plan_arena.index(*index_meta);
                 arena.rewrite(exprs, plan_arena, Some(&tuple))?;
+                let index_values = {
+                    let mut state = arena.local_state(plan_arena);
+                    let (values, _, _) = state.tuple_transaction_codec_mut();
+                    values.clone()
+                };
+                arena.undo_log().record_delete_index(
+                    table.table_id,
+                    index_meta.id,
+                    index_meta.ty,
+                    index_values,
+                    new_pk.clone(),
+                );
                 let mut state = arena.local_state(plan_arena);
                 let (values, transaction, table_codec) = state.tuple_transaction_codec_mut();
                 let new_index = Index::new(index_meta.id, values, index_meta.ty);
@@ -132,7 +163,18 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                     .await?;
             }
 
-            tuple.set_pk(Some(new_pk));
+            tuple.set_pk(Some(new_pk.clone()));
+            if !is_overwrite {
+                arena
+                    .undo_log()
+                    .record_remove_tuple(table.table_id, new_pk.clone());
+            } else {
+                arena.undo_log().record_append_tuple(
+                    table.table_id,
+                    old_tuple,
+                    table.serializers.clone(),
+                );
+            }
             let mut state = arena.local_state(plan_arena);
             let (transaction, table_codec) = state.transaction_codec_mut();
             let stamp = if is_overwrite { 0 } else { table_codec.stamp() };

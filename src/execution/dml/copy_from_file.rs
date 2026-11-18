@@ -99,6 +99,10 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CopyFromFile<'a> {
             }
 
             tuple_builder.build_with_row(chunk.output_mut(), record.iter().take(column_count))?;
+            let tuple_id = chunk.pk().ok_or(DatabaseError::PrimaryKeyNotFound)?;
+            arena
+                .undo_log()
+                .record_remove_tuple(table.id(), tuple_id.clone());
             let mut state = arena.local_state(plan_arena);
             let (transaction, table_codec) = state.transaction_codec_mut();
             transaction

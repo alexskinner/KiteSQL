@@ -1976,10 +1976,12 @@ impl<'p, T: StorageTransaction + 'p> TransactionGuard<'_, 'p, T> {
                 )))
             }
             Ok(false) => {
+                self.arena.clear_undo_log();
                 self.finish(Some(&mut executor.buffer));
                 Ok(None)
             }
             Err(err) => {
+                self.arena.rollback_statement_undo_log(executor).await?;
                 self.finish(Some(&mut executor.buffer));
                 Err(err)
             }

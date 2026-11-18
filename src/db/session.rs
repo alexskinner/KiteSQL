@@ -44,17 +44,19 @@
 //! holds an LMDB write transaction will deadlock (LMDB is single-writer). Use `Session::run()`
 //! for all operations while the session is active.
 //!
-//! # Statement-Level Atomicity Limitation
+//! # Statement-Level Atomicity
 //!
-//! **Known limitation**: A statement that fails mid-execution inside an explicit transaction
-//! may leave partial writes until ROLLBACK. MySQL semantics require that only the failing
-//! statement's effects are rolled back while keeping the transaction open, but this is not
-//! currently implemented.
+//! KiteSQL implements statement-level atomicity: when a DML statement fails partway through
+//! execution inside an explicit transaction, only that statement's changes are rolled back
+//! while the transaction remains open and usable. This matches MySQL semantics.
 //!
-//! Implementation will be added in a follow-up PR using one of:
-//! - Capturing inverse operations in DML executors before writes
-//! - LMDB nested transactions (RwTransaction::begin_nested_txn)
-//! - Write buffering at the executor level
+//! Implementation: DML executors (INSERT, UPDATE, DELETE, COPY FROM FILE) record inverse
+//! operations in a statement-scoped undo log before each write. If the statement fails during
+//! iteration or done(), the inverses are applied in reverse order, undoing only that statement's
+//! partial effects. On success, the undo log is discarded.
+//!
+//! Note: Memory storage does not support transaction rollback, so statement atomicity is
+//! limited on the memory backend.
 
 use crate::binder::Statement;
 use crate::db::{

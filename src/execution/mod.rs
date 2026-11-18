@@ -20,6 +20,7 @@ pub(crate) mod hash;
 pub(crate) mod runs;
 #[cfg(feature = "spill")]
 pub(crate) mod spill;
+mod statement_undo_log;
 
 pub(crate) use ddl_apply::DDLApply;
 
@@ -728,6 +729,7 @@ pub(crate) struct ExecArena<'a, 't, T: StorageTransaction + 'a> {
     recursive_input: Option<RecursiveInput>,
     iters: Vec<StorageIter<'t, T>>,
     function_registry: Option<&'a crate::function::registry::FunctionRegistry>,
+    statement_undo_log: statement_undo_log::StatementUndoLog,
     _lifetimes: PhantomData<&'t &'a ()>,
 }
 
@@ -874,6 +876,7 @@ impl<'a, 't, T: StorageTransaction + 'a> ExecArena<'a, 't, T> {
             recursive_input: None,
             iters: Vec::new(),
             function_registry: None,
+            statement_undo_log: statement_undo_log::StatementUndoLog::new(),
             _lifetimes: PhantomData,
         }
     }
@@ -889,6 +892,26 @@ impl<'a, 't, T: StorageTransaction + 'a> ExecArena<'a, 't, T> {
     pub(crate) fn with_iters(mut self, iters: Vec<StorageIter<'t, T>>) -> Self {
         self.iters = iters;
         self
+    }
+
+    pub(crate) fn undo_log(&mut self) -> &mut statement_undo_log::StatementUndoLog {
+        &mut self.statement_undo_log
+    }
+
+    pub(crate) fn clear_undo_log(&mut self) {
+        self.statement_undo_log.clear();
+    }
+
+    #[maybe_async]
+    pub(crate) async fn rollback_statement_undo_log(
+        &mut self,
+        executor: &mut Executor<'_>,
+    ) -> Result<(), DatabaseError> {
+        let undo_log = mem::take(&mut self.statement_undo_log);
+        let transaction = unsafe { &mut *self.transaction.0 };
+        undo_log
+            .rollback(transaction, &mut executor.buffer.table_codec)
+            .await
     }
 
     pub(crate) fn release_iters(&mut self, buffer: Option<&mut ExecBuffer>) {
@@ -951,6 +974,10 @@ impl<'c, 'a, 't, T: StorageTransaction + 'a> ExecContext<'c, 'a, 't, T> {
             iters: &mut self.arena.iters,
             ddl_apply: &mut self.arena.ddl_apply,
         }
+    }
+
+    pub(crate) fn undo_log(&mut self) -> &mut statement_undo_log::StatementUndoLog {
+        self.arena.undo_log()
     }
 
     pub(crate) fn push_runtime_probe(&mut self, value: RuntimeIndexProbe) {

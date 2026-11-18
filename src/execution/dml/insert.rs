@@ -112,6 +112,18 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
                 let index_meta = plan_arena.index(*index_meta);
                 let tuple_id = tuple.pk().ok_or(DatabaseError::PrimaryKeyNotFound)?;
                 arena.rewrite(exprs, plan_arena, Some(&*tuple))?;
+                let index_values = {
+                    let mut state = arena.local_state(plan_arena);
+                    let (values, _, _) = state.tuple_transaction_codec_mut();
+                    values.clone()
+                };
+                arena.undo_log().record_delete_index(
+                    table.table_id,
+                    index_meta.id,
+                    index_meta.ty,
+                    index_values,
+                    tuple_id.clone(),
+                );
                 let mut state = arena.local_state(plan_arena);
                 let (values, transaction, table_codec) = state.tuple_transaction_codec_mut();
                 let index = Index::new(index_meta.id, values, index_meta.ty);
@@ -119,6 +131,10 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
                     .add_index(table_codec, table.table_id, index, tuple_id)
                     .await?;
             }
+            let tuple_id = tuple.pk().ok_or(DatabaseError::PrimaryKeyNotFound)?;
+            arena
+                .undo_log()
+                .record_remove_tuple(table.table_id, tuple_id.clone());
             let mut state = arena.local_state(plan_arena);
             let (transaction, table_codec) = state.transaction_codec_mut();
             transaction

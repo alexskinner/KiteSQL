@@ -110,21 +110,7 @@ fn test_session_transaction_control_integration() -> Result<(), DatabaseError> {
     Ok(())
 }
 
-// Statement-level atomicity tests - SKIPPED due to architectural limitation
-//
-// These tests verify MySQL behavior where a statement that fails mid-execution should
-// roll back its own partial writes while keeping the transaction open.
-//
-// BLOCKER: Implementing this requires one of:
-// - Making StorageTransaction::set/remove async so we can capture prior values
-// - Adding nested transaction/savepoint support to the storage layer
-// - Restructuring the executor to buffer writes
-//
-// None of these can be done without modifying StorageTransaction trait or core execution.
-// Tests are commented out to document the expected behavior.
-
 #[test]
-#[ignore = "Statement-level atomicity not implemented - see module documentation"]
 fn test_statement_atomicity_insert() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
     let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
@@ -177,7 +163,6 @@ fn test_statement_atomicity_insert() -> Result<(), DatabaseError> {
 }
 
 #[test]
-#[ignore = "Statement atomicity will be implemented in follow-up PR"]
 fn test_statement_atomicity_update() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
     let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
@@ -207,15 +192,99 @@ fn test_statement_atomicity_update() -> Result<(), DatabaseError> {
     // Check that NO updates were applied (statement rolled back)
     let mut iter = session.run("SELECT val FROM test ORDER BY id")?;
     let mut vals = Vec::new();
-    while let Some(val) = iter.next_tuple(|_, row| row.get(1).unwrap().clone())? {
+    while let Some(val) = iter.next_tuple(|_, row| row.get(0).unwrap().clone())? {
         vals.push(val);
     }
     iter.done()?;
 
-    // Values should remain unchanged
-    assert_eq!(vals.len(), 3);
+    assert_eq!(vals.len(), 3, "Should have 3 rows");
+    assert_eq!(vals[0].i32().unwrap(), 100, "First value should be 100");
+    assert_eq!(vals[1].i32().unwrap(), 200, "Second value should be 200");
+    assert_eq!(vals[2].i32().unwrap(), 300, "Third value should be 300");
 
     session.run("ROLLBACK")?.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_statement_atomicity_delete() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+
+    database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+    database.run("INSERT INTO test VALUES (2, 200)")?.done()?;
+    database.run("INSERT INTO test VALUES (3, 300)")?.done()?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    let result = session.run("DELETE FROM test WHERE val / (id - 2) > 0");
+
+    match result {
+        Ok(iter) => {
+            let done_result = iter.done();
+            assert!(
+                done_result.is_err(),
+                "DELETE with division by zero should fail"
+            );
+        }
+        Err(_) => {}
+    }
+
+    assert!(session.in_transaction(), "Transaction should still be open");
+
+    let mut iter = session.run("SELECT COUNT(*) FROM test")?;
+    let count = iter
+        .next_tuple(|_, row| row.get(0).unwrap().i32().unwrap())?
+        .unwrap();
+    iter.done()?;
+    assert_eq!(count, 3, "All rows should remain (statement rolled back)");
+
+    session.run("ROLLBACK")?.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_statement_atomicity_autocommit() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+
+    database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+
+    let mut session = database.session();
+    assert!(session.autocommit(), "Should be in autocommit mode");
+
+    let iter = session.run("INSERT INTO test VALUES (11, 11), (1, 1)")?;
+    let result = iter.done();
+    assert!(
+        result.is_err(),
+        "Duplicate key should fail during iteration"
+    );
+
+    let mut iter = session.run("SELECT * FROM test WHERE id = 11")?;
+    let mut count = 0;
+    while iter.next_tuple(|_, _| ())?.is_some() {
+        count += 1;
+    }
+    iter.done()?;
+    assert_eq!(
+        count, 0,
+        "Failed statement in autocommit should leave no changes"
+    );
+
+    let mut iter = session.run("SELECT * FROM test WHERE id = 1")?;
+    let mut count = 0;
+    while iter.next_tuple(|_, _| ())?.is_some() {
+        count += 1;
+    }
+    iter.done()?;
+    assert_eq!(count, 1, "Original row should remain");
 
     Ok(())
 }
