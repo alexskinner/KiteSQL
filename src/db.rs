@@ -20,7 +20,9 @@ use crate::errors::DatabaseError;
 pub use crate::execution::Executor;
 use crate::execution::{DDLApply, ExecArena, ExecBuffer, TxnPtr};
 use crate::expression::function::scala::ScalarFunctionImpl;
-use crate::expression::function::table::{ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl};
+use crate::expression::function::table::{
+    ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl,
+};
 use crate::function::core::install_core_functions;
 use crate::function::registry::FunctionRegistry;
 use crate::maybe_async::MaybeSend;
@@ -92,7 +94,6 @@ impl<T> Drop for OwnedPtr<T> {
 }
 
 pub(crate) type Execution<'a, 'p, A, T> = (ExecMetaArena<A>, (Executor<'p>, ExecArena<'p, 'a, T>));
-
 
 pub enum CatalogKind {
     Table(crate::catalog::TableName),

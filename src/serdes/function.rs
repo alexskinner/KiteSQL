@@ -98,7 +98,7 @@ impl ReferenceSerialization for ArcTableFunctionImpl {
 #[maybe_async]
 mod tests {
     use super::*;
-    
+
     use crate::planner::TableArena;
     use crate::serdes::ReferenceDecodeContext;
     use crate::storage::TestTransaction;
