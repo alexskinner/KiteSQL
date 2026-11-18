@@ -24,16 +24,8 @@ use crate::expression::function::table::{
     ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl,
 };
 use crate::expression::function::FunctionSummary;
-use crate::function::abs::Abs;
-use crate::function::char_length::CharLength;
-#[cfg(feature = "time")]
-use crate::function::current_date::CurrentDate;
-#[cfg(feature = "time")]
-use crate::function::current_timestamp::CurrentTimeStamp;
-use crate::function::lower::Lower;
-use crate::function::numbers::Numbers;
-use crate::function::octet_length::OctetLength;
-use crate::function::upper::Upper;
+use crate::function::core::install_core_functions;
+use crate::function::registry::FunctionRegistry;
 use crate::maybe_async::MaybeSend;
 use crate::optimizer::core::hll;
 use crate::optimizer::core::statistics_meta::StatisticMetaLoader;
@@ -156,10 +148,15 @@ pub struct DataBaseBuilder {
     statistics_relative_error: Option<f64>,
     parser_recursion_limit: Option<usize>,
     transaction_isolation: Option<TransactionIsolationLevel>,
+    #[cfg(feature = "parser")]
+    dialect_registry: crate::dialect::DialectRegistry,
     #[cfg(all(not(target_arch = "wasm32"), feature = "rocksdb"))]
     storage_config: StorageConfig,
     #[cfg(all(not(target_arch = "wasm32"), feature = "lmdb"))]
     lmdb_config: LmdbConfig,
+    scalar_functions: Vec<Arc<dyn ScalarFunctionImpl>>,
+    table_functions: Vec<Arc<dyn TableFunctionImpl>>,
+    function_packs: Vec<Arc<dyn crate::function::pack::FunctionPack>>,
 }
 
 impl DataBaseBuilder {
@@ -190,10 +187,15 @@ impl DataBaseBuilder {
             statistics_relative_error: None,
             parser_recursion_limit: None,
             transaction_isolation: None,
+            #[cfg(feature = "parser")]
+            dialect_registry: crate::dialect::DialectRegistry::new(),
             #[cfg(all(not(target_arch = "wasm32"), feature = "rocksdb"))]
             storage_config: Default::default(),
             #[cfg(all(not(target_arch = "wasm32"), feature = "lmdb"))]
             lmdb_config: Default::default(),
+            scalar_functions: Vec::new(),
+            table_functions: Vec::new(),
+            function_packs: Vec::new(),
         }
     }
 
@@ -231,9 +233,60 @@ impl DataBaseBuilder {
         self
     }
 
+    /// Registers a SQL dialect.
+    #[cfg(feature = "parser")]
+    pub fn register_dialect(mut self, dialect: Arc<dyn crate::dialect::SqlDialect>) -> Self {
+        self.dialect_registry.register(dialect);
+        self
+    }
+
+    /// Sets the default SQL dialect. The default is "generic".
+    #[cfg(feature = "parser")]
+    pub fn default_dialect(mut self, name: &str) -> Result<Self, DatabaseError> {
+        self.dialect_registry.set_default(name)?;
+        Ok(self)
+    }
+
     /// Sets the transaction isolation level used by database-created transactions.
     pub fn transaction_isolation(mut self, isolation: TransactionIsolationLevel) -> Self {
         self.transaction_isolation = Some(isolation);
+        self
+    }
+
+    /// Register a scalar function that will be available in the database.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let db = DataBaseBuilder::path("./data")
+    ///     .register_scalar_function(MyFunction::new())
+    ///     .build()?;
+    /// ```
+    pub fn register_scalar_function(mut self, function: Arc<dyn ScalarFunctionImpl>) -> Self {
+        self.scalar_functions.push(function);
+        self
+    }
+
+    /// Register a table function that will be available in the database.
+    pub fn register_table_function(mut self, function: Arc<dyn TableFunctionImpl>) -> Self {
+        self.table_functions.push(function);
+        self
+    }
+
+    /// Install a function pack, adding all functions from the pack to the database.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let db = DataBaseBuilder::path("./data")
+    ///     .with_function_pack(Arc::new(MyDialectFunctions))
+    ///     .build()?;
+    /// ```
+    pub fn with_function_pack(
+        mut self,
+        pack: Arc<dyn crate::function::pack::FunctionPack>,
+    ) -> Self {
+        self.function_packs.push(pack);
         self
     }
 
@@ -317,7 +370,12 @@ impl DataBaseBuilder {
             self.hll_precision,
             self.statistics_relative_error,
             self.parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            self.dialect_registry,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
@@ -347,7 +405,12 @@ impl DataBaseBuilder {
             self.hll_precision,
             self.statistics_relative_error,
             self.parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            self.dialect_registry,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
@@ -364,7 +427,12 @@ impl DataBaseBuilder {
             self.hll_precision,
             self.statistics_relative_error,
             self.parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            self.dialect_registry,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
@@ -379,7 +447,12 @@ impl DataBaseBuilder {
             self.hll_precision,
             self.statistics_relative_error,
             self.parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            self.dialect_registry,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
@@ -395,17 +468,27 @@ impl DataBaseBuilder {
             self.hll_precision,
             self.statistics_relative_error,
             self.parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            self.dialect_registry,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
+    #[allow(clippy::too_many_arguments)]
     fn _build<T: Storage>(
         storage: T,
         histogram_buckets: Option<usize>,
         hll_precision: Option<u8>,
         statistics_relative_error: Option<f64>,
         parser_recursion_limit: Option<usize>,
+        #[cfg(feature = "parser")] dialect_registry: crate::dialect::DialectRegistry,
         transaction_isolation: Option<TransactionIsolationLevel>,
+        scalar_functions: Vec<Arc<dyn ScalarFunctionImpl>>,
+        table_functions: Vec<Arc<dyn TableFunctionImpl>>,
+        function_packs: Vec<Arc<dyn crate::function::pack::FunctionPack>>,
     ) -> Result<Database<T>, DatabaseError> {
         if matches!(histogram_buckets, Some(0)) {
             return Err(DatabaseError::InvalidValue(
@@ -440,9 +523,31 @@ impl DataBaseBuilder {
         let meta_cache = StatisticsMetaCache::default();
         let table_arena = TableArenaCell::default();
 
-        let mut state = State {
-            scala_functions: Arc::new(Default::default()),
-            table_functions: Arc::new(Default::default()),
+        let mut function_registry = FunctionRegistry::new();
+        install_core_functions(&mut function_registry, table_arena.borrow_mut())?;
+
+        function_registry.mark_builtins_loaded();
+
+        for function in scalar_functions {
+            function_registry.register_scalar(function)?;
+        }
+
+        for function in table_functions {
+            let mut schema = Schema::new();
+            function.output_schema_into(table_arena.borrow_mut(), &mut schema);
+            let catalog = TableFunctionCatalog {
+                inner: ArcTableFunctionImpl(function),
+                schema,
+            };
+            function_registry.register_table(Arc::new(catalog))?;
+        }
+
+        for pack in function_packs {
+            pack.install(&mut function_registry)?;
+        }
+
+        let state = State {
+            function_registry,
             meta_cache,
             table_arena,
             optimizer_pipeline: optimizer_pipeline(),
@@ -450,22 +555,10 @@ impl DataBaseBuilder {
             hll_precision,
             statistics_relative_error: statistics_relative_error.map(OrderedFloat),
             parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            dialect_registry,
             _p: Default::default(),
         };
-
-        for ty in Abs::types() {
-            state.load_scalar_function(Abs::new(ty));
-        }
-        state.load_scalar_function(CharLength::new("char_length".to_lowercase()));
-        state.load_scalar_function(CharLength::new("character_length".to_lowercase()));
-        #[cfg(feature = "time")]
-        state.load_scalar_function(CurrentDate::new());
-        #[cfg(feature = "time")]
-        state.load_scalar_function(CurrentTimeStamp::new());
-        state.load_scalar_function(Lower::new());
-        state.load_scalar_function(OctetLength::new());
-        state.load_scalar_function(Upper::new());
-        state.load_table_function(Numbers::new())?;
 
         Ok(Database {
             storage,
@@ -687,8 +780,7 @@ where
 }
 
 pub(crate) struct State<S> {
-    scala_functions: Arc<ScalaFunctions>,
-    table_functions: Arc<TableFunctions>,
+    function_registry: FunctionRegistry,
     meta_cache: StatisticsMetaCache,
     table_arena: TableArenaCell,
     optimizer_pipeline: HepOptimizerPipeline,
@@ -697,6 +789,8 @@ pub(crate) struct State<S> {
     statistics_relative_error: Option<OrderedFloat<f64>>,
     #[cfg_attr(not(feature = "parser"), allow(dead_code))]
     parser_recursion_limit: Option<usize>,
+    #[cfg(feature = "parser")]
+    dialect_registry: crate::dialect::DialectRegistry,
     _p: PhantomData<S>,
 }
 
@@ -706,17 +800,27 @@ impl<S: Storage> State<S> {
         self.parser_recursion_limit
     }
 
-    fn scala_functions(&self) -> &ScalaFunctions {
-        &self.scala_functions
+    #[cfg(feature = "parser")]
+    pub(crate) fn dialect_registry(&self) -> &crate::dialect::DialectRegistry {
+        &self.dialect_registry
     }
-    fn table_functions(&self) -> &TableFunctions {
-        &self.table_functions
+
+    pub(crate) fn function_registry(&self) -> &FunctionRegistry {
+        &self.function_registry
     }
-    pub(crate) fn scala_functions_arc(&self) -> &Arc<ScalaFunctions> {
-        &self.scala_functions
+
+    pub(crate) fn scala_functions_arc(&self) -> Arc<ScalaFunctions> {
+        Arc::new(self.function_registry.scalar_functions().clone())
     }
-    pub(crate) fn table_functions_arc(&self) -> &Arc<TableFunctions> {
-        &self.table_functions
+
+    pub(crate) fn table_functions_arc(&self) -> Arc<TableFunctions> {
+        Arc::new(
+            self.function_registry
+                .table_functions()
+                .iter()
+                .map(|(k, v)| (k.clone(), (**v).clone()))
+                .collect(),
+        )
     }
     pub(crate) fn meta_cache(&self) -> &StatisticsMetaCache {
         &self.meta_cache
@@ -735,23 +839,20 @@ impl<S: Storage> State<S> {
     }
 
     fn load_scalar_function(&mut self, function: Arc<dyn ScalarFunctionImpl>) {
-        Arc::make_mut(&mut self.scala_functions).insert(function.summary().clone(), function);
+        self.function_registry.load_scalar(function);
     }
 
     fn load_table_function(
         &mut self,
         function: Arc<dyn TableFunctionImpl>,
     ) -> Result<(), DatabaseError> {
-        let summary = function.summary().clone();
         let mut schema = Schema::new();
         function.output_schema_into(self.table_arena.borrow_mut(), &mut schema);
-        Arc::make_mut(&mut self.table_functions).insert(
-            summary,
-            TableFunctionCatalog {
-                schema,
-                inner: ArcTableFunctionImpl(function),
-            },
-        );
+        let catalog = TableFunctionCatalog {
+            inner: ArcTableFunctionImpl(function),
+            schema,
+        };
+        self.function_registry.load_table(Arc::new(catalog));
         Ok(())
     }
 
@@ -772,7 +873,7 @@ impl<S: Storage> State<S> {
                 view.visit_column_refs(table_arena, &mut live)?;
             }
 
-            for function in self.table_functions.values() {
+            for function in self.function_registry.table_functions().values() {
                 for column in &function.schema {
                     live(column);
                 }
@@ -803,8 +904,7 @@ impl<S: Storage> State<S> {
                 self.table_cache(),
                 self.view_cache(),
                 transaction,
-                self.scala_functions(),
-                self.table_functions(),
+                self.function_registry(),
             ),
             &params,
             None,
@@ -872,8 +972,7 @@ impl<S: Storage> State<S> {
                 table_cache,
                 &arena.views,
                 transaction,
-                &self.scala_functions,
-                &self.table_functions,
+                &self.function_registry,
             ),
             &params,
             None,
@@ -1008,8 +1107,8 @@ impl<S: Storage> Database<S> {
         let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
             self.transaction_isolation,
             false,
-            Some(Arc::clone(self.state.scala_functions_arc())),
-            Some(Arc::clone(self.state.table_functions_arc())),
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
         )?);
 
         let state = TxnPtr::new(std::ptr::from_mut(&mut self.state));
@@ -1076,8 +1175,8 @@ impl<S: Storage> Database<S> {
                 let transaction = self.storage.transaction_with_functions(
                     self.storage.default_transaction_isolation(),
                     true,
-                    Some(Arc::clone(self.state.scala_functions_arc())),
-                    Some(Arc::clone(self.state.table_functions_arc())),
+                    Some(self.state.scala_functions_arc()),
+                    Some(self.state.table_functions_arc()),
                 )?;
                 let mut table_codec = TableCodec::default();
                 let table = transaction
@@ -1139,16 +1238,15 @@ impl<S: Storage> Database<S> {
                 let transaction = self.storage.transaction_with_functions(
                     self.storage.default_transaction_isolation(),
                     true,
-                    Some(Arc::clone(self.state.scala_functions_arc())),
-                    Some(Arc::clone(self.state.table_functions_arc())),
+                    Some(self.state.scala_functions_arc()),
+                    Some(self.state.table_functions_arc()),
                 )?;
                 let mut table_codec = TableCodec::default();
                 let (view_id, view) = transaction
                     .load_view(
                         &mut table_codec,
                         &self.state.table_arena,
-                        &self.state.scala_functions,
-                        &self.state.table_functions,
+                        &self.state.function_registry,
                         name.clone(),
                     )
                     .await?
@@ -1174,8 +1272,8 @@ impl<S: Storage> Database<S> {
         let transaction = self.storage.transaction_with_functions(
             self.transaction_isolation,
             read_only,
-            Some(Arc::clone(self.state.scala_functions_arc())),
-            Some(Arc::clone(self.state.table_functions_arc())),
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
         )?;
 
         Ok(Transaction {
@@ -1242,8 +1340,8 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
         let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
             self.transaction_isolation,
             read_only,
-            Some(Arc::clone(self.state.scala_functions_arc())),
-            Some(Arc::clone(self.state.table_functions_arc())),
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
         )?);
         // SAFETY: the transaction stays boxed, and so in place, until the iterator is gone.
         let tx = unsafe { &mut *transaction.get() };
@@ -1267,8 +1365,8 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
         let transaction = self.storage.transaction_with_functions(
             self.transaction_isolation,
             true,
-            Some(Arc::clone(self.state.scala_functions_arc())),
-            Some(Arc::clone(self.state.table_functions_arc())),
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
         )?;
         let (plan, mut arena) = self.state.build_plan(params, &transaction, build)?;
         Ok(plan.explain(&mut arena, 0))
@@ -2338,8 +2436,7 @@ pub(crate) mod test {
                 kite_sql.state.table_cache(),
                 kite_sql.state.view_cache(),
                 &transaction,
-                kite_sql.state.scala_functions(),
-                kite_sql.state.table_functions(),
+                kite_sql.state.function_registry(),
             ),
             &[],
             None,
@@ -2428,8 +2525,7 @@ pub(crate) mod test {
                 kite_sql.state.table_cache(),
                 kite_sql.state.view_cache(),
                 &transaction,
-                kite_sql.state.scala_functions(),
-                kite_sql.state.table_functions(),
+                kite_sql.state.function_registry(),
             ),
             &[],
             None,
@@ -3417,6 +3513,7 @@ pub(crate) mod test {
                     summary: FunctionSummary {
                         name: "my_udf".into(),
                         arg_types: vec![],
+                        persistence: crate::expression::function::PersistencePolicy::Durable,
                     },
                     return_type: LogicalType::Integer,
                 }
@@ -3581,6 +3678,217 @@ pub(crate) mod test {
             }
             assert_eq!(found_val, Some(DataValue::Int32(10)));
         }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_dialect_selection() -> Result<(), DatabaseError> {
+        let builder = DataBaseBuilder::path(".").default_dialect("mysql")?;
+        let database = builder.build_in_memory()?;
+
+        let statement_generic = database.state.prepare_all("SELECT * FROM `table`");
+        assert!(statement_generic.is_ok());
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_mysql_backtick_identifiers() -> Result<(), DatabaseError> {
+        let mut database_mysql = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
+
+        database_mysql.ddl("CREATE TABLE `my_table` (`id` INT PRIMARY KEY, `name` VARCHAR(50))")?;
+        database_mysql
+            .run("INSERT INTO `my_table` VALUES (1, 'test')")?
+            .done()?;
+
+        let mut result = database_mysql.run("SELECT `id`, `name` FROM `my_table`")?;
+        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row[0], DataValue::Int32(1));
+        assert_eq!(row[1], DataValue::from("test".to_string()));
+        result.done()?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_mysql_limit_offset_comma_syntax() -> Result<(), DatabaseError> {
+        let mut database_mysql = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
+
+        database_mysql.ddl("CREATE TABLE test_table (id INT PRIMARY KEY, value INT)")?;
+        for i in 1..=10 {
+            database_mysql
+                .run(format!("INSERT INTO test_table VALUES ({}, {})", i, i * 10))?
+                .done()?;
+        }
+
+        let mut result = database_mysql.run("SELECT id FROM test_table ORDER BY id LIMIT 2, 3")?;
+        let row1 = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row1[0], DataValue::Int32(3));
+        let row2 = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row2[0], DataValue::Int32(4));
+        let row3 = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row3[0], DataValue::Int32(5));
+        assert!(result.next_tuple(|_, _| ())?.is_none());
+        result.done()?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_generic_dialect_rejects_mysql_comment_syntax() -> Result<(), DatabaseError> {
+        let database_generic = DataBaseBuilder::path(".").build_in_memory()?;
+        let database_mysql = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
+
+        let generic_result = database_generic
+            .state
+            .prepare_all("SELECT 1 # MySQL comment");
+        assert!(generic_result.is_err());
+
+        let mysql_result = database_mysql.state.prepare_all("SELECT 1 # MySQL comment");
+        assert!(mysql_result.is_ok());
+
+        let generic_result2 = database_generic.state.prepare_all("SELECT 1 -- comment\n");
+        assert!(generic_result2.is_ok());
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_unknown_dialect_error() -> Result<(), DatabaseError> {
+        let result = DataBaseBuilder::path(".").default_dialect("unknown");
+
+        assert!(result.is_err());
+        if let Err(err) = result {
+            assert!(matches!(err, DatabaseError::UnsupportedStmt(_)));
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_run_statement_with_preparsed() -> Result<(), DatabaseError> {
+        use crate::parser::parse_sql_with_dialect;
+        use sqlparser::dialect::MySqlDialect;
+
+        let mut database = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
+
+        database.ddl("CREATE TABLE `test_preparsed` (`id` INT PRIMARY KEY, `val` INT)")?;
+        database
+            .run("INSERT INTO `test_preparsed` VALUES (1, 100), (2, 200)")?
+            .done()?;
+
+        let dialect = MySqlDialect {};
+        let statements = parse_sql_with_dialect(
+            "SELECT `id`, `val` FROM `test_preparsed` WHERE `id` = 1",
+            &dialect,
+        )?;
+        let statement = statements.into_iter().next().unwrap();
+
+        let mut result = database.run_statement(statement)?;
+        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row[0], DataValue::Int32(1));
+        assert_eq!(row[1], DataValue::Int32(100));
+        result.done()?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_run_mut_statement_with_ddl() -> Result<(), DatabaseError> {
+        use crate::parser::parse_sql_with_dialect;
+        use sqlparser::dialect::MySqlDialect;
+
+        let mut database = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
+
+        let dialect = MySqlDialect {};
+        let statements =
+            parse_sql_with_dialect("CREATE TABLE `ddl_test` (`id` INT PRIMARY KEY)", &dialect)?;
+        let statement = statements.into_iter().next().unwrap();
+
+        database.run_mut_statement(statement, ()).await?;
+
+        database.run("INSERT INTO `ddl_test` VALUES (1)")?.done()?;
+
+        let mut result = database.run("SELECT `id` FROM `ddl_test`")?;
+        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row[0], DataValue::Int32(1));
+        result.done()?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_dialect_rewrite_hook() -> Result<(), DatabaseError> {
+        use crate::dialect::SqlDialect;
+        use sqlparser::ast::Statement;
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct RewritingDialect {
+            inner: crate::dialect::GenericSqlDialect,
+        }
+
+        impl SqlDialect for RewritingDialect {
+            fn name(&self) -> &str {
+                "rewriting_test"
+            }
+
+            fn parser_dialect(&self) -> &dyn sqlparser::dialect::Dialect {
+                self.inner.parser_dialect()
+            }
+
+            fn rewrite(&self, stmt: &mut Statement) -> Result<(), DatabaseError> {
+                if let Statement::Query(query) = stmt {
+                    if let sqlparser::ast::SetExpr::Select(select) = query.body.as_mut() {
+                        for proj in &mut select.projection {
+                            if let sqlparser::ast::SelectItem::UnnamedExpr(
+                                sqlparser::ast::Expr::Value(val),
+                            ) = proj
+                            {
+                                if let sqlparser::ast::Value::Number(ref mut n, _) = &mut val.value
+                                {
+                                    if n == "42" {
+                                        *n = "99".to_string();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let database = DataBaseBuilder::path(".")
+            .register_dialect(Arc::new(RewritingDialect {
+                inner: crate::dialect::GenericSqlDialect::new(),
+            }))
+            .default_dialect("rewriting_test")?
+            .build_in_memory()?;
+
+        let mut result = database.run("SELECT 42")?;
+        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row[0], DataValue::Int32(99));
+        result.done()?;
 
         Ok(())
     }

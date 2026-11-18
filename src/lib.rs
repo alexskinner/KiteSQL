@@ -120,10 +120,13 @@ compile_error!("feature `spill` is not supported on wasm32 targets");
 pub mod binder;
 pub mod catalog;
 pub mod db;
+pub mod dialect;
 pub mod errors;
 pub mod execution;
 pub mod expression;
 mod function;
+pub use function::pack::FunctionPack;
+pub use function::registry::FunctionRegistry;
 pub(crate) mod iter_ext;
 #[cfg(feature = "macros")]
 pub mod macros;

@@ -176,7 +176,7 @@ scala_function!(TestFunction::test(LogicalType::Integer, LogicalType::Integer) -
 });
 
 let kite_sql = DataBaseBuilder::path("./data")
-    .register_scala_function(TestFunction::new())
+    .register_scalar_function(TestFunction::new())
     .build()?;
 ```
 
@@ -187,13 +187,13 @@ table_function!(MyTableFunction::test_numbers(LogicalType::Integer) -> [c1: Logi
 
     Ok(Box::new((0..num)
         .into_iter()
-        .map(|i| Ok(Tuple {
-            id: None,
-            values: vec![
-                DataValue::Int32(Some(i)),
-                DataValue::Int32(Some(i)),
+        .map(|i| Ok(Tuple::new(
+            None,
+            vec![
+                DataValue::Int32(i),
+                DataValue::Int32(i),
             ]
-        }))) as TableFunctionIter)
+        )))) as TableFunctionIter)
 }));
 let kite_sql = DataBaseBuilder::path("./data")
    .register_table_function(MyTableFunction::new())
