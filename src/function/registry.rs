@@ -496,7 +496,12 @@ mod tests {
             _args: &[crate::planner::ExprRef],
             _arena: &(dyn crate::planner::MetaArena + '_),
         ) -> Result<crate::expression::function::table::TableFunctionIter, DatabaseError> {
-            Ok(Box::new((0..5).map(|i| Ok(crate::types::tuple::Tuple::new(None, vec![DataValue::Int32(i)]))))
+            Ok(Box::new((0..5).map(|i| {
+                Ok(crate::types::tuple::Tuple::new(
+                    None,
+                    vec![DataValue::Int32(i)],
+                ))
+            }))
                 as crate::expression::function::table::TableFunctionIter)
         }
 
@@ -504,7 +509,11 @@ mod tests {
             &self.summary
         }
 
-        fn output_schema_into(&self, table_arena: &mut crate::planner::TableArena, schema: &mut crate::types::tuple::Schema) {
+        fn output_schema_into(
+            &self,
+            table_arena: &mut crate::planner::TableArena,
+            schema: &mut crate::types::tuple::Schema,
+        ) {
             use crate::catalog::{ColumnCatalog, ColumnDesc};
             schema.push(table_arena.alloc_column(ColumnCatalog::new(
                 "n".to_string(),
@@ -598,9 +607,7 @@ mod tests {
             database
                 .run("create table t1(c1 int primary key, c2 int default durable_add(10))")?
                 .done()?;
-            database
-                .run("insert into t1(c1) values (1)")?
-                .done()?;
+            database.run("insert into t1(c1) values (1)")?.done()?;
             database
                 .run("create view v1 as select durable_add(c1) as result from t1")?
                 .done()?;
