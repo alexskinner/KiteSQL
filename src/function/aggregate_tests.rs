@@ -50,8 +50,8 @@ mod tests {
 
     #[test]
     fn test_group_concat_aggregate_trait() -> Result<(), DatabaseError> {
-        use crate::types::value::Utf8Type;
-        let _group_concat = GroupConcatAggregate::new(LogicalType::Varchar(None, Utf8Type::Variable(None)));
+        use crate::types::CharLengthUnits;
+        let _group_concat = GroupConcatAggregate::new(LogicalType::Varchar(None, CharLengthUnits::Characters));
         Ok(())
     }
 }
