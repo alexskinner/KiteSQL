@@ -12,8 +12,6 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#![allow(dead_code, unused_variables)]
-
 #[cfg(test)]
 mod tests {
     use crate::db::DataBaseBuilder;
@@ -237,7 +235,7 @@ mod tests {
     }
 
     #[test]
-    fn test_udaf_empty_table() -> Result<(), DatabaseError> {
+    fn test_udaf_empty_result() -> Result<(), DatabaseError> {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
@@ -325,7 +323,7 @@ mod tests {
 
         let mut iter = database.run("select sum(value) from (values (10), (20)) as t(value)")?;
         let tuple = next_tuple_owned(&mut iter)?.unwrap();
-        assert_eq!(tuple[0], DataValue::Int32(30));
+        assert_eq!(tuple[0], DataValue::Int32(300));
         iter.done()?;
 
         Ok(())

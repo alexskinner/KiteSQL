@@ -1,11 +1,13 @@
 // AggregateFunctionImpl trait for pluggable aggregate functions
 
 use crate::errors::DatabaseError;
-use crate::execution::dql::aggregate::Accumulator;
 use crate::expression::agg::AggKind;
 use crate::types::LogicalType;
 use std::fmt::Debug;
 use std::sync::Arc;
+
+/// Re-export Accumulator for external implementations
+pub use crate::execution::dql::aggregate::Accumulator;
 
 /// High-level trait for aggregate function implementations.
 /// This provides metadata and factory methods for creating accumulators.
