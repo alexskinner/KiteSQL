@@ -668,12 +668,12 @@ impl TableCodec {
     }
 
     /// Key: `{TableId}{DISPLAY_TYPES_TAG}{BOUND_MIN_TAG}`.
-    pub async fn with_display_types<R>(
+    pub fn with_display_types<R>(
         &mut self,
         table_id: TableId,
         meta: Option<&crate::catalog::DisplayTypesMeta>,
         arena: &(impl MetaArena + ?Sized),
-        f: impl AsyncFnOnce(&[u8], &[u8]) -> Result<R, DatabaseError>,
+        f: impl FnOnce(&[u8], &[u8]) -> Result<R, DatabaseError>,
     ) -> Result<R, DatabaseError> {
         self.clear_buffers();
         self.with_table_buffers(table_id, |lower, prefix, value| {

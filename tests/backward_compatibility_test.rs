@@ -32,6 +32,7 @@ fn test_main_database_compatibility() -> Result<(), DatabaseError> {
     }
 
     // Open the database created by main - this is the key test
+    #[allow(unused_mut)]
     let mut db = DataBaseBuilder::path(test_db_path.to_str().unwrap()).build_lmdb()?;
 
     // Verify we can execute a simple query (proving tables are readable)
@@ -56,6 +57,7 @@ fn test_main_database_compatibility() -> Result<(), DatabaseError> {
 
     // Close and reopen to verify persistence
     drop(db);
+    #[allow(unused_mut)]
     let mut db = DataBaseBuilder::path(test_db_path.to_str().unwrap()).build_lmdb()?;
 
     // Verify we can still query the old tables after reopen

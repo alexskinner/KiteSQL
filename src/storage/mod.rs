@@ -594,9 +594,8 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                     updated_table.id(),
                     None::<&crate::catalog::DisplayTypesMeta>,
                     plan_arena,
-                    async |key, _| self.get_borrowed(key).await,
-                )
-                .await?;
+                    |key, _| Ok(None), // Empty - we'll load it from storage properly below
+                )?;
             if let Some(bytes) = existing_display_types {
                 let meta = TableCodec::decode_display_types::<Self>(bytes.as_ref(), plan_arena)?;
                 updated_table.load_display_types(meta);
@@ -614,7 +613,7 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                     updated_table.id(),
                     Some(&display_meta),
                     plan_arena,
-                    |key, value| self.set(key, value),
+                    async |key, value| self.set(key, value),
                 )
                 .await?;
         }
@@ -825,7 +824,7 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         let display_meta = table_catalog.collect_display_types();
         if !display_meta.is_empty() {
             table_codec
-                .with_display_types(table_id, Some(&display_meta), plan_arena, |key, value| {
+                .with_display_types(table_id, Some(&display_meta), plan_arena, async |key, value| {
                     self.set(key, value)
                 })
                 .await?;
