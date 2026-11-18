@@ -14,7 +14,7 @@
 
 use crate::catalog::view::View;
 use crate::catalog::{ColumnCatalog, ColumnRelation, TableId, TableMeta, TableName};
-
+use crate::db::{ScalaFunctions, TableFunctions};
 use crate::errors::DatabaseError;
 use crate::optimizer::core::cm_sketch::{CountMinSketchMeta, CountMinSketchPage};
 use crate::optimizer::core::histogram::Bucket;
@@ -66,6 +66,24 @@ type TupleValueWriter<'a> = (
     usize,
     &'a mut (dyn FnMut(&mut Bytes) -> Result<(), DatabaseError> + Send),
 );
+
+fn build_temporary_function_registry(
+    scala_functions: Option<&crate::db::ScalaFunctions>,
+    table_functions: Option<&crate::db::TableFunctions>,
+) -> Option<crate::function::registry::FunctionRegistry> {
+    if let (Some(sf), Some(tf)) = (scala_functions, table_functions) {
+        let mut registry = crate::function::registry::FunctionRegistry::new();
+        for func in sf.values() {
+            registry.load_scalar(func.clone());
+        }
+        for catalog in tf.values() {
+            registry.load_table(std::sync::Arc::new(catalog.clone()));
+        }
+        Some(registry)
+    } else {
+        None
+    }
+}
 
 #[derive(Default)]
 pub struct TableCodec {
@@ -897,9 +915,15 @@ impl TableCodec {
 
     pub fn decode_index_meta<T: StorageTransaction>(
         bytes: &[u8],
+        scala_functions: Option<&ScalaFunctions>,
+        table_functions: Option<&TableFunctions>,
         arena: &mut (impl MetaArena + ?Sized),
     ) -> Result<IndexMeta, DatabaseError> {
-        IndexMeta::decode::<T, _, _>(&mut Cursor::new(bytes), None, arena)
+        let temp_registry = build_temporary_function_registry(scala_functions, table_functions);
+        let mut context = temp_registry
+            .as_ref()
+            .map(|reg| ReferenceDecodeContext::<T>::with_functions(reg));
+        IndexMeta::decode::<T, _, _>(&mut Cursor::new(bytes), context.as_mut(), arena)
     }
 
     pub fn decode_index_into<M: IndexKeyMapping>(
@@ -976,10 +1000,15 @@ impl TableCodec {
 
     pub fn decode_column<T: StorageTransaction, R: Read>(
         reader: &mut R,
+        scala_functions: Option<&ScalaFunctions>,
+        table_functions: Option<&TableFunctions>,
         arena: &mut (impl MetaArena + ?Sized),
     ) -> Result<ColumnCatalog, DatabaseError> {
-        // `TableCache` is not theoretically used in `table_collect` because `ColumnCatalog` should not depend on other Column
-        ColumnCatalog::decode::<T, R, _>(reader, None, arena)
+        let temp_registry = build_temporary_function_registry(scala_functions, table_functions);
+        let mut context = temp_registry
+            .as_ref()
+            .map(|reg| ReferenceDecodeContext::<T>::with_functions(reg));
+        ColumnCatalog::decode::<T, R, _>(reader, context.as_mut(), arena)
     }
 
     pub fn decode_index_statistics<T: StorageTransaction>(
@@ -1509,7 +1538,7 @@ mod tests {
             })?;
 
         assert_eq!(
-            TableCodec::decode_index_meta::<TestTransaction>(&bytes, &mut plan_arena)?,
+            TableCodec::decode_index_meta::<TestTransaction>(&bytes, None, None, &mut plan_arena)?,
             index_meta
         );
 
@@ -1553,8 +1582,12 @@ mod tests {
             })
             .unwrap();
         let mut cursor = Cursor::new(bytes);
-        let decode_col =
-            TableCodec::decode_column::<TestTransaction, _>(&mut cursor, &mut plan_arena)?;
+        let decode_col = TableCodec::decode_column::<TestTransaction, _>(
+            &mut cursor,
+            None,
+            None,
+            &mut plan_arena,
+        )?;
 
         assert_eq!(decode_col, expected_col);
 

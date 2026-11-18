@@ -23,6 +23,7 @@ use crate::expression::function::scala::ScalarFunctionImpl;
 use crate::expression::function::table::{
     ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl,
 };
+use crate::expression::function::FunctionSummary;
 use crate::function::core::install_core_functions;
 use crate::function::registry::FunctionRegistry;
 use crate::maybe_async::MaybeSend;
@@ -53,7 +54,7 @@ use crate::types::LogicalType;
 use ordered_float::OrderedFloat;
 pub use program::{Param, Program, ProgramIter};
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::Deref;
@@ -100,6 +101,8 @@ struct BuildParams {
     hll_precision: Option<u8>,
     statistics_relative_error: Option<f64>,
     parser_recursion_limit: Option<usize>,
+    #[cfg(feature = "parser")]
+    dialect_registry: crate::dialect::DialectRegistry,
     transaction_isolation: Option<TransactionIsolationLevel>,
     scalar_functions: Vec<Arc<dyn ScalarFunctionImpl>>,
     table_functions: Vec<Arc<dyn TableFunctionImpl>>,
@@ -156,6 +159,8 @@ pub struct DataBaseBuilder {
     statistics_relative_error: Option<f64>,
     parser_recursion_limit: Option<usize>,
     transaction_isolation: Option<TransactionIsolationLevel>,
+    #[cfg(feature = "parser")]
+    dialect_registry: crate::dialect::DialectRegistry,
     #[cfg(all(not(target_arch = "wasm32"), feature = "rocksdb"))]
     storage_config: StorageConfig,
     #[cfg(all(not(target_arch = "wasm32"), feature = "lmdb"))]
@@ -194,6 +199,8 @@ impl DataBaseBuilder {
             statistics_relative_error: None,
             parser_recursion_limit: None,
             transaction_isolation: None,
+            #[cfg(feature = "parser")]
+            dialect_registry: crate::dialect::DialectRegistry::new(),
             #[cfg(all(not(target_arch = "wasm32"), feature = "rocksdb"))]
             storage_config: Default::default(),
             #[cfg(all(not(target_arch = "wasm32"), feature = "lmdb"))]
@@ -237,6 +244,20 @@ impl DataBaseBuilder {
     pub fn parser_recursion_limit(mut self, limit: usize) -> Self {
         self.parser_recursion_limit = Some(limit);
         self
+    }
+
+    /// Registers a SQL dialect.
+    #[cfg(feature = "parser")]
+    pub fn register_dialect(mut self, dialect: Arc<dyn crate::dialect::SqlDialect>) -> Self {
+        self.dialect_registry.register(dialect);
+        self
+    }
+
+    /// Sets the default SQL dialect. The default is "generic".
+    #[cfg(feature = "parser")]
+    pub fn default_dialect(mut self, name: &str) -> Result<Self, DatabaseError> {
+        self.dialect_registry.set_default(name)?;
+        Ok(self)
     }
 
     /// Sets the transaction isolation level used by database-created transactions.
@@ -375,6 +396,8 @@ impl DataBaseBuilder {
                 hll_precision: self.hll_precision,
                 statistics_relative_error: self.statistics_relative_error,
                 parser_recursion_limit: self.parser_recursion_limit,
+                #[cfg(feature = "parser")]
+                dialect_registry: self.dialect_registry,
                 transaction_isolation: self.transaction_isolation,
                 scalar_functions: self.scalar_functions,
                 table_functions: self.table_functions,
@@ -417,6 +440,8 @@ impl DataBaseBuilder {
                 hll_precision: self.hll_precision,
                 statistics_relative_error: self.statistics_relative_error,
                 parser_recursion_limit: self.parser_recursion_limit,
+                #[cfg(feature = "parser")]
+                dialect_registry: self.dialect_registry,
                 transaction_isolation: self.transaction_isolation,
                 scalar_functions: self.scalar_functions,
                 table_functions: self.table_functions,
@@ -440,6 +465,8 @@ impl DataBaseBuilder {
                 hll_precision: self.hll_precision,
                 statistics_relative_error: self.statistics_relative_error,
                 parser_recursion_limit: self.parser_recursion_limit,
+                #[cfg(feature = "parser")]
+                dialect_registry: self.dialect_registry,
                 transaction_isolation: self.transaction_isolation,
                 scalar_functions: self.scalar_functions,
                 table_functions: self.table_functions,
@@ -461,6 +488,8 @@ impl DataBaseBuilder {
                 hll_precision: self.hll_precision,
                 statistics_relative_error: self.statistics_relative_error,
                 parser_recursion_limit: self.parser_recursion_limit,
+                #[cfg(feature = "parser")]
+                dialect_registry: self.dialect_registry,
                 transaction_isolation: self.transaction_isolation,
                 scalar_functions: self.scalar_functions,
                 table_functions: self.table_functions,
@@ -482,6 +511,8 @@ impl DataBaseBuilder {
                 hll_precision: self.hll_precision,
                 statistics_relative_error: self.statistics_relative_error,
                 parser_recursion_limit: self.parser_recursion_limit,
+                #[cfg(feature = "parser")]
+                dialect_registry: self.dialect_registry,
                 transaction_isolation: self.transaction_isolation,
                 scalar_functions: self.scalar_functions,
                 table_functions: self.table_functions,
@@ -497,6 +528,8 @@ impl DataBaseBuilder {
             hll_precision,
             statistics_relative_error,
             parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            dialect_registry,
             transaction_isolation,
             scalar_functions,
             table_functions,
@@ -540,7 +573,6 @@ impl DataBaseBuilder {
         let mut function_registry = FunctionRegistry::new();
         install_core_functions(&mut function_registry, table_arena.borrow_mut())?;
 
-        // Mark all current functions as built-ins so user functions can override them
         function_registry.mark_builtins_loaded();
 
         for function in scalar_functions {
@@ -574,6 +606,8 @@ impl DataBaseBuilder {
             hll_precision,
             statistics_relative_error: statistics_relative_error.map(OrderedFloat),
             parser_recursion_limit,
+            #[cfg(feature = "parser")]
+            dialect_registry,
             _p: Default::default(),
         };
 
@@ -817,6 +851,8 @@ pub(crate) struct State<S> {
     statistics_relative_error: Option<OrderedFloat<f64>>,
     #[cfg_attr(not(feature = "parser"), allow(dead_code))]
     parser_recursion_limit: Option<usize>,
+    #[cfg(feature = "parser")]
+    dialect_registry: crate::dialect::DialectRegistry,
     _p: PhantomData<S>,
 }
 
@@ -826,8 +862,27 @@ impl<S: Storage> State<S> {
         self.parser_recursion_limit
     }
 
+    #[cfg(feature = "parser")]
+    pub(crate) fn dialect_registry(&self) -> &crate::dialect::DialectRegistry {
+        &self.dialect_registry
+    }
+
     pub(crate) fn function_registry(&self) -> &FunctionRegistry {
         &self.function_registry
+    }
+
+    pub(crate) fn scala_functions_arc(&self) -> Arc<ScalaFunctions> {
+        Arc::new(self.function_registry.scalar_functions().clone())
+    }
+
+    pub(crate) fn table_functions_arc(&self) -> Arc<TableFunctions> {
+        Arc::new(
+            self.function_registry
+                .table_functions()
+                .iter()
+                .map(|(k, v)| (k.clone(), (**v).clone()))
+                .collect(),
+        )
     }
     pub(crate) fn meta_cache(&self) -> &StatisticsMetaCache {
         &self.meta_cache
@@ -964,7 +1019,7 @@ impl<S: Storage> State<S> {
     }
 
     pub(crate) async fn execute_mut<'a, 'txn, A, F>(
-        &'a mut self,
+        &'a self,
         transaction: &'a mut S::TransactionType<'txn>,
         params: A,
         build: F,
@@ -977,45 +1032,36 @@ impl<S: Storage> State<S> {
             &mut PlanArena<'a>,
         ) -> Result<LogicalPlan, DatabaseError>,
     {
-        let State {
-            function_registry,
-            meta_cache,
-            table_arena,
-            optimizer_pipeline,
-            histogram_buckets,
-            hll_precision,
-            statistics_relative_error,
-            ..
-        } = self;
-        let arena = table_arena.borrow();
+        let arena = self.table_arena.borrow();
         let table_cache = &arena.tables;
-        let mut plan_arena = PlanArena::new(table_arena);
+        let mut plan_arena = PlanArena::new(&self.table_arena);
         let mut binder = Binder::new(
             BinderContext::new(
                 &arena.names,
                 table_cache,
                 &arena.views,
                 transaction,
-                function_registry,
+                &self.function_registry,
             ),
             &params,
             None,
         );
         let source_plan = build(&mut binder, &mut plan_arena)?;
         drop(binder);
-        let mut plan = optimizer_pipeline
-            .instantiate(source_plan)
-            .find_best(Some(&StatisticMetaLoader::new(meta_cache)), &mut plan_arena)?;
+        let mut plan = self.optimizer_pipeline.instantiate(source_plan).find_best(
+            Some(&StatisticMetaLoader::new(&self.meta_cache)),
+            &mut plan_arena,
+        )?;
 
         if let Operator::Analyze(op) = &mut plan.operator {
             if op.histogram_buckets.is_none() {
-                op.histogram_buckets = *histogram_buckets;
+                op.histogram_buckets = self.histogram_buckets;
             }
             if op.hll_precision.is_none() {
-                op.hll_precision = *hll_precision;
+                op.hll_precision = self.hll_precision;
             }
             if op.statistics_relative_error.is_none() {
-                op.statistics_relative_error = *statistics_relative_error;
+                op.statistics_relative_error = self.statistics_relative_error;
             }
         }
 
@@ -1040,9 +1086,10 @@ pub struct Database<S: Storage> {
 }
 
 impl DDLApply {
-    fn apply_to<S: Storage>(
+    fn apply_to(
         self,
-        state: &mut State<S>,
+        table_arena: &TableArenaCell,
+        meta_cache: &mut StatisticsMetaCache,
         plan_arena: &mut PlanArena,
     ) -> Result<bool, DatabaseError> {
         let mut catalog_changed = false;
@@ -1053,26 +1100,26 @@ impl DDLApply {
             } => {
                 let table = table.transplant_to_table_arena(plan_arena)?;
                 if clear_statistics {
-                    state.meta_cache.remove_table(table.id());
+                    meta_cache.remove_table(table.id());
                 }
-                state.table_arena.borrow_mut().insert_table(table);
+                table_arena.borrow_mut().insert_table(table);
                 catalog_changed = true;
             }
             DDLApply::DropTable { name } => {
-                let arena = state.table_arena.borrow_mut();
+                let arena = table_arena.borrow_mut();
                 if let Some(meta) = arena.names.remove(&name) {
                     arena.tables.remove(&meta.id);
-                    state.meta_cache.remove_table(meta.id);
+                    meta_cache.remove_table(meta.id);
                 }
                 catalog_changed = true;
             }
             DDLApply::UpsertView { id, view } => {
                 plan_arena.materialize_into_table_arena();
-                state.table_arena.borrow_mut().insert_view(id, view);
+                table_arena.borrow_mut().insert_view(id, view);
                 catalog_changed = true;
             }
             DDLApply::DropView { name } => {
-                let arena = state.table_arena.borrow_mut();
+                let arena = table_arena.borrow_mut();
                 if let Some(meta) = arena.names.remove(&name) {
                     arena.views.remove(&meta.id);
                 }
@@ -1083,17 +1130,17 @@ impl DDLApply {
                 index_id,
                 meta,
             } => {
-                state.meta_cache.indexes.insert((table_id, index_id), meta);
+                meta_cache.indexes.insert((table_id, index_id), meta);
             }
             DDLApply::RemoveIndexStatistics { table_id, index_id } => {
-                state.meta_cache.indexes.remove(&(table_id, index_id));
+                meta_cache.indexes.remove(&(table_id, index_id));
             }
             DDLApply::UpsertColumnStatistics {
                 table_id,
                 column_id,
                 meta,
             } => {
-                state.meta_cache.columns.insert((table_id, column_id), meta);
+                meta_cache.columns.insert((table_id, column_id), meta);
             }
         }
         Ok(catalog_changed)
@@ -1133,42 +1180,49 @@ impl<S: Storage> Database<S> {
         ) -> Result<LogicalPlan, DatabaseError>,
         C: ConsumeMut<S>,
     {
-        let transaction = OwnedPtr::new(
-            self.storage
-                .transaction_with_isolation(self.transaction_isolation, false)?,
-        );
+        let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
+            self.transaction_isolation,
+            false,
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
+        )?);
+
         let state = TxnPtr::new(std::ptr::from_mut(&mut self.state));
-        let (plan_arena, executor) = match unsafe {
-            (&mut *state.get())
+        let (plan_arena, executor) = unsafe {
+            (&*state.get())
                 .execute_mut(&mut *transaction.get(), params, build)
                 .await
-        } {
-            Ok(result) => result,
-            Err(err) => return Err(err.with_sql_context(context)),
-        };
-        let (result, mut plan_arena, apply) = match async {
-            let mut iter = TransactionIter::new(plan_arena, executor);
-            let result = consume.consume(&mut iter).await?;
-            let (arena, apply) = iter.done_with_ddl_apply().await?;
-            Ok::<_, DatabaseError>((result, arena, apply))
         }
-        .await
-        {
-            Ok(result) => result,
-            Err(err) => return Err(err.with_sql_context(context)),
-        };
+        .map_err(|err| err.with_sql_context(context))?;
 
-        if let Err(err) = unsafe { transaction.into_inner() }.commit().await {
-            return Err(err.with_sql_context(context));
-        }
+        let mut iter = TransactionIter::new(plan_arena, executor);
+        let result = consume
+            .consume(&mut iter)
+            .await
+            .map_err(|err| err.with_sql_context(context))?;
+        let (mut plan_arena, apply) = iter
+            .done_with_ddl_apply()
+            .await
+            .map_err(|err| err.with_sql_context(context))?;
+
+        unsafe { transaction.into_inner() }
+            .commit()
+            .await
+            .map_err(|err| err.with_sql_context(context))?;
 
         let mut catalog_changed = false;
-        for apply in apply {
-            catalog_changed |= unsafe { apply.apply_to(&mut *state.get(), &mut plan_arena) }
-                .map_err(|err| err.with_sql_context(context))?;
+        for apply_item in apply {
+            catalog_changed |= unsafe {
+                apply_item.apply_to(
+                    &(*state.get()).table_arena,
+                    &mut (*state.get()).meta_cache,
+                    &mut plan_arena,
+                )
+            }
+            .map_err(|err| err.with_sql_context(context))?;
         }
         if catalog_changed {
-            unsafe { (&mut *state.get()).recycle_table_arena() }?;
+            unsafe { (&mut *state.get()).recycle_table_arena()? };
         }
         Ok(result)
     }
@@ -1194,9 +1248,11 @@ impl<S: Storage> Database<S> {
                 Ok(())
             }
             CatalogKind::Table(name) => {
-                let transaction = self.storage.transaction_with_isolation(
+                let transaction = self.storage.transaction_with_functions(
                     self.storage.default_transaction_isolation(),
                     true,
+                    Some(self.state.scala_functions_arc()),
+                    Some(self.state.table_functions_arc()),
                 )?;
                 let mut table_codec = TableCodec::default();
                 let table = transaction
@@ -1240,6 +1296,7 @@ impl<S: Storage> Database<S> {
                     }
                 }
                 let table_id = table.id();
+                drop(transaction);
                 self.state.meta_cache.remove_table(table_id);
                 self.state
                     .meta_cache
@@ -1254,9 +1311,11 @@ impl<S: Storage> Database<S> {
                 Ok(())
             }
             CatalogKind::View(name) => {
-                let transaction = self.storage.transaction_with_isolation(
+                let transaction = self.storage.transaction_with_functions(
                     self.storage.default_transaction_isolation(),
                     true,
+                    Some(self.state.scala_functions_arc()),
+                    Some(self.state.table_functions_arc()),
                 )?;
                 let mut table_codec = TableCodec::default();
                 let (view_id, view) = transaction
@@ -1268,6 +1327,7 @@ impl<S: Storage> Database<S> {
                     )
                     .await?
                     .ok_or(DatabaseError::ViewNotFound)?;
+                drop(transaction);
                 self.state
                     .table_arena
                     .borrow_mut()
@@ -1285,9 +1345,12 @@ impl<S: Storage> Database<S> {
     /// A `read_only` transaction rejects statements that write; on LMDB it runs
     /// alongside the single writer instead of waiting for it.
     pub fn new_transaction(&self, read_only: bool) -> Result<Transaction<'_, S>, DatabaseError> {
-        let transaction = self
-            .storage
-            .transaction_with_isolation(self.transaction_isolation, read_only)?;
+        let transaction = self.storage.transaction_with_functions(
+            self.transaction_isolation,
+            read_only,
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
+        )?;
 
         Ok(Transaction {
             inner: transaction,
@@ -1350,10 +1413,12 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
             ) -> Result<(Executor<'s>, PlanArena<'s>), DatabaseError>
             + MaybeSend,
     {
-        let transaction = OwnedPtr::new(
-            self.storage
-                .transaction_with_isolation(self.transaction_isolation, read_only)?,
-        );
+        let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
+            self.transaction_isolation,
+            read_only,
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
+        )?);
         // SAFETY: the transaction stays boxed, and so in place, until the iterator is gone.
         let tx = unsafe { &mut *transaction.get() };
         let (executor, arena) = build(&self.state, tx)?;
@@ -1373,9 +1438,12 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
             &mut PlanArena<'_>,
         ) -> Result<LogicalPlan, DatabaseError>,
     {
-        let transaction = self
-            .storage
-            .transaction_with_isolation(self.transaction_isolation, true)?;
+        let transaction = self.storage.transaction_with_functions(
+            self.transaction_isolation,
+            true,
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
+        )?;
         let (plan, mut arena) = self.state.build_plan(params, &transaction, build)?;
         Ok(plan.explain(&mut arena, 0))
     }
@@ -3497,6 +3565,406 @@ pub(crate) mod test {
             )?,
             total as i32
         );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_udf_default_ddl_operations() -> Result<(), DatabaseError> {
+        use crate::expression::function::scala::ScalarFunctionImpl;
+        use crate::expression::function::FunctionSummary;
+        use crate::planner::{ExprRef, MetaArena};
+        use crate::types::tuple::Input;
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct MyUdf {
+            summary: FunctionSummary,
+            return_type: LogicalType,
+        }
+
+        impl MyUdf {
+            fn new() -> Self {
+                Self {
+                    summary: FunctionSummary {
+                        name: "my_udf".into(),
+                        arg_types: vec![],
+                        persistence: crate::expression::function::PersistencePolicy::Durable,
+                    },
+                    return_type: LogicalType::Integer,
+                }
+            }
+        }
+
+        impl ScalarFunctionImpl for MyUdf {
+            fn eval(
+                &self,
+                _exprs: &[ExprRef],
+                _arena: &(dyn MetaArena + '_),
+                _tuples: Option<&dyn Input>,
+            ) -> Result<DataValue, DatabaseError> {
+                Ok(DataValue::Int32(42))
+            }
+
+            fn monotonicity(&self) -> Option<crate::expression::function::scala::FuncMonotonicity> {
+                None
+            }
+
+            fn return_type(&self) -> &LogicalType {
+                &self.return_type
+            }
+
+            fn summary(&self) -> &FunctionSummary {
+                &self.summary
+            }
+        }
+
+        let my_udf = Arc::new(MyUdf::new()) as Arc<dyn ScalarFunctionImpl>;
+
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let mut kite_sql = DataBaseBuilder::path(temp_dir.path())
+            .build_with_storage(crate::storage::new_test_storage())?;
+
+        kite_sql.load(CatalogKind::ScalarFunction(my_udf))?;
+
+        kite_sql.ddl("CREATE TABLE t_udf (id int primary key, val int default my_udf(), v int)")?;
+
+        kite_sql
+            .run("INSERT INTO t_udf (id, v) VALUES (1, 10)")?
+            .done()?;
+
+        let mut found_val = None;
+        {
+            let mut iter = kite_sql.run("SELECT val FROM t_udf WHERE id = 1")?;
+            while let Some(val) = iter.next_tuple(|_, row| row.get(0).cloned()).await? {
+                found_val = val;
+            }
+            iter.done().await?;
+        }
+        assert_eq!(found_val, Some(DataValue::Int32(42)));
+
+        kite_sql.ddl("CREATE INDEX ix_v ON t_udf (v)")?;
+        kite_sql.ddl("DROP INDEX ix_v ON t_udf")?;
+        kite_sql.ddl("ALTER TABLE t_udf ADD COLUMN val2 int default my_udf()")?;
+        kite_sql.ddl("ALTER TABLE t_udf DROP COLUMN val2")?;
+        kite_sql.ddl("ALTER TABLE t_udf ALTER COLUMN val SET DEFAULT my_udf()")?;
+        kite_sql.ddl("ALTER TABLE t_udf ALTER COLUMN val DROP DEFAULT")?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "lmdb")]
+    #[test]
+    fn test_lmdb_function_default_persistence() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let db_path = temp_dir.path();
+
+        {
+            let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
+            kite_sql.ddl("CREATE TABLE t_persist (id int primary key, d timestamp default current_timestamp, v int)")?;
+            kite_sql
+                .run("INSERT INTO t_persist (id, v) VALUES (1, 100)")?
+                .done()?;
+        }
+
+        {
+            let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
+            kite_sql.load(CatalogKind::Table("t_persist".to_string()))?;
+            kite_sql.ddl("CREATE INDEX ix_v ON t_persist (v)")?;
+            kite_sql
+                .ddl("ALTER TABLE t_persist ADD COLUMN d2 timestamp default current_timestamp")?;
+
+            kite_sql
+                .run("INSERT INTO t_persist (id, v) VALUES (2, 200)")?
+                .done()?;
+
+            let mut found_rows = Vec::new();
+            {
+                let mut iter = kite_sql.run("SELECT id, v, d, d2 FROM t_persist ORDER BY id")?;
+                while let Some(row) = iter
+                    .next_tuple(|_, row| {
+                        (
+                            row.get(0).cloned(),
+                            row.get(1).cloned(),
+                            row.get(2).cloned(),
+                            row.get(3).cloned(),
+                        )
+                    })
+                    .await?
+                {
+                    found_rows.push(row);
+                }
+                iter.done().await?;
+            }
+
+            assert_eq!(found_rows.len(), 2);
+
+            assert_eq!(found_rows[0].0, Some(DataValue::Int32(1)));
+            assert_eq!(found_rows[0].1, Some(DataValue::Int32(100)));
+            assert!(
+                matches!(found_rows[0].2, Some(DataValue::Time64(..))),
+                "Row 0 d should be timestamp: {:?}",
+                found_rows[0].2
+            );
+
+            assert_eq!(found_rows[1].0, Some(DataValue::Int32(2)));
+            assert_eq!(found_rows[1].1, Some(DataValue::Int32(200)));
+            assert!(
+                matches!(found_rows[1].2, Some(DataValue::Time64(..))),
+                "Row 1 d should be timestamp: {:?}",
+                found_rows[1].2
+            );
+            assert!(
+                matches!(found_rows[1].3, Some(DataValue::Time64(..))),
+                "Row 1 d2 should be timestamp: {:?}",
+                found_rows[1].3
+            );
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "lmdb")]
+    #[test]
+    fn test_function_default_cold_cache() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let db_path = temp_dir.path();
+
+        {
+            let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
+            kite_sql.ddl(
+                "CREATE TABLE t_cold (id int primary key, d timestamp default current_timestamp, v int)",
+            )?;
+            kite_sql
+                .run("INSERT INTO t_cold (id, v) VALUES (1, 10)")?
+                .done()?;
+        }
+
+        {
+            let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
+            kite_sql.load(CatalogKind::Table("t_cold".to_string()))?;
+
+            let mut found_val = None;
+            {
+                let mut iter = kite_sql.run("SELECT v FROM t_cold WHERE id = 1")?;
+                while let Some(val) = iter.next_tuple(|_, row| row.get(0).cloned()).await? {
+                    found_val = val;
+                }
+                iter.done().await?;
+            }
+            assert_eq!(found_val, Some(DataValue::Int32(10)));
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_dialect_selection() -> Result<(), DatabaseError> {
+        let builder = DataBaseBuilder::path(".").default_dialect("mysql")?;
+        let database = builder.build_in_memory()?;
+
+        let statement_generic = database.state.prepare_all("SELECT * FROM `table`");
+        assert!(statement_generic.is_ok());
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_mysql_backtick_identifiers() -> Result<(), DatabaseError> {
+        let mut database_mysql = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
+
+        database_mysql.ddl("CREATE TABLE `my_table` (`id` INT PRIMARY KEY, `name` VARCHAR(50))")?;
+        database_mysql
+            .run("INSERT INTO `my_table` VALUES (1, 'test')")?
+            .done()?;
+
+        let mut result = database_mysql.run("SELECT `id`, `name` FROM `my_table`")?;
+        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row[0], DataValue::Int32(1));
+        assert_eq!(row[1], DataValue::from("test".to_string()));
+        result.done()?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_mysql_limit_offset_comma_syntax() -> Result<(), DatabaseError> {
+        let mut database_mysql = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
+
+        database_mysql.ddl("CREATE TABLE test_table (id INT PRIMARY KEY, value INT)")?;
+        for i in 1..=10 {
+            database_mysql
+                .run(format!("INSERT INTO test_table VALUES ({}, {})", i, i * 10))?
+                .done()?;
+        }
+
+        let mut result = database_mysql.run("SELECT id FROM test_table ORDER BY id LIMIT 2, 3")?;
+        let row1 = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row1[0], DataValue::Int32(3));
+        let row2 = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row2[0], DataValue::Int32(4));
+        let row3 = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row3[0], DataValue::Int32(5));
+        assert!(result.next_tuple(|_, _| ())?.is_none());
+        result.done()?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_generic_dialect_rejects_mysql_comment_syntax() -> Result<(), DatabaseError> {
+        let database_generic = DataBaseBuilder::path(".").build_in_memory()?;
+        let database_mysql = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
+
+        let generic_result = database_generic
+            .state
+            .prepare_all("SELECT 1 # MySQL comment");
+        assert!(generic_result.is_err());
+
+        let mysql_result = database_mysql.state.prepare_all("SELECT 1 # MySQL comment");
+        assert!(mysql_result.is_ok());
+
+        let generic_result2 = database_generic.state.prepare_all("SELECT 1 -- comment\n");
+        assert!(generic_result2.is_ok());
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_unknown_dialect_error() -> Result<(), DatabaseError> {
+        let result = DataBaseBuilder::path(".").default_dialect("unknown");
+
+        assert!(result.is_err());
+        if let Err(err) = result {
+            assert!(matches!(err, DatabaseError::UnsupportedStmt(_)));
+        }
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_run_statement_with_preparsed() -> Result<(), DatabaseError> {
+        use crate::parser::parse_sql_with_dialect;
+        use sqlparser::dialect::MySqlDialect;
+
+        let mut database = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
+
+        database.ddl("CREATE TABLE `test_preparsed` (`id` INT PRIMARY KEY, `val` INT)")?;
+        database
+            .run("INSERT INTO `test_preparsed` VALUES (1, 100), (2, 200)")?
+            .done()?;
+
+        let dialect = MySqlDialect {};
+        let statements = parse_sql_with_dialect(
+            "SELECT `id`, `val` FROM `test_preparsed` WHERE `id` = 1",
+            &dialect,
+        )?;
+        let statement = statements.into_iter().next().unwrap();
+
+        let mut result = database.run_statement(statement)?;
+        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row[0], DataValue::Int32(1));
+        assert_eq!(row[1], DataValue::Int32(100));
+        result.done()?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_run_mut_statement_with_ddl() -> Result<(), DatabaseError> {
+        use crate::parser::parse_sql_with_dialect;
+        use sqlparser::dialect::MySqlDialect;
+
+        let mut database = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
+
+        let dialect = MySqlDialect {};
+        let statements =
+            parse_sql_with_dialect("CREATE TABLE `ddl_test` (`id` INT PRIMARY KEY)", &dialect)?;
+        let statement = statements.into_iter().next().unwrap();
+
+        database.run_mut_statement(statement, ()).await?;
+
+        database.run("INSERT INTO `ddl_test` VALUES (1)")?.done()?;
+
+        let mut result = database.run("SELECT `id` FROM `ddl_test`")?;
+        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row[0], DataValue::Int32(1));
+        result.done()?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_dialect_rewrite_hook() -> Result<(), DatabaseError> {
+        use crate::dialect::SqlDialect;
+        use sqlparser::ast::Statement;
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct RewritingDialect {
+            inner: crate::dialect::GenericSqlDialect,
+        }
+
+        impl SqlDialect for RewritingDialect {
+            fn name(&self) -> &str {
+                "rewriting_test"
+            }
+
+            fn parser_dialect(&self) -> &dyn sqlparser::dialect::Dialect {
+                self.inner.parser_dialect()
+            }
+
+            fn rewrite(&self, stmt: &mut Statement) -> Result<(), DatabaseError> {
+                if let Statement::Query(query) = stmt {
+                    if let sqlparser::ast::SetExpr::Select(select) = query.body.as_mut() {
+                        for proj in &mut select.projection {
+                            if let sqlparser::ast::SelectItem::UnnamedExpr(
+                                sqlparser::ast::Expr::Value(val),
+                            ) = proj
+                            {
+                                if let sqlparser::ast::Value::Number(ref mut n, _) = &mut val.value
+                                {
+                                    if n == "42" {
+                                        *n = "99".to_string();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let database = DataBaseBuilder::path(".")
+            .register_dialect(Arc::new(RewritingDialect {
+                inner: crate::dialect::GenericSqlDialect::new(),
+            }))
+            .default_dialect("rewriting_test")?
+            .build_in_memory()?;
+
+        let mut result = database.run("SELECT 42")?;
+        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row[0], DataValue::Int32(99));
+        result.done()?;
 
         Ok(())
     }

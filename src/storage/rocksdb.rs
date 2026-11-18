@@ -398,6 +398,31 @@ impl Storage for OptimisticRocksStorage {
             tx,
             snapshot: self.inner.snapshot(),
             statements: 0,
+            scala_functions: None,
+            table_functions: None,
+        })
+    }
+
+    fn transaction_with_functions(
+        &self,
+        isolation: TransactionIsolationLevel,
+        _read_only: bool,
+        scala_functions: Option<std::sync::Arc<crate::db::ScalaFunctions>>,
+        table_functions: Option<std::sync::Arc<crate::db::TableFunctions>>,
+    ) -> Result<Self::TransactionType<'_>, DatabaseError> {
+        self.validate_transaction_isolation(isolation)?;
+        let mut txn_opts = OptimisticTransactionOptions::default();
+        txn_opts.set_snapshot(true);
+        let tx = self
+            .inner
+            .transaction_opt(&write_options(self.config.sync), &txn_opts);
+        Ok(OptimisticRocksTransaction {
+            db: self.inner.as_ref(),
+            tx,
+            snapshot: self.inner.snapshot(),
+            statements: 0,
+            scala_functions,
+            table_functions,
         })
     }
 
@@ -444,6 +469,31 @@ impl Storage for RocksStorage {
             tx,
             snapshot: self.inner.snapshot(),
             statements: 0,
+            scala_functions: None,
+            table_functions: None,
+        })
+    }
+
+    fn transaction_with_functions(
+        &self,
+        isolation: TransactionIsolationLevel,
+        _read_only: bool,
+        scala_functions: Option<std::sync::Arc<crate::db::ScalaFunctions>>,
+        table_functions: Option<std::sync::Arc<crate::db::TableFunctions>>,
+    ) -> Result<Self::TransactionType<'_>, DatabaseError> {
+        self.validate_transaction_isolation(isolation)?;
+        let mut txn_opts = TransactionOptions::default();
+        txn_opts.set_snapshot(true);
+        let tx = self
+            .inner
+            .transaction_opt(&write_options(self.config.sync), &txn_opts);
+        Ok(RocksTransaction {
+            db: self.inner.as_ref(),
+            tx,
+            snapshot: self.inner.snapshot(),
+            statements: 0,
+            scala_functions,
+            table_functions,
         })
     }
 
@@ -506,6 +556,8 @@ pub struct OptimisticRocksTransaction<'db> {
     tx: rocksdb::Transaction<'db, OptimisticTransactionDB>,
     snapshot: SnapshotWithThreadMode<'db, OptimisticTransactionDB>,
     statements: u64,
+    scala_functions: Option<std::sync::Arc<crate::db::ScalaFunctions>>,
+    table_functions: Option<std::sync::Arc<crate::db::TableFunctions>>,
 }
 
 pub struct RocksTransaction<'db> {
@@ -513,6 +565,8 @@ pub struct RocksTransaction<'db> {
     tx: rocksdb::Transaction<'db, TransactionDB<rocksdb::MultiThreaded>>,
     snapshot: SnapshotWithThreadMode<'db, TransactionDB<rocksdb::MultiThreaded>>,
     statements: u64,
+    scala_functions: Option<std::sync::Arc<crate::db::ScalaFunctions>>,
+    table_functions: Option<std::sync::Arc<crate::db::TableFunctions>>,
 }
 
 extern "C" {
@@ -578,6 +632,14 @@ macro_rules! impl_transaction {
 
             fn next_statement_stamp(&mut self) -> Result<u64, DatabaseError> {
                 statement_stamp(self.db, &mut self.statements)
+            }
+
+            fn scala_functions(&self) -> Option<&crate::db::ScalaFunctions> {
+                self.scala_functions.as_deref()
+            }
+
+            fn table_functions(&self) -> Option<&crate::db::TableFunctions> {
+                self.table_functions.as_deref()
             }
 
             #[inline]
