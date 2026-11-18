@@ -24,6 +24,7 @@ use crate::storage::StorageTransaction;
 use crate::types::index::{Index, IndexType};
 use crate::types::tuple_builder::TupleBuilder;
 use std::mem;
+use std::sync::Arc;
 
 pub struct Delete<'a> {
     table_id: TableId,
@@ -99,27 +100,65 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Delete<'a> {
         };
         let mut deleted_count = 0;
 
+        let enable_undo = arena.should_record_undo();
+        let serializers = if enable_undo {
+            let table = arena
+                .table_cache()
+                .get(&table_id)
+                .ok_or(DatabaseError::TableNotFound)?;
+            Some(Arc::new(
+                table
+                    .columns()
+                    .map(|col| plan_arena.column(*col).datatype().serializable())
+                    .collect::<Vec<_>>(),
+            ))
+        } else {
+            None
+        };
+
         while input.next_tuple(arena, plan_arena).await? {
             let tuple = arena.take_tuple();
-            let Some(tuple_id) = tuple.pk() else {
+            let Some(tuple_id) = tuple.pk().cloned() else {
                 continue;
             };
+
             for (index_id, index_ty, exprs) in index_templates.iter() {
                 arena.rewrite(exprs, plan_arena, Some(&tuple))?;
                 let mut state = arena.local_state(plan_arena);
                 let (values, transaction, table_codec) = state.tuple_transaction_codec_mut();
                 let index = Index::new(*index_id, values, *index_ty);
                 transaction
-                    .del_index(table_codec, table_id, &index, tuple_id)
+                    .del_index(table_codec, table_id, &index, &tuple_id)
                     .await?;
             }
 
             let mut state = arena.local_state(plan_arena);
-
             let (transaction, table_codec) = state.transaction_codec_mut();
             transaction
-                .remove_tuple(table_codec, table_id, tuple_id)
+                .remove_tuple(table_codec, table_id, &tuple_id)
                 .await?;
+
+            if let Some(ref serializers) = serializers {
+                for (index_id, index_ty, exprs) in index_templates.iter().rev() {
+                    arena.rewrite(exprs, plan_arena, Some(&tuple))?;
+                    let index_values = {
+                        let mut state = arena.local_state(plan_arena);
+                        let (values, _, _) = state.tuple_transaction_codec_mut();
+                        values.clone()
+                    };
+                    arena.undo_log().record_add_index(
+                        table_id,
+                        *index_id,
+                        *index_ty,
+                        index_values,
+                        tuple_id.clone(),
+                    );
+                }
+                arena
+                    .undo_log()
+                    .record_append_tuple(table_id, tuple, Arc::clone(serializers));
+            }
+
             deleted_count += 1;
         }
 

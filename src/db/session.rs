@@ -44,17 +44,22 @@
 //! holds an LMDB write transaction will deadlock (LMDB is single-writer). Use `Session::run()`
 //! for all operations while the session is active.
 //!
-//! # Statement-Level Atomicity Limitation
+//! # Statement-Level Atomicity
 //!
-//! **Known limitation**: A statement that fails mid-execution inside an explicit transaction
-//! may leave partial writes until ROLLBACK. MySQL semantics require that only the failing
-//! statement's effects are rolled back while keeping the transaction open, but this is not
-//! currently implemented.
+//! When DML statements run inside an explicit transaction (BEGIN/COMMIT), KiteSQL provides
+//! statement-level atomicity matching MySQL: if a statement fails partway through, only that
+//! statement's changes are rolled back while the transaction remains open.
 //!
-//! Implementation will be added in a follow-up PR using one of:
-//! - Capturing inverse operations in DML executors before writes
-//! - LMDB nested transactions (RwTransaction::begin_nested_txn)
-//! - Write buffering at the executor level
+//! Implementation: DML executors record inverse operations after each successful write. If
+//! the statement errors during iteration or done(), the inverses replay in reverse, undoing
+//! only that statement. On success, the undo log is discarded. Inside an explicit transaction,
+//! the undo log holds per-row state until the statement ends, so very large single statements
+//! use proportional memory.
+//!
+//! In autocommit mode, statement undo is skipped for performance since the entire transaction
+//! is dropped on failure anyway.
+//!
+//! Note: Memory storage does not support rollback, so statement atomicity is unavailable there.
 
 use crate::binder::Statement;
 use crate::db::{
@@ -149,7 +154,8 @@ impl<'db, S: Storage> Session<'db, S> {
             txn.commit().await?;
         }
 
-        let txn = self.database.new_transaction(false)?;
+        // Enable statement-level undo for explicit transactions
+        let txn = self.database.new_transaction_with_undo(false, true)?;
         self.active_transaction = Some(txn);
 
         Ok(())

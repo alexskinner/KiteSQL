@@ -90,6 +90,7 @@ impl<'p> Program<'p> {
             &mut self.executor,
             &mut self.arena,
             Some(&transaction.state.function_registry),
+            true,
         )
         .await?;
         Ok(ProgramIter {

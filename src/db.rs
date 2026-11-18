@@ -20,7 +20,7 @@ pub use crate::binder::Statement;
 use crate::binder::{Binder, BinderContext};
 use crate::errors::DatabaseError;
 pub use crate::execution::Executor;
-use crate::execution::{DDLApply, ExecArena, ExecBuffer, TxnPtr};
+use crate::execution::{DDLApply, ExecArena, ExecArenaLocalState, ExecBuffer, TxnPtr};
 use crate::expression::function::scala::ScalarFunctionImpl;
 use crate::expression::function::table::{
     ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl,
@@ -813,6 +813,7 @@ async fn start_execution<'a, 'p, T: StorageTransaction + 'p, A: MetaArena + 'p>(
     mut executor: Executor<'p>,
     plan_arena: A,
     function_registry: Option<&'p crate::function::registry::FunctionRegistry>,
+    enable_undo: bool,
 ) -> Result<Execution<'a, 'p, A, T>, DatabaseError>
 where
     'p: 'a,
@@ -824,6 +825,7 @@ where
         &mut executor,
         &mut plan_arena,
         function_registry,
+        enable_undo,
     )
     .await?;
 
@@ -837,13 +839,16 @@ async fn start_execution_inner<'a, 'p, T: StorageTransaction + 'p, A: MetaArena 
     executor: &mut Executor<'p>,
     plan_arena: &mut ExecMetaArena<A>,
     function_registry: Option<&'p crate::function::registry::FunctionRegistry>,
+    enable_statement_undo: bool,
 ) -> Result<ExecArena<'p, 'a, T>, DatabaseError>
 where
     'p: 'a,
 {
     let stamp = statement_stamp(transaction, executor.plan())?;
     let iters = executor.buffer.iter_slots(executor.iters());
-    let mut arena = ExecArena::new(table_cache, transaction).with_iters(iters);
+    let mut arena = ExecArena::new(table_cache, transaction)
+        .with_iters(iters)
+        .with_statement_undo(enable_statement_undo);
     if let Some(registry) = function_registry {
         arena = arena.with_function_registry(registry);
     }
@@ -1023,6 +1028,7 @@ impl<S: Storage> State<S> {
         transaction: &'a mut S::TransactionType<'txn>,
         executor: Executor<'p>,
         plan_arena: A,
+        enable_undo: bool,
     ) -> Result<Execution<'a, 'p, A, S::TransactionType<'txn>>, DatabaseError>
     where
         S: 'txn,
@@ -1035,6 +1041,7 @@ impl<S: Storage> State<S> {
             executor,
             plan_arena,
             Some(&self.function_registry),
+            enable_undo,
         )
         .await
     }
@@ -1044,6 +1051,7 @@ impl<S: Storage> State<S> {
         transaction: &'a mut S::TransactionType<'txn>,
         params: A,
         build: F,
+        enable_undo: bool,
     ) -> Result<Execution<'a, 'a, PlanArena<'a>, S::TransactionType<'txn>>, DatabaseError>
     where
         S: 'txn,
@@ -1096,6 +1104,7 @@ impl<S: Storage> State<S> {
             executor,
             plan_arena,
             Some(&self.function_registry),
+            enable_undo,
         )
         .await
     }
@@ -1213,7 +1222,7 @@ impl<S: Storage> Database<S> {
         let state = TxnPtr::new(std::ptr::from_mut(&mut self.state));
         let (plan_arena, executor) = unsafe {
             (&*state.get())
-                .execute_mut(&mut *transaction.get(), params, build)
+                .execute_mut(&mut *transaction.get(), params, build, false)
                 .await
         }
         .map_err(|err| err.with_sql_context(context))?;
@@ -1367,7 +1376,39 @@ impl<S: Storage> Database<S> {
     /// transactional context until [`Transaction::commit`] is called.
     /// A `read_only` transaction rejects statements that write; on LMDB it runs
     /// alongside the single writer instead of waiting for it.
+    /// Creates a new transaction with statement-level atomicity.
+    ///
+    /// When a DML statement fails partway through, only that statement's changes
+    /// are rolled back while the transaction remains open. This matches MySQL
+    /// semantics and is the default for explicit transactions.
+    ///
+    /// For read-only transactions, statement undo is skipped as an optimization.
     pub fn new_transaction(&self, read_only: bool) -> Result<Transaction<'_, S>, DatabaseError> {
+        self.new_transaction_with_undo(read_only, !read_only)
+    }
+
+    /// Creates a new transaction without statement-level undo.
+    ///
+    /// Use this for implicit autocommit-style patterns where the entire transaction
+    /// is dropped on failure. Skips undo recording for performance.
+    pub fn new_transaction_without_undo(
+        &self,
+        read_only: bool,
+    ) -> Result<Transaction<'_, S>, DatabaseError> {
+        self.new_transaction_with_undo(read_only, false)
+    }
+
+    /// Creates a new transaction with explicit undo control.
+    ///
+    /// `enable_undo`: Whether to enable statement-level undo for this transaction.
+    /// Should be true for explicit transactions to allow statements to be rolled back
+    /// individually while keeping the transaction open. Should be false for implicit
+    /// autocommit transactions where the entire transaction is dropped on failure.
+    pub fn new_transaction_with_undo(
+        &self,
+        read_only: bool,
+        enable_undo: bool,
+    ) -> Result<Transaction<'_, S>, DatabaseError> {
         let transaction = self.storage.transaction_with_functions(
             self.transaction_isolation,
             read_only,
@@ -1379,6 +1420,7 @@ impl<S: Storage> Database<S> {
             inner: transaction,
             state: &self.state,
             read_only,
+            enable_undo,
         })
     }
 
@@ -1454,7 +1496,8 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
         // SAFETY: the transaction stays boxed, and so in place, until the iterator is gone.
         let tx = unsafe { &mut *transaction.get() };
         let (executor, arena) = build(&self.state, tx)?;
-        let (arena, executor) = self.state.execute(tx, executor, arena).await?;
+        // Disable undo for autocommit: entire transaction is dropped on failure
+        let (arena, executor) = self.state.execute(tx, executor, arena, false).await?;
         Ok(DatabaseIter {
             inner: Some(OwnedPtr::new(TransactionIter::new(arena, executor))),
             transaction: Some(transaction),
@@ -1884,6 +1927,7 @@ pub struct Transaction<'a, S: Storage + 'a> {
     pub(crate) inner: S::TransactionType<'a>,
     pub(crate) state: &'a State<S>,
     read_only: bool,
+    enable_undo: bool,
 }
 
 #[maybe_async]
@@ -1917,7 +1961,10 @@ impl<'a, 'txn, S: Storage> BindSource for &'a mut Transaction<'txn, S> {
                 "cannot write in a read-only transaction".into(),
             ));
         }
-        let (arena, executor) = self.state.execute(&mut self.inner, executor, arena).await?;
+        let (arena, executor) = self
+            .state
+            .execute(&mut self.inner, executor, arena, self.enable_undo)
+            .await?;
         Ok(TransactionIter::new(arena, executor))
     }
 
@@ -1976,12 +2023,40 @@ impl<'p, T: StorageTransaction + 'p> TransactionGuard<'_, 'p, T> {
                 )))
             }
             Ok(false) => {
+                self.arena.clear_undo_log();
                 self.finish(Some(&mut executor.buffer));
                 Ok(None)
             }
-            Err(err) => {
-                self.finish(Some(&mut executor.buffer));
-                Err(err)
+            Err(original_err) => {
+                // Release iterators before rollback to avoid &mut aliasing
+                self.arena.release_iters(Some(&mut executor.buffer));
+
+                let undo_log = self.arena.take_undo_log();
+                let rollback_result = {
+                    // Now safe to access transaction mutably since iters are released
+                    let mut state = ExecArenaLocalState {
+                        transaction: self.arena.transaction,
+                        table_codec: &mut executor.buffer.table_codec,
+                        bound_buffers: &mut executor.buffer.bound_buffers,
+                        result: &mut executor.buffer.result,
+                        plan_arena,
+                        iters: &mut self.arena.iters,
+                        ddl_apply: &mut self.arena.ddl_apply,
+                    };
+                    let (transaction, table_codec) = state.transaction_codec_mut();
+                    undo_log.rollback(transaction, table_codec).await
+                };
+
+                // Mark guard as inactive (iters already recycled above)
+                self.active = false;
+
+                match rollback_result {
+                    Ok(()) => Err(original_err),
+                    Err(rollback_err) => Err(DatabaseError::StatementRollbackFailed {
+                        statement_error: original_err.to_string(),
+                        rollback_error: rollback_err.to_string(),
+                    }),
+                }
             }
         }
     }

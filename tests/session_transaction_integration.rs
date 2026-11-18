@@ -110,21 +110,257 @@ fn test_session_transaction_control_integration() -> Result<(), DatabaseError> {
     Ok(())
 }
 
-// Statement-level atomicity tests - SKIPPED due to architectural limitation
-//
-// These tests verify MySQL behavior where a statement that fails mid-execution should
-// roll back its own partial writes while keeping the transaction open.
-//
-// BLOCKER: Implementing this requires one of:
-// - Making StorageTransaction::set/remove async so we can capture prior values
-// - Adding nested transaction/savepoint support to the storage layer
-// - Restructuring the executor to buffer writes
-//
-// None of these can be done without modifying StorageTransaction trait or core execution.
-// Tests are commented out to document the expected behavior.
+#[test]
+fn test_statement_atomicity_earlier_row_survives() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    session.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+
+    {
+        let iter = session.run("INSERT INTO test VALUES (2, 200), (1, 999)")?;
+        let result = iter.done();
+        assert!(
+            result.is_err(),
+            "Second insert should fail on duplicate key"
+        );
+    }
+
+    let mut iter = session.run("SELECT * FROM test ORDER BY id")?;
+    let mut results = Vec::new();
+    while let Some((id, val)) = iter.next_tuple(|_, row| {
+        (
+            row.get(0).unwrap().i32().unwrap(),
+            row.get(1).unwrap().i32().unwrap(),
+        )
+    })? {
+        results.push((id, val));
+    }
+    iter.done()?;
+
+    assert_eq!(results.len(), 1, "Should have 1 row");
+    assert_eq!(results[0], (1, 100), "Original row should remain");
+
+    session.run("COMMIT")?.done()?;
+
+    Ok(())
+}
 
 #[test]
-#[ignore = "Statement-level atomicity not implemented - see module documentation"]
+fn test_statement_atomicity_unique_index_preserved() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT UNIQUE)")?;
+    database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    {
+        let iter = session.run("INSERT INTO test VALUES (2, 100)")?;
+        let result = iter.done();
+        assert!(result.is_err(), "Duplicate unique value should fail");
+    }
+
+    let mut iter = session.run("SELECT * FROM test WHERE val = 100")?;
+    let mut count = 0;
+    let mut id: Option<i32> = None;
+    while let Some(row_id) = iter.next_tuple(|_, row| row.get(0).unwrap().i32())? {
+        count += 1;
+        id = row_id;
+    }
+    iter.done()?;
+
+    assert_eq!(count, 1, "Should find original row by index");
+    assert_eq!(id, Some(1), "Should be original row");
+
+    {
+        let iter = session.run("INSERT INTO test VALUES (3, 100)")?;
+        let result = iter.done();
+        assert!(result.is_err(), "Duplicate should still be rejected");
+    }
+
+    session.run("ROLLBACK")?.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_statement_atomicity_update_values_and_indexes() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT UNIQUE)")?;
+
+    database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+    database.run("INSERT INTO test VALUES (2, 200)")?.done()?;
+    database.run("INSERT INTO test VALUES (3, 300)")?.done()?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    {
+        let iter = session.run("UPDATE test SET val = 100")?;
+        let result = iter.done();
+        assert!(result.is_err(), "Update violating unique should fail");
+    }
+
+    let mut iter = session.run("SELECT val FROM test ORDER BY id")?;
+    let mut vals = Vec::new();
+    while let Some(val) = iter.next_tuple(|_, row| row.get(0).unwrap().i32())? {
+        if let Some(v) = val {
+            vals.push(v);
+        }
+    }
+    iter.done()?;
+
+    assert_eq!(vals, vec![100, 200, 300], "Values should be unchanged");
+
+    let mut iter = session.run("SELECT id FROM test WHERE val = 200")?;
+    let id = iter
+        .next_tuple(|_, row| row.get(0).unwrap().i32())?
+        .expect("Index lookup should find row")
+        .expect("Should have value");
+    iter.done()?;
+    assert_eq!(id, 2, "Index lookup should return correct row");
+
+    session.run("ROLLBACK")?.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_statement_atomicity_pk_changing_update() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+
+    database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+    database.run("INSERT INTO test VALUES (2, 200)")?.done()?;
+    database.run("INSERT INTO test VALUES (3, 300)")?.done()?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    {
+        let iter = session.run("UPDATE test SET id = 1")?;
+        let result = iter.done();
+        assert!(
+            result.is_err(),
+            "PK-changing update creating duplicate should fail"
+        );
+    }
+
+    let mut iter = session.run("SELECT id, val FROM test ORDER BY id")?;
+    let mut results = Vec::new();
+    while let Some((id, val)) = iter.next_tuple(|_, row| {
+        (
+            row.get(0).unwrap().i32().unwrap(),
+            row.get(1).unwrap().i32().unwrap(),
+        )
+    })? {
+        results.push((id, val));
+    }
+    iter.done()?;
+
+    assert_eq!(
+        results,
+        vec![(1, 100), (2, 200), (3, 300)],
+        "All rows should be restored"
+    );
+
+    session.run("ROLLBACK")?.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_statement_after_failed_statement() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    session.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+
+    {
+        let iter = session.run("INSERT INTO test VALUES (1, 200)")?;
+        let result = iter.done();
+        assert!(result.is_err(), "Duplicate key should fail");
+    }
+
+    assert!(
+        session.in_transaction(),
+        "Transaction should remain open after failed statement"
+    );
+
+    session.run("INSERT INTO test VALUES (2, 200)")?.done()?;
+
+    let mut iter = session.run("SELECT * FROM test ORDER BY id")?;
+    let mut results = Vec::new();
+    while let Some((id, val)) = iter.next_tuple(|_, row| {
+        (
+            row.get(0).unwrap().i32().unwrap(),
+            row.get(1).unwrap().i32().unwrap(),
+        )
+    })? {
+        results.push((id, val));
+    }
+    iter.done()?;
+
+    assert_eq!(
+        results,
+        vec![(1, 100), (2, 200)],
+        "Both inserts should be visible"
+    );
+
+    session.run("COMMIT")?.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_statement_atomicity_preserves_original_error() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+    database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+    database.run("INSERT INTO test VALUES (2, 200)")?.done()?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    let iter = session.run("UPDATE test SET id = 1")?;
+    let result = iter.done();
+
+    assert!(
+        result.is_err(),
+        "PK-changing update creating duplicate should fail"
+    );
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("DuplicatePrimaryKey") || err_msg.contains("duplicate"),
+        "Error should mention the original constraint violation, got: {}",
+        err_msg
+    );
+
+    session.run("ROLLBACK")?.done()?;
+
+    Ok(())
+}
+
+#[test]
 fn test_statement_atomicity_insert() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
     let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
@@ -177,7 +413,6 @@ fn test_statement_atomicity_insert() -> Result<(), DatabaseError> {
 }
 
 #[test]
-#[ignore = "Statement atomicity will be implemented in follow-up PR"]
 fn test_statement_atomicity_update() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
     let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
@@ -207,15 +442,140 @@ fn test_statement_atomicity_update() -> Result<(), DatabaseError> {
     // Check that NO updates were applied (statement rolled back)
     let mut iter = session.run("SELECT val FROM test ORDER BY id")?;
     let mut vals = Vec::new();
-    while let Some(val) = iter.next_tuple(|_, row| row.get(1).unwrap().clone())? {
+    while let Some(val) = iter.next_tuple(|_, row| row.get(0).unwrap().clone())? {
         vals.push(val);
     }
     iter.done()?;
 
-    // Values should remain unchanged
-    assert_eq!(vals.len(), 3);
+    assert_eq!(vals.len(), 3, "Should have 3 rows");
+    assert_eq!(vals[0].i32().unwrap(), 100, "First value should be 100");
+    assert_eq!(vals[1].i32().unwrap(), 200, "Second value should be 200");
+    assert_eq!(vals[2].i32().unwrap(), 300, "Third value should be 300");
 
     session.run("ROLLBACK")?.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_statement_atomicity_delete() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+
+    database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+    database.run("INSERT INTO test VALUES (2, 200)")?.done()?;
+    database.run("INSERT INTO test VALUES (3, 300)")?.done()?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    {
+        let result = session.run("DELETE FROM test WHERE val / (id - 2) > 0");
+        let failed = match result {
+            Ok(iter) => iter.done().is_err(),
+            Err(_) => true,
+        };
+        assert!(failed, "DELETE with division by zero should fail");
+    }
+
+    assert!(session.in_transaction(), "Transaction should still be open");
+
+    let mut iter = session.run("SELECT COUNT(*) FROM test")?;
+    let count = iter
+        .next_tuple(|_, row| row.get(0).unwrap().i32().unwrap())?
+        .unwrap();
+    iter.done()?;
+    assert_eq!(count, 3, "All rows should remain (statement rolled back)");
+
+    session.run("ROLLBACK")?.done()?;
+
+    Ok(())
+}
+
+#[test]
+fn test_statement_atomicity_autocommit() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+
+    database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+
+    let mut session = database.session();
+    assert!(session.autocommit(), "Should be in autocommit mode");
+
+    let iter = session.run("INSERT INTO test VALUES (11, 11), (1, 1)")?;
+    let result = iter.done();
+    assert!(
+        result.is_err(),
+        "Duplicate key should fail during iteration"
+    );
+
+    let mut iter = session.run("SELECT * FROM test WHERE id = 11")?;
+    let mut count = 0;
+    while iter.next_tuple(|_, _| ())?.is_some() {
+        count += 1;
+    }
+    iter.done()?;
+    assert_eq!(
+        count, 0,
+        "Failed statement in autocommit should leave no changes"
+    );
+
+    let mut iter = session.run("SELECT * FROM test WHERE id = 1")?;
+    let mut count = 0;
+    while iter.next_tuple(|_, _| ())?.is_some() {
+        count += 1;
+    }
+    iter.done()?;
+    assert_eq!(count, 1, "Original row should remain");
+
+    Ok(())
+}
+
+#[test]
+fn test_new_transaction_gets_statement_atomicity() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+    database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+
+    // Use plain new_transaction API (not Session)
+    let mut tx = database.new_transaction(false)?;
+
+    // Multi-row insert that fails on duplicate key
+    let iter = tx.run("INSERT INTO test VALUES (2, 200), (1, 100)")?;
+    let result = iter.done();
+    assert!(
+        result.is_err(),
+        "Duplicate key should fail during iteration"
+    );
+
+    // Verify statement was rolled back but transaction is still open
+    let mut iter = tx.run("SELECT * FROM test WHERE id = 2")?;
+    let mut count = 0;
+    while iter.next_tuple(|_, _| ())?.is_some() {
+        count += 1;
+    }
+    iter.done()?;
+    assert_eq!(
+        count, 0,
+        "Failed INSERT should not have inserted row 2 (statement atomicity)"
+    );
+
+    // Verify row 1 still exists
+    let mut iter = tx.run("SELECT * FROM test WHERE id = 1")?;
+    let mut count = 0;
+    while iter.next_tuple(|_, _| ())?.is_some() {
+        count += 1;
+    }
+    iter.done()?;
+    assert_eq!(count, 1, "Original row should remain");
+
+    tx.commit()?;
 
     Ok(())
 }

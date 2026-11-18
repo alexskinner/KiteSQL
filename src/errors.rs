@@ -143,6 +143,10 @@ pub enum DatabaseError {
     TableExists,
     TableNotFound,
     TransactionAlreadyExists,
+    StatementRollbackFailed {
+        statement_error: String,
+        rollback_error: String,
+    },
     #[cfg(feature = "decimal")]
     TryFromDecimal(rust_decimal::Error),
     TryFromInt(TryFromIntError),
@@ -266,6 +270,14 @@ impl fmt::Display for DatabaseError {
             Self::TableExists => f.write_str("the table already exists"),
             Self::TableNotFound => f.write_str("the table not found"),
             Self::TransactionAlreadyExists => f.write_str("transaction already exists"),
+            Self::StatementRollbackFailed {
+                statement_error,
+                rollback_error,
+            } => write!(
+                f,
+                "Statement failed: {}. Rollback also failed: {}. Transaction needs ROLLBACK.",
+                statement_error, rollback_error
+            ),
             #[cfg(feature = "decimal")]
             Self::TryFromDecimal(err) => write!(f, "try from decimal: {err}"),
             Self::TryFromInt(err) => write!(f, "try from int: {err}"),
