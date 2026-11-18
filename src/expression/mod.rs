@@ -37,6 +37,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 pub mod agg;
+pub mod agg_function;
 mod eq_col;
 mod evaluator;
 pub mod function;

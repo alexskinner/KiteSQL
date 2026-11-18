@@ -24,4 +24,7 @@ pub(crate) mod numbers;
 pub(crate) mod octet_length;
 pub mod pack;
 pub mod registry;
+pub mod builtin_aggregates;
+#[cfg(test)]
+mod aggregate_tests;
 pub(crate) mod upper;
