@@ -266,6 +266,9 @@ impl DataBaseBuilder {
     }
 
     /// Register an aggregate function that will be available in the database.
+    ///
+    /// A registered aggregate function with the same name as a built-in aggregate (e.g. `sum`, `count`)
+    /// overrides the built-in, following the same policy as scalar functions.
     pub fn register_aggregate_function(
         mut self,
         function: Arc<dyn crate::expression::agg_function::AggregateFunctionImpl>,

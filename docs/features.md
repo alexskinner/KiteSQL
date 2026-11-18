@@ -200,6 +200,98 @@ let kite_sql = DataBaseBuilder::path("./data")
    .build()?;
 ```
 
+### User-Defined Aggregate Function (UDAF)
+
+UDAFs are registered through `DataBaseBuilder::register_aggregate_function`. Implement `AggregateFunctionImpl` for metadata (name, argument types, output type) and `Accumulator` for stateful aggregation logic.
+
+**Name-clash policy**: A registered UDAF with the same name as a built-in aggregate (e.g. `sum`, `count`) overrides the built-in, following the same policy as scalar functions.
+
+```rust
+use kite_sql::db::DataBaseBuilder;
+use kite_sql::expression::agg_function::{AggregateFunctionImpl, Accumulator, AggKind};
+use kite_sql::types::value::DataValue;
+use kite_sql::types::LogicalType;
+use std::sync::Arc;
+
+/// Example UDAF that multiplies values instead of summing them
+struct ProductAggregate {
+    arg_type: LogicalType,
+}
+
+impl ProductAggregate {
+    fn new(arg_type: LogicalType) -> Arc<Self> {
+        Arc::new(Self { arg_type })
+    }
+}
+
+impl AggregateFunctionImpl for ProductAggregate {
+    fn kind(&self) -> AggKind {
+        // Return AggKind::Udf with name and argument types
+        AggKind::Udf(kite_sql::binder::AggFnId {
+            name: "product".to_string(),
+            arg_types: vec![self.arg_type.clone()],
+        })
+    }
+
+    fn arg_types(&self) -> &[LogicalType] {
+        std::slice::from_ref(&self.arg_type)
+    }
+
+    fn output_type(&self) -> &LogicalType {
+        &self.arg_type
+    }
+
+    fn create_accumulator(&self) -> Result<Box<dyn Accumulator>, kite_sql::errors::DatabaseError> {
+        Ok(Box::new(ProductAccumulator {
+            product: DataValue::Int32(1),
+            has_values: false,
+        }))
+    }
+}
+
+/// Accumulator holds mutable state for one group
+struct ProductAccumulator {
+    product: DataValue,
+    has_values: bool,
+}
+
+impl Accumulator for ProductAccumulator {
+    fn update_value(&mut self, values: &[DataValue]) -> Result<(), kite_sql::errors::DatabaseError> {
+        if let Some(value) = values.get(0) {
+            if !value.is_null() {
+                if self.has_values {
+                    self.product = self.product.binary_op(value, &kite_sql::expression::BinaryOperator::Multiply)?;
+                } else {
+                    self.product = value.clone();
+                    self.has_values = true;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn evaluate(&self) -> Result<DataValue, kite_sql::errors::DatabaseError> {
+        if self.has_values {
+            Ok(self.product.clone())
+        } else {
+            Ok(DataValue::Null)
+        }
+    }
+
+    fn merge(&mut self, _other: &dyn Accumulator) -> Result<(), kite_sql::errors::DatabaseError> {
+        // Currently unused: no spill/parallel/distributed aggregation in place
+        unimplemented!("merge is not yet used")
+    }
+}
+
+let database = DataBaseBuilder::path("./data")
+    .register_aggregate_function(ProductAggregate::new(LogicalType::Integer))
+    .build()?;
+
+// Use the UDAF in SQL
+let mut iter = database.run("SELECT product(value) FROM my_table")?;
+```
+
 ### Optimizer
 - RBO
 - CBO based on RBO(Physical Selection)
