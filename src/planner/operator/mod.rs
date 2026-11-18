@@ -1495,6 +1495,7 @@ mod tests {
                 )?,
             )],
             if_not_exists: false,
+            unique_constraints: Vec::new(),
         });
         assert!(referenced_columns(&create_table, &mut arena)?.is_empty());
 
@@ -1672,6 +1673,7 @@ mod tests {
                     table_name: "users".into(),
                     columns: vec![column_catalog("id"), column_catalog("name")],
                     if_not_exists: true,
+                    unique_constraints: Vec::new(),
                 }),
                 "Create users -> [id, name], If Not Exists: true",
             ),

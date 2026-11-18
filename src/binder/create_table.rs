@@ -29,6 +29,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         table_name: TableName,
         columns: Vec<ColumnCatalog>,
         if_not_exists: bool,
+        unique_constraints: Vec<Vec<String>>,
     ) -> Result<LogicalPlan, DatabaseError> {
         let mut names = HashSet::new();
         for column in &columns {
@@ -53,6 +54,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                 table_name,
                 columns,
                 if_not_exists,
+                unique_constraints,
             }),
             Childrens::None,
         ))

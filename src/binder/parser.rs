@@ -835,6 +835,7 @@ where
         for (i, column) in create.columns.into_iter().enumerate() {
             columns.push(self.bind_column(column, Some(i))?);
         }
+        let mut unique_constraints = Vec::new();
         for constraint in create.constraints {
             match constraint {
                 TableConstraint::PrimaryKey(primary) => {
@@ -843,9 +844,29 @@ where
                     })?;
                 }
                 TableConstraint::Unique(unique) => {
-                    self.bind_constraint(&mut columns, unique.columns, |_, desc| {
-                        desc.set_unique()
-                    })?;
+                    if unique.columns.len() > 1 {
+                        // Composite unique constraint - collect it for later index creation
+                        let column_names: Result<Vec<String>, DatabaseError> = unique
+                            .columns
+                            .iter()
+                            .map(|index_col| {
+                                if let Expr::Identifier(ident) = &index_col.column.expr {
+                                    Ok(lower_ident(ident).into_owned())
+                                } else {
+                                    Err(DatabaseError::UnsupportedStmt(
+                                        "only identifier columns are supported in UNIQUE"
+                                            .to_string(),
+                                    ))
+                                }
+                            })
+                            .collect();
+                        unique_constraints.push(column_names?);
+                    } else {
+                        // Single-column unique - mark the column as unique
+                        self.bind_constraint(&mut columns, unique.columns, |_, desc| {
+                            desc.set_unique()
+                        })?;
+                    }
                 }
                 constraint => {
                     return Err(DatabaseError::UnsupportedStmt(format!(
@@ -855,8 +876,12 @@ where
             }
         }
 
-        self.binder
-            .bind_create_table(table_name, columns, create.if_not_exists)
+        self.binder.bind_create_table(
+            table_name,
+            columns,
+            create.if_not_exists,
+            unique_constraints,
+        )
     }
 
     fn bind_column(

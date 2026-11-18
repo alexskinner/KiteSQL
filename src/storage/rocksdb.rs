@@ -1029,6 +1029,7 @@ mod test {
             "test".to_string(),
             source_columns,
             false,
+            Vec::new(),
         )? {
             let table = table.transplant_to_table_arena(&plan_arena)?;
             names.insert_table(&mut table_cache, table);
