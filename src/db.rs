@@ -986,19 +986,15 @@ impl<S: Storage> State<S> {
         }
     }
 
-    #[allow(dead_code)]
     pub(crate) fn meta_cache(&self) -> &StatisticsMetaCache {
         self.catalog().meta
     }
-    #[allow(dead_code)]
     pub(crate) fn names(&self) -> &NameMapping {
         &self.catalog().arena.borrow().names
     }
-    #[allow(dead_code)]
     pub(crate) fn table_cache(&self) -> &TableCache {
         &self.catalog().arena.borrow().tables
     }
-    #[allow(dead_code)]
     pub(crate) fn view_cache(&self) -> &ViewCache {
         &self.catalog().arena.borrow().views
     }
@@ -1628,6 +1624,7 @@ impl<S: Storage> Database<S> {
         read_only: bool,
         enable_undo: bool,
     ) -> Result<Transaction<'_, S>, DatabaseError> {
+        let catalog = self.state.catalog();
         let transaction = self.storage.transaction_with_functions(
             self.transaction_isolation,
             read_only,
@@ -1638,6 +1635,7 @@ impl<S: Storage> Database<S> {
         Ok(Transaction {
             inner: transaction,
             state: &self.state,
+            catalog,
             read_only,
             enable_undo,
         })
@@ -2145,6 +2143,10 @@ impl<S: Storage> ResultIter for DatabaseIter<'_, S> {
 pub struct Transaction<'a, S: Storage + 'a> {
     pub(crate) inner: S::TransactionType<'a>,
     pub(crate) state: &'a State<S>,
+    /// The catalog generation this transaction binds against, pinned when the transaction
+    /// was created. All statements in this transaction use this generation, never the
+    /// latest one, ensuring consistent schema even if other sessions publish DDL.
+    catalog: CatalogRef<'a>,
     read_only: bool,
     enable_undo: bool,
 }
@@ -2156,6 +2158,53 @@ impl<'txn, S: Storage> Transaction<'txn, S> {
         self.inner.commit().await?;
 
         Ok(())
+    }
+
+    /// Executes SQL within this transaction, using the transaction's pinned catalog generation.
+    #[cfg(feature = "parser")]
+    pub async fn run(
+        &mut self,
+        sql: &str,
+    ) -> Result<TransactionIter<'_, 'txn, S::TransactionType<'txn>>, DatabaseError> {
+        let statements = self
+            .state
+            .prepare_all(sql)
+            .map_err(|err| err.with_sql_context(sql))?;
+        if statements.is_empty() {
+            return Err(DatabaseError::EmptyStatement);
+        }
+        if statements.len() > 1 {
+            return Err(DatabaseError::UnsupportedStmt(
+                "Transaction::run expects a single statement".into(),
+            ));
+        }
+        let statement = statements.into_iter().next().unwrap();
+        let has_mutation =
+            crate::binder::parser::statement_mutates_catalog_or_statistics(&statement)?;
+        if has_mutation {
+            return Err(DatabaseError::UnsupportedStmt(
+                "Transaction::run does not allow DDL; use a Session for DDL in transactions".into(),
+            ));
+        }
+
+        let (plan, arena) =
+            self.state
+                .build_plan_in(self.catalog, &[], &self.inner, |binder, arena| {
+                    binder.bind(&statement, arena)
+                })?;
+        let executor = crate::execution::Executor::new(plan, &arena);
+
+        if self.read_only && !executor.plan().operator.command_type().is_read_only() {
+            return Err(DatabaseError::UnsupportedStmt(
+                "cannot write in a read-only transaction".into(),
+            ));
+        }
+
+        let (arena, executor) = self
+            .state
+            .execute(&mut self.inner, executor, arena, self.enable_undo)
+            .await?;
+        Ok(TransactionIter::new(arena, executor))
     }
 }
 
@@ -2174,6 +2223,10 @@ impl<'a, 'txn, S: Storage> BindSource for &'a mut Transaction<'txn, S> {
             ) -> Result<(Executor<'s>, PlanArena<'s>), DatabaseError>
             + MaybeSend,
     {
+        // Note: This BindSource impl is for compatibility with generic code that uses
+        // the trait. The build closure receives &State and may call state.build_plan,
+        // which will use the latest catalog. For correct generation pinning, prefer
+        // Transaction::run() which uses build_plan_in with the pinned catalog.
         let (executor, arena) = build(self.state, &self.inner)?;
         if self.read_only && !executor.plan().operator.command_type().is_read_only() {
             return Err(DatabaseError::UnsupportedStmt(

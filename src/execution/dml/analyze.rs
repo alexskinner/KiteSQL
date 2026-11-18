@@ -419,7 +419,10 @@ mod test {
             .id();
         let loader = StatisticMetaLoader::new(catalog.meta);
 
-        let table = arena_borrow.names.table(&arena_borrow.tables, &table_name).unwrap();
+        let table = arena_borrow
+            .names
+            .table(&arena_borrow.tables, &table_name)
+            .unwrap();
         let a_id = *table.get_column_id_by_name("a").unwrap();
         let b_id = *table.get_column_id_by_name("b").unwrap();
         let c_id = *table.get_column_id_by_name("c").unwrap();

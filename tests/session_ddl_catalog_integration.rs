@@ -4,7 +4,9 @@
 #![cfg(all(not(feature = "async"), feature = "lmdb", feature = "parser"))]
 
 use kite_sql::db::{DataBaseBuilder, ResultIter};
-use kite_sql::errors::DatabaseError;
+use kite_sql::errors::DatabaseError};
+use kite_sql::types::value::DataValue;
+use kite_sql::types::LogicalType;
 use tempfile::TempDir;
 
 fn rows<I: ResultIter>(mut it: I) -> Result<Vec<String>, DatabaseError> {
@@ -203,15 +205,10 @@ fn long_running_transaction_keeps_consistent_generation_across_ddl() -> Result<(
     let mut db = DataBaseBuilder::path(dir.path()).build_lmdb()?;
     db.ddl("CREATE TABLE t (id INT PRIMARY KEY, a INT)")?;
     db.run("INSERT INTO t VALUES (1, 10), (2, 20)")?.done()?;
-    let mut tx = db.new_transaction(false)?;
-    let mut iter_before = tx.run("SELECT id, a FROM t ORDER BY id")?;
-    let first_row = iter_before.next_tuple(|_, r| {
-        r.iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join("|")
-    })?;
-    assert_eq!(first_row, Some("1|10".to_string()));
+    // Use read-only transaction to avoid LMDB single-writer lock
+    let mut tx = db.new_transaction(true)?;
+    let first_select = rows(tx.run("SELECT id, a FROM t ORDER BY id")?)?;
+    assert_eq!(first_select, ["1|10", "2|20"]);
     {
         let mut s = db.session();
         exec!(s, "BEGIN")?;
@@ -219,18 +216,11 @@ fn long_running_transaction_keeps_consistent_generation_across_ddl() -> Result<(
         exec!(s, "INSERT INTO t VALUES (3, 30, 300)")?;
         exec!(s, "COMMIT")?;
     }
-    let second_row = iter_before.next_tuple(|_, r| {
-        r.iter()
-            .map(|v| v.to_string())
-            .collect::<Vec<_>>()
-            .join("|")
-    })?;
-    assert_eq!(second_row, Some("2|20".to_string()));
-    assert!(iter_before.next_tuple(|_, _| ())?.is_none());
-    iter_before.done()?;
-    let after = rows(tx.run("SELECT * FROM t ORDER BY id")?)?;
-    assert_eq!(after, ["1|10", "2|20"]);
+    // Transaction still sees original 2-column schema
+    let after_ddl = rows(tx.run("SELECT * FROM t ORDER BY id")?)?;
+    assert_eq!(after_ddl, ["1|10", "2|20"]);
     tx.commit()?;
+    // New query sees 3-column schema with new row
     let final_rows = rows(db.run("SELECT * FROM t ORDER BY id")?)?;
     assert_eq!(final_rows, ["1|10|NULL", "2|20|NULL", "3|30|300"]);
     Ok(())
@@ -280,5 +270,79 @@ fn iterator_from_database_keeps_consistent_generation_across_publish() -> Result
         new_gen,
         ["1|100|NULL", "2|200|NULL", "3|300|NULL", "4|400|4000"]
     );
+    Ok(())
+}
+
+#[test]
+fn read_only_transaction_pins_catalog_and_survives_schema_mismatch(
+) -> Result<(), DatabaseError> {
+    let dir = TempDir::new().unwrap();
+    let mut db = DataBaseBuilder::path(dir.path()).build_lmdb()?;
+    db.ddl("CREATE TABLE t (id INT PRIMARY KEY, name VARCHAR(20))")?;
+    db.run("INSERT INTO t VALUES (1, 'Alice'), (2, 'Bob')")?
+        .done()?;
+    let mut tx = db.new_transaction(true)?;
+    let before = rows(tx.run("SELECT id, name FROM t ORDER BY id")?)?;
+    assert_eq!(before, ["1|Alice", "2|Bob"]);
+    {
+        let mut s = db.session();
+        exec!(s, "BEGIN")?;
+        exec!(s, "ALTER TABLE t ADD COLUMN age INT")?;
+        exec!(s, "COMMIT")?;
+    }
+    let after = rows(tx.run("SELECT id, name FROM t ORDER BY id")?)?;
+    assert_eq!(after, ["1|Alice", "2|Bob"]);
+    tx.commit()?;
+    let latest = rows(db.run("SELECT * FROM t ORDER BY id")?)?;
+    assert_eq!(latest, ["1|Alice|NULL", "2|Bob|NULL"]);
+    Ok(())
+}
+
+#[test]
+fn program_in_transaction_uses_pinned_catalog() -> Result<(), DatabaseError> {
+    let dir = TempDir::new().unwrap();
+    let mut db = DataBaseBuilder::path(dir.path()).build_lmdb()?;
+    db.ddl("CREATE TABLE t (id INT PRIMARY KEY, v INT)")?;
+    db.run("INSERT INTO t VALUES (1, 100), (2, 200)")?.done()?;
+    let mut program = db.program_sql(
+        "SELECT id, v FROM t WHERE v > $1 ORDER BY id",
+        &[(1, LogicalType::Integer)],
+    )?;
+    let mut tx = db.new_transaction(true)?;
+    let mut iter = program
+        .execute(&mut tx, [(1, DataValue::Int32(50).into())])
+        .await?;
+    assert_eq!(
+        iter.next_tuple(|_, r| r.value_at(0).clone()).await?,
+        Some(DataValue::Int32(1))
+    );
+    {
+        let mut s = db.session();
+        exec!(s, "BEGIN")?;
+        exec!(s, "ALTER TABLE t ADD COLUMN x INT")?;
+        exec!(s, "INSERT INTO t VALUES (3, 300, 3000)")?;
+        exec!(s, "COMMIT")?;
+    }
+    assert_eq!(
+        iter.next_tuple(|_, r| r.value_at(0).clone()).await?,
+        Some(DataValue::Int32(2))
+    );
+    assert!(iter.next_tuple(|_, _| ()).await?.is_none());
+    iter.done().await?;
+    let mut iter2 = program
+        .execute(&mut tx, [(1, DataValue::Int32(50).into())])
+        .await?;
+    let ids = {
+        let mut ids = vec![];
+        while let Some(id) = iter2.next_tuple(|_, r| r.value_at(0).clone()).await? {
+            ids.push(id);
+        }
+        ids
+    };
+    assert_eq!(ids, vec![DataValue::Int32(1), DataValue::Int32(2)]);
+    iter2.done().await?;
+    tx.commit()?;
+    let latest = rows(db.run("SELECT * FROM t ORDER BY id")?)?;
+    assert_eq!(latest, ["1|100|NULL", "2|200|NULL", "3|300|3000"]);
     Ok(())
 }

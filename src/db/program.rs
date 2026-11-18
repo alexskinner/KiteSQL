@@ -78,8 +78,8 @@ impl<'p> Program<'p> {
         'txn: 'p,
         'p: 'a,
     {
-        // One generation for the whole execution: the one the program was prepared against.
-        let catalog = transaction.state.catalog();
+        // Use the transaction's pinned catalog, not the latest one.
+        let catalog = transaction.catalog;
         self.bind(catalog.arena, params.as_ref())?;
         if transaction.read_only && !self.read_only() {
             return Err(DatabaseError::UnsupportedStmt(

@@ -1578,7 +1578,11 @@ mod test {
         let mapping = TupleMapping::cover(plan_arena.index(unique_index), &deserializers, None);
         let mut iter = transaction.read_by_index(
             &plan_arena,
-            arena_borrow.names.table(&arena_borrow.tables, "t1").unwrap().id(),
+            arena_borrow
+                .names
+                .table(&arena_borrow.tables, "t1")
+                .unwrap()
+                .id(),
             (Some(0), Some(1)),
             unique_index,
             false,
