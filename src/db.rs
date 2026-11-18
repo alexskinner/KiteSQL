@@ -20,10 +20,7 @@ use crate::errors::DatabaseError;
 pub use crate::execution::Executor;
 use crate::execution::{DDLApply, ExecArena, ExecBuffer, TxnPtr};
 use crate::expression::function::scala::ScalarFunctionImpl;
-use crate::expression::function::table::{
-    ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl,
-};
-use crate::expression::function::FunctionSummary;
+use crate::expression::function::table::TableFunctionCatalog;
 use crate::function::core::install_core_functions;
 use crate::function::registry::FunctionRegistry;
 use crate::maybe_async::MaybeSend;
@@ -95,9 +92,6 @@ impl<T> Drop for OwnedPtr<T> {
 }
 
 pub(crate) type Execution<'a, 'p, A, T> = (ExecMetaArena<A>, (Executor<'p>, ExecArena<'p, 'a, T>));
-
-pub(crate) type ScalaFunctions = HashMap<FunctionSummary, Arc<dyn ScalarFunctionImpl>>;
-pub(crate) type TableFunctions = HashMap<FunctionSummary, TableFunctionCatalog>;
 
 pub enum CatalogKind {
     Table(crate::catalog::TableName),
@@ -500,6 +494,7 @@ impl DataBaseBuilder {
         let table_arena = TableArenaCell::default();
 
         let mut function_registry = FunctionRegistry::new();
+<<<<<<< HEAD
         install_core_functions(&mut function_registry, &mut table_arena.borrow_mut())?;
         
         for function in scalar_functions {
@@ -520,6 +515,10 @@ impl DataBaseBuilder {
             pack.install(&mut function_registry)?;
         }
         
+=======
+        install_core_functions(&mut function_registry, &table_arena)?;
+
+>>>>>>> cursor/w2-pr1-function-registry-2064
         let scala_functions = function_registry.scalar_functions().clone();
         let table_functions = function_registry
             .table_functions()
@@ -787,9 +786,12 @@ impl<S: Storage> State<S> {
     fn table_functions(&self) -> &TableFunctions {
         &self.table_functions
     }
+    #[allow(dead_code)]
     pub(crate) fn function_registry(&self) -> &FunctionRegistry {
         &self.function_registry
     }
+
+    #[allow(dead_code)]
     pub(crate) fn function_registry_mut(&mut self) -> &mut FunctionRegistry {
         &mut self.function_registry
     }
