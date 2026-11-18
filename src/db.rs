@@ -238,19 +238,13 @@ impl DataBaseBuilder {
     ///     .register_scalar_function(MyFunction::new())
     ///     .build()?;
     /// ```
-    pub fn register_scalar_function(
-        mut self,
-        function: Arc<dyn ScalarFunctionImpl>,
-    ) -> Self {
+    pub fn register_scalar_function(mut self, function: Arc<dyn ScalarFunctionImpl>) -> Self {
         self.scalar_functions.push(function);
         self
     }
 
     /// Register a table function that will be available in the database.
-    pub fn register_table_function(
-        mut self,
-        function: Arc<dyn TableFunctionImpl>,
-    ) -> Self {
+    pub fn register_table_function(mut self, function: Arc<dyn TableFunctionImpl>) -> Self {
         self.table_functions.push(function);
         self
     }
@@ -495,11 +489,11 @@ impl DataBaseBuilder {
 
         let mut function_registry = FunctionRegistry::new();
         install_core_functions(&mut function_registry, &table_arena)?;
-        
+
         for function in scalar_functions {
             function_registry.register_scalar(function)?;
         }
-        
+
         for function in table_functions {
             let mut schema = Schema::new();
             function.output_schema_into(&mut table_arena.borrow_mut(), &mut schema);
@@ -509,7 +503,7 @@ impl DataBaseBuilder {
             };
             function_registry.register_table(Arc::new(catalog))?;
         }
-        
+
         for pack in function_packs {
             pack.install(&mut function_registry)?;
         }

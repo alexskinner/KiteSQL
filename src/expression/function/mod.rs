@@ -19,7 +19,6 @@ use std::sync::Arc;
 pub mod scala;
 pub mod table;
 
-<<<<<<< HEAD
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, ReferenceSerialization)]
 pub enum PersistencePolicy {
     Transient,
@@ -32,10 +31,7 @@ impl Default for PersistencePolicy {
     }
 }
 
-#[derive(Debug, Eq, PartialEq, Hash, Clone, ReferenceSerialization)]
-=======
 #[derive(Debug, Eq, PartialEq, Hash, Clone, Default, ReferenceSerialization)]
->>>>>>> cursor/w2-pr3-overload-resolution-2064
 pub struct FunctionSummary {
     pub name: Arc<str>,
     pub arg_types: Vec<LogicalType>,

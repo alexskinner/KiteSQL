@@ -49,7 +49,9 @@ pub fn install_core_functions(
 
     let numbers = Numbers::new();
     let mut schema = Schema::new();
-    numbers.as_ref().output_schema_into(table_arena, &mut schema);
+    numbers
+        .as_ref()
+        .output_schema_into(table_arena, &mut schema);
     let catalog = TableFunctionCatalog {
         inner: ArcTableFunctionImpl(numbers),
         schema,
