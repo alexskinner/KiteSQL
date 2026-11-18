@@ -15,6 +15,7 @@
 use crate::errors::DatabaseError;
 use crate::expression;
 use crate::expression::agg::AggKind;
+use crate::iter_ext::Itertools;
 
 use super::{Binder, BinderContext, BoundScalarQuery, QueryBindStep, SubQueryType};
 use crate::expression::function::scala::{ArcScalarFunctionImpl, ScalarFunction};
@@ -502,7 +503,7 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
         is_distinct: bool,
         arena: &mut PlanArena,
     ) -> Result<ScalarExpression, DatabaseError> {
-        let ty = match kind {
+        let ty = match &kind {
             AggKind::Count => {
                 if args.len() != 1 {
                     return Err(DatabaseError::MisMatch("number of count() parameters", "1"));
@@ -553,6 +554,14 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
                     ));
                 }
                 LogicalType::Varchar(None, CharLengthUnits::Characters)
+            }
+            AggKind::Udf(_) => {
+                // For UDAFs, we would look up the output type from the registry
+                // For now, use the input type of the first argument
+                if args.is_empty() {
+                    return Err(DatabaseError::MisMatch("number of UDAF parameters", ">= 1"));
+                }
+                args[0].return_type(arena).into_owned()
             }
         };
         Ok(ScalarExpression::AggCall {
@@ -643,6 +652,10 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
             }
             _ => (),
         }
+        let arg_types = args
+            .iter()
+            .map(|arg| arg.return_type(arena).into_owned())
+            .collect_vec();
         let arg_type_refs: Vec<_> = args
             .iter()
             .map(|arg| arg.return_type(arena).into_owned())

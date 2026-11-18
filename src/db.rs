@@ -23,6 +23,7 @@ use crate::expression::function::scala::ScalarFunctionImpl;
 use crate::expression::function::table::{
     ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl,
 };
+use crate::expression::function::FunctionSummary;
 use crate::function::core::install_core_functions;
 use crate::function::registry::FunctionRegistry;
 use crate::maybe_async::MaybeSend;
@@ -53,7 +54,7 @@ use crate::types::LogicalType;
 use ordered_float::OrderedFloat;
 pub use program::{Param, Program, ProgramIter};
 use std::borrow::Cow;
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::marker::PhantomData;
 use std::mem;
 use std::ops::Deref;
@@ -94,6 +95,9 @@ impl<T> Drop for OwnedPtr<T> {
 }
 
 pub(crate) type Execution<'a, 'p, A, T> = (ExecMetaArena<A>, (Executor<'p>, ExecArena<'p, 'a, T>));
+
+pub(crate) type ScalaFunctions = HashMap<FunctionSummary, Arc<dyn ScalarFunctionImpl>>;
+pub(crate) type TableFunctions = HashMap<FunctionSummary, TableFunctionCatalog>;
 
 pub enum CatalogKind {
     Table(crate::catalog::TableName),
@@ -445,7 +449,6 @@ impl DataBaseBuilder {
         )
     }
 
-    #[allow(clippy::too_many_arguments)]
     fn _build<T: Storage>(
         storage: T,
         histogram_buckets: Option<usize>,
@@ -491,7 +494,7 @@ impl DataBaseBuilder {
         let table_arena = TableArenaCell::default();
 
         let mut function_registry = FunctionRegistry::new();
-        install_core_functions(&mut function_registry, table_arena.borrow_mut())?;
+        install_core_functions(&mut function_registry, &mut table_arena.borrow_mut())?;
 
         // Mark all current functions as built-ins so user functions can override them
         function_registry.mark_builtins_loaded();
@@ -502,7 +505,7 @@ impl DataBaseBuilder {
 
         for function in table_functions {
             let mut schema = Schema::new();
-            function.output_schema_into(table_arena.borrow_mut(), &mut schema);
+            function.output_schema_into(&mut table_arena.borrow_mut(), &mut schema);
             let catalog = TableFunctionCatalog {
                 inner: ArcTableFunctionImpl(function),
                 schema,
@@ -767,6 +770,9 @@ impl<S: Storage> State<S> {
     pub(crate) fn function_registry(&self) -> &FunctionRegistry {
         &self.function_registry
     }
+    pub(crate) fn function_registry_mut(&mut self) -> &mut FunctionRegistry {
+        &mut self.function_registry
+    }
     pub(crate) fn meta_cache(&self) -> &StatisticsMetaCache {
         &self.meta_cache
     }
@@ -791,6 +797,7 @@ impl<S: Storage> State<S> {
         &mut self,
         function: Arc<dyn TableFunctionImpl>,
     ) -> Result<(), DatabaseError> {
+        let summary = function.summary().clone();
         let mut schema = Schema::new();
         function.output_schema_into(self.table_arena.borrow_mut(), &mut schema);
         let catalog = TableFunctionCatalog {

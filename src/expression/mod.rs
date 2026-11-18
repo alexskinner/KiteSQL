@@ -37,6 +37,7 @@ use std::hash::Hash;
 use std::sync::Arc;
 
 pub mod agg;
+pub mod agg_function;
 mod eq_col;
 mod evaluator;
 pub mod function;
@@ -1092,10 +1093,12 @@ impl fmt::Display for UnaryOperator {
 mod test {
     use crate::catalog::{ColumnCatalog, ColumnDesc};
     use crate::db::test::build_table;
-
+    
     use crate::errors::DatabaseError;
     use crate::expression::agg::AggKind;
-    use crate::expression::function::scala::{ArcScalarFunctionImpl, ScalarFunction};
+    use crate::expression::function::scala::{
+        ArcScalarFunctionImpl, ScalarFunction, ScalarFunctionImpl,
+    };
     use crate::expression::function::table::{
         ArcTableFunctionImpl, TableFunction, TableFunctionCatalog, TableFunctionImpl,
     };

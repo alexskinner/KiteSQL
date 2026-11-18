@@ -14,7 +14,7 @@
 
 use kite_sql_serde_macros::ReferenceSerialization;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, ReferenceSerialization)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash, ReferenceSerialization)]
 pub enum AggKind {
     Avg,
     Max,
@@ -25,6 +25,15 @@ pub enum AggKind {
     Total,
     /// SQLite `group_concat()`: non-NULL values joined with `,`.
     GroupConcat,
+    /// User-defined aggregate function, identified by name and input type
+    Udf(AggFnId),
+}
+
+/// Identifier for a user-defined aggregate function
+#[derive(Debug, Clone, PartialEq, Eq, Hash, ReferenceSerialization)]
+pub struct AggFnId {
+    pub name: String,
+    pub arg_types: Vec<crate::types::LogicalType>,
 }
 
 impl AggKind {
@@ -41,15 +50,16 @@ impl AggKind {
         }
     }
 
-    pub(crate) fn name(self) -> &'static str {
+    pub(crate) fn name(&self) -> std::borrow::Cow<'static, str> {
         match self {
-            Self::Avg => "avg",
-            Self::Max => "max",
-            Self::Min => "min",
-            Self::Sum => "sum",
-            Self::Count => "count",
-            Self::Total => "total",
-            Self::GroupConcat => "group_concat",
+            Self::Avg => "avg".into(),
+            Self::Max => "max".into(),
+            Self::Min => "min".into(),
+            Self::Sum => "sum".into(),
+            Self::Count => "count".into(),
+            Self::Total => "total".into(),
+            Self::GroupConcat => "group_concat".into(),
+            Self::Udf(id) => id.name.clone().into(),
         }
     }
 
@@ -62,6 +72,7 @@ impl AggKind {
             AggKind::Count => true,
             AggKind::Total => true,
             AggKind::GroupConcat => true,
+            AggKind::Udf(_) => false, // Default: no DISTINCT for UDAFs
         }
     }
 }

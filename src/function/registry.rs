@@ -14,7 +14,9 @@
 
 use crate::errors::DatabaseError;
 use crate::expression::function::scala::ScalarFunctionImpl;
-use crate::expression::function::table::TableFunctionCatalog;
+use crate::expression::function::table::{
+    ArcTableFunctionImpl, TableFunctionCatalog, TableFunctionImpl,
+};
 use crate::expression::function::FunctionSummary;
 use crate::types::LogicalType;
 use std::collections::{HashMap, HashSet};

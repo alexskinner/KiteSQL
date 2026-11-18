@@ -112,7 +112,11 @@ impl<'a> ReadExecutor<'a> for Window<'a> {
         let functions = window_functions
             .iter()
             .map(|function| {
-                function::new(function.kind, function.args.clone(), function.ty.clone())
+                function::new(
+                    function.kind.clone(),
+                    function.args.clone(),
+                    function.ty.clone(),
+                )
             })
             .collect();
         ExecNode::Window(Box::new(Window {

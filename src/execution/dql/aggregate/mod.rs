@@ -46,6 +46,23 @@ pub trait Accumulator: MaybeSend {
     /// updates the accumulator's state from a vector of arrays.
     fn update_value(&mut self, value: &DataValue) -> Result<(), DatabaseError>;
 
+    /// updates the accumulator's state from multiple values (batch operation).
+    /// Default implementation calls update_value for each value.
+    fn update_values(&mut self, values: &[DataValue]) -> Result<(), DatabaseError> {
+        for value in values {
+            self.update_value(value)?;
+        }
+        Ok(())
+    }
+
+    /// merges another accumulator's state into this one (for distributed aggregation).
+    /// Default implementation is not supported; aggregates that support merge must override.
+    fn merge(&mut self, _other: &dyn Accumulator) -> Result<(), DatabaseError> {
+        Err(DatabaseError::UnsupportedStmt(
+            "merge not supported for this accumulator".to_string(),
+        ))
+    }
+
     /// evaluates its result based on its current state.
     fn evaluate(&mut self) -> Result<(), DatabaseError> {
         Ok(())
@@ -63,7 +80,7 @@ pub(crate) fn create_accumulator(
     ty: &crate::types::LogicalType,
     distinct: bool,
 ) -> Result<Box<dyn Accumulator>, DatabaseError> {
-    Ok(match (kind, distinct) {
+    Ok(match (&kind, distinct) {
         (AggKind::Count, false) => Box::new(CountAccumulator::new()),
         (AggKind::Count, true) => Box::new(DistinctCountAccumulator::new()),
         (AggKind::Sum, false) => Box::new(SumAccumulator::new(Cow::Borrowed(ty))?),
@@ -73,6 +90,11 @@ pub(crate) fn create_accumulator(
         (AggKind::Avg, distinct) => Box::new(AvgAccumulator::new(distinct)),
         (AggKind::Total, distinct) => Box::new(TotalAccumulator::new(distinct)),
         (AggKind::GroupConcat, distinct) => Box::new(GroupConcatAccumulator::new(distinct)),
+        (AggKind::Udf(_), _) => {
+            return Err(DatabaseError::UnsupportedStmt(
+                "User-defined aggregate functions not yet fully implemented".to_string(),
+            ));
+        }
     })
 }
 
@@ -89,7 +111,7 @@ pub(crate) fn push_accumulators(
         else {
             unreachable!("push_accumulators called with non-aggregate expression {expr}")
         };
-        accs.push(create_accumulator(*kind, ty, *distinct)?);
+        accs.push(create_accumulator(kind.clone(), ty, *distinct)?);
     }
     Ok(())
 }

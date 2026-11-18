@@ -19,11 +19,16 @@ use std::sync::Arc;
 pub mod scala;
 pub mod table;
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, ReferenceSerialization, Default)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Hash, ReferenceSerialization)]
 pub enum PersistencePolicy {
     Transient,
-    #[default]
     Durable,
+}
+
+impl Default for PersistencePolicy {
+    fn default() -> Self {
+        Self::Durable
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Hash, Clone, ReferenceSerialization)]
