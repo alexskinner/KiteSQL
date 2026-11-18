@@ -1,9 +1,10 @@
-# MySQL dialect test: LIMIT offset, count syntax
-# This file tests MySQL-specific LIMIT syntax with comma
+# MySQL dialect test: # comments and LIMIT offset, count syntax
+# This file tests MySQL-specific syntax that fails under Generic dialect
 # Run with: DataBaseBuilder::path(".").default_dialect("mysql")
 
+# MySQL-style comment - fails on Generic
 statement ok
-CREATE TABLE test_limit (id INT PRIMARY KEY, value INT)
+CREATE TABLE test_limit (id INT PRIMARY KEY, value INT) # table for testing
 
 statement ok
 INSERT INTO test_limit VALUES (1, 10), (2, 20), (3, 30), (4, 40), (5, 50)

@@ -1,9 +1,10 @@
-# MySQL dialect test: backtick identifiers
-# This file tests MySQL-specific backtick identifier syntax
+# MySQL dialect test: backtick identifiers and # comments
+# This file tests MySQL-specific syntax that fails under Generic dialect
 # Run with: DataBaseBuilder::path(".").default_dialect("mysql")
 
+# MySQL-style comment - fails on Generic, works on MySQL
 statement ok
-CREATE TABLE `users` (`id` INT PRIMARY KEY, `name` VARCHAR(50))
+CREATE TABLE `users` (`id` INT PRIMARY KEY, `name` VARCHAR(50)) # inline comment
 
 statement ok
 INSERT INTO `users` VALUES (1, 'Alice'), (2, 'Bob')
