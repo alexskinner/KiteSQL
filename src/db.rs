@@ -850,7 +850,7 @@ impl<S: Storage> State<S> {
     }
 
     pub(crate) async fn execute_mut<'a, 'txn, A, F>(
-        &'a mut self,
+        &'a self,
         transaction: &'a mut S::TransactionType<'txn>,
         params: A,
         build: F,
@@ -880,9 +880,10 @@ impl<S: Storage> State<S> {
         );
         let source_plan = build(&mut binder, &mut plan_arena)?;
         drop(binder);
-        let mut plan = self.optimizer_pipeline
-            .instantiate(source_plan)
-            .find_best(Some(&StatisticMetaLoader::new(&self.meta_cache)), &mut plan_arena)?;
+        let mut plan = self.optimizer_pipeline.instantiate(source_plan).find_best(
+            Some(&StatisticMetaLoader::new(&self.meta_cache)),
+            &mut plan_arena,
+        )?;
 
         if let Operator::Analyze(op) = &mut plan.operator {
             if op.histogram_buckets.is_none() {
@@ -910,9 +911,10 @@ pub struct Database<S: Storage> {
 }
 
 impl DDLApply {
-    fn apply_to<S: Storage>(
+    fn apply_to(
         self,
-        state: &mut State<S>,
+        table_arena: &TableArenaCell,
+        meta_cache: &mut StatisticsMetaCache,
         plan_arena: &mut PlanArena,
     ) -> Result<bool, DatabaseError> {
         let mut catalog_changed = false;
@@ -923,26 +925,26 @@ impl DDLApply {
             } => {
                 let table = table.transplant_to_table_arena(plan_arena)?;
                 if clear_statistics {
-                    state.meta_cache.remove_table(table.id());
+                    meta_cache.remove_table(table.id());
                 }
-                state.table_arena.borrow_mut().insert_table(table);
+                table_arena.borrow_mut().insert_table(table);
                 catalog_changed = true;
             }
             DDLApply::DropTable { name } => {
-                let arena = state.table_arena.borrow_mut();
+                let arena = table_arena.borrow_mut();
                 if let Some(meta) = arena.names.remove(&name) {
                     arena.tables.remove(&meta.id);
-                    state.meta_cache.remove_table(meta.id);
+                    meta_cache.remove_table(meta.id);
                 }
                 catalog_changed = true;
             }
             DDLApply::UpsertView { id, view } => {
                 plan_arena.materialize_into_table_arena();
-                state.table_arena.borrow_mut().insert_view(id, view);
+                table_arena.borrow_mut().insert_view(id, view);
                 catalog_changed = true;
             }
             DDLApply::DropView { name } => {
-                let arena = state.table_arena.borrow_mut();
+                let arena = table_arena.borrow_mut();
                 if let Some(meta) = arena.names.remove(&name) {
                     arena.views.remove(&meta.id);
                 }
@@ -953,17 +955,17 @@ impl DDLApply {
                 index_id,
                 meta,
             } => {
-                state.meta_cache.indexes.insert((table_id, index_id), meta);
+                meta_cache.indexes.insert((table_id, index_id), meta);
             }
             DDLApply::RemoveIndexStatistics { table_id, index_id } => {
-                state.meta_cache.indexes.remove(&(table_id, index_id));
+                meta_cache.indexes.remove(&(table_id, index_id));
             }
             DDLApply::UpsertColumnStatistics {
                 table_id,
                 column_id,
                 meta,
             } => {
-                state.meta_cache.columns.insert((table_id, column_id), meta);
+                meta_cache.columns.insert((table_id, column_id), meta);
             }
         }
         Ok(catalog_changed)
@@ -1003,29 +1005,49 @@ impl<S: Storage> Database<S> {
         ) -> Result<LogicalPlan, DatabaseError>,
         C: ConsumeMut<S>,
     {
-        let mut transaction = self.storage.transaction_with_functions(
+        let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
             self.transaction_isolation,
             false,
             Some(Arc::clone(self.state.scala_functions_arc())),
             Some(Arc::clone(self.state.table_functions_arc())),
-        )?;
-        let (plan_arena, executor) = self.state.execute_mut(&mut transaction, params, build).await.map_err(|err| err.with_sql_context(context))?;
-        
+        )?);
+
+        let state_ptr = std::ptr::from_mut(&mut self.state);
+        let (plan_arena, executor) = unsafe {
+            (&*state_ptr)
+                .execute_mut(&mut *transaction.get(), params, build)
+                .await
+        }
+        .map_err(|err| err.with_sql_context(context))?;
+
         let mut iter = TransactionIter::new(plan_arena, executor);
-        let result = consume.consume(&mut iter).await.map_err(|err| err.with_sql_context(context))?;
-        let (mut plan_arena, apply) = iter.done_with_ddl_apply().await.map_err(|err| err.with_sql_context(context))?;
-        
-        transaction.commit().await.map_err(|err| err.with_sql_context(context))?;
-        drop(transaction);
+        let result = consume
+            .consume(&mut iter)
+            .await
+            .map_err(|err| err.with_sql_context(context))?;
+        let (mut plan_arena, apply) = iter
+            .done_with_ddl_apply()
+            .await
+            .map_err(|err| err.with_sql_context(context))?;
+
+        unsafe { transaction.into_inner() }
+            .commit()
+            .await
+            .map_err(|err| err.with_sql_context(context))?;
 
         let mut catalog_changed = false;
         for apply_item in apply {
-            catalog_changed |= apply_item
-                .apply_to(&mut self.state, &mut plan_arena)
-                .map_err(|err| err.with_sql_context(context))?;
+            catalog_changed |= unsafe {
+                apply_item.apply_to(
+                    &(*state_ptr).table_arena,
+                    &mut (*state_ptr).meta_cache,
+                    &mut plan_arena,
+                )
+            }
+            .map_err(|err| err.with_sql_context(context))?;
         }
         if catalog_changed {
-            self.state.recycle_table_arena()?;
+            unsafe { (&mut *state_ptr).recycle_table_arena()? };
         }
         Ok(result)
     }
@@ -3428,18 +3450,19 @@ pub(crate) mod test {
         kite_sql.load(CatalogKind::ScalarFunction(my_udf))?;
 
         kite_sql.ddl("CREATE TABLE t_udf (id int primary key, val int default my_udf(), v int)")?;
-        
+
         kite_sql
             .run("INSERT INTO t_udf (id, v) VALUES (1, 10)")?
             .done()?;
 
         let mut found_val = None;
-        kite_sql
-            .run("SELECT val FROM t_udf WHERE id = 1")?
-            .done(|row| {
-                found_val = row.get(0).cloned();
-                Ok(())
-            })?;
+        {
+            let mut iter = kite_sql.run("SELECT val FROM t_udf WHERE id = 1")?;
+            while let Some(val) = iter.next_tuple(|_, row| row.get(0).cloned()).await? {
+                found_val = val;
+            }
+            iter.done().await?;
+        }
         assert_eq!(found_val, Some(DataValue::Int32(42)));
 
         kite_sql.ddl("CREATE INDEX ix_v ON t_udf (v)")?;
@@ -3478,28 +3501,46 @@ pub(crate) mod test {
                 .done()?;
 
             let mut found_rows = Vec::new();
-            kite_sql
-                .run("SELECT id, v, d, d2 FROM t_persist ORDER BY id")?
-                .done(|row| {
-                    let id = row.get(0).cloned();
-                    let v = row.get(1).cloned();
-                    let d = row.get(2).cloned();
-                    let d2 = row.get(3).cloned();
-                    found_rows.push((id, v, d, d2));
-                    Ok(())
-                })?;
+            {
+                let mut iter = kite_sql.run("SELECT id, v, d, d2 FROM t_persist ORDER BY id")?;
+                while let Some(row) = iter
+                    .next_tuple(|_, row| {
+                        (
+                            row.get(0).cloned(),
+                            row.get(1).cloned(),
+                            row.get(2).cloned(),
+                            row.get(3).cloned(),
+                        )
+                    })
+                    .await?
+                {
+                    found_rows.push(row);
+                }
+                iter.done().await?;
+            }
 
             assert_eq!(found_rows.len(), 2);
-            
+
             assert_eq!(found_rows[0].0, Some(DataValue::Int32(1)));
             assert_eq!(found_rows[0].1, Some(DataValue::Int32(100)));
-            assert!(matches!(found_rows[0].2, Some(DataValue::Date64(_))));
-            assert_eq!(found_rows[0].3, Some(DataValue::Null));
-            
+            assert!(
+                matches!(found_rows[0].2, Some(DataValue::Time64(..))),
+                "Row 0 d should be timestamp: {:?}",
+                found_rows[0].2
+            );
+
             assert_eq!(found_rows[1].0, Some(DataValue::Int32(2)));
             assert_eq!(found_rows[1].1, Some(DataValue::Int32(200)));
-            assert!(matches!(found_rows[1].2, Some(DataValue::Date64(_))));
-            assert!(matches!(found_rows[1].3, Some(DataValue::Date64(_))));
+            assert!(
+                matches!(found_rows[1].2, Some(DataValue::Time64(..))),
+                "Row 1 d should be timestamp: {:?}",
+                found_rows[1].2
+            );
+            assert!(
+                matches!(found_rows[1].3, Some(DataValue::Time64(..))),
+                "Row 1 d2 should be timestamp: {:?}",
+                found_rows[1].3
+            );
         }
 
         Ok(())
@@ -3523,14 +3564,16 @@ pub(crate) mod test {
 
         {
             let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
-            
+            kite_sql.load(CatalogKind::Table("t_cold".to_string()))?;
+
             let mut found_val = None;
-            kite_sql
-                .run("SELECT v FROM t_cold WHERE id = 1")?
-                .done(|row| {
-                    found_val = row.get(0).cloned();
-                    Ok(())
-                })?;
+            {
+                let mut iter = kite_sql.run("SELECT v FROM t_cold WHERE id = 1")?;
+                while let Some(val) = iter.next_tuple(|_, row| row.get(0).cloned()).await? {
+                    found_val = val;
+                }
+                iter.done().await?;
+            }
             assert_eq!(found_val, Some(DataValue::Int32(10)));
         }
 

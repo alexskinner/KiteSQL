@@ -180,16 +180,16 @@ pub trait Storage: Clone + MaybeSend + MaybeSync {
     ) -> Result<Self::TransactionType<'_>, DatabaseError>;
 
     /// Creates a transaction with function context for decoding column defaults.
-    /// 
+    ///
     /// # Important
-    /// 
+    ///
     /// The default implementation **silently ignores** the function context arguments
     /// and returns a transaction without function support. This will cause DDL operations
     /// (CREATE INDEX, ALTER TABLE, etc.) on tables with function DEFAULT expressions to
     /// fail with "scalar function decode context missing" errors.
-    /// 
+    ///
     /// **All Storage implementations must override this method** to store the function
-    /// context and return it from the transaction's `scala_functions()` and 
+    /// context and return it from the transaction's `scala_functions()` and
     /// `table_functions()` methods. The default is provided only for temporary
     /// backward compatibility during migration.
     fn transaction_with_functions(
