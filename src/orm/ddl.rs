@@ -10,8 +10,10 @@ enum OrmDefaultChange {
 impl<S: Storage> Database<S> {
     fn table_catalog(&self, table_name: &str) -> Result<Option<TableCatalog>, DatabaseError> {
         let transaction = self.storage.transaction()?;
+        let catalog = self.state.catalog();
+        let arena = catalog.arena.borrow();
         transaction
-            .table(self.state.names(), self.state.table_cache(), table_name)
+            .table(&arena.names, &arena.tables, table_name)
             .map(|table| table.cloned())
     }
 

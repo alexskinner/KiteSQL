@@ -63,7 +63,7 @@
 
 use crate::binder::Statement;
 use crate::db::{
-    BindSource, Database, DatabaseIter, Executor, ResultIter, Transaction, TransactionIter,
+    Database, DatabaseIter, Executor, PrivateCatalog, ResultIter, Transaction, TransactionIter,
 };
 use crate::errors::DatabaseError;
 use crate::planner::PlanArena;
@@ -74,6 +74,13 @@ pub struct Session<'db, S: Storage> {
     database: &'db Database<S>,
     active_transaction: Option<Transaction<'db, S>>,
     autocommit: bool,
+    /// Catalog this transaction binds against once it has run DDL or ANALYZE: built from the
+    /// transaction's own view of storage, never shared with other sessions or the database.
+    private_catalog: Option<PrivateCatalog>,
+    /// The next statement must rebuild `private_catalog` from the transaction first.
+    catalog_dirty: bool,
+    /// The transaction ran DDL/ANALYZE: publish the committed catalog when it commits.
+    catalog_changed: bool,
 }
 
 #[maybe_async]
@@ -84,6 +91,9 @@ impl<'db, S: Storage> Session<'db, S> {
             database,
             active_transaction: None,
             autocommit: true,
+            private_catalog: None,
+            catalog_dirty: false,
+            catalog_changed: false,
         }
     }
 
@@ -150,9 +160,7 @@ impl<'db, S: Storage> Session<'db, S> {
 
     async fn begin_transaction(&mut self) -> Result<(), DatabaseError> {
         // MySQL behavior: BEGIN while transaction open commits it
-        if let Some(txn) = self.active_transaction.take() {
-            txn.commit().await?;
-        }
+        self.finish_transaction(true).await?;
 
         // Enable statement-level undo for explicit transactions
         let txn = self.database.new_transaction_with_undo(false, true)?;
@@ -162,18 +170,30 @@ impl<'db, S: Storage> Session<'db, S> {
     }
 
     async fn commit_transaction(&mut self) -> Result<(), DatabaseError> {
-        if let Some(txn) = self.active_transaction.take() {
-            txn.commit().await?;
-        }
-
-        Ok(())
+        self.finish_transaction(true).await
     }
 
     async fn rollback_transaction(&mut self) -> Result<(), DatabaseError> {
-        if let Some(_txn) = self.active_transaction.take() {
-            // Transaction dropped, automatically rolls back
-        }
+        // Transaction dropped, automatically rolls back; its private catalog goes with it.
+        self.finish_transaction(false).await
+    }
 
+    /// Ends the open transaction. A commit that ran DDL publishes the new catalog to the
+    /// database; a rollback (or a failed commit) discards the private catalog and publishes
+    /// nothing.
+    async fn finish_transaction(&mut self, commit: bool) -> Result<(), DatabaseError> {
+        let changed = std::mem::take(&mut self.catalog_changed);
+        self.private_catalog = None;
+        self.catalog_dirty = false;
+        let Some(txn) = self.active_transaction.take() else {
+            return Ok(());
+        };
+        if commit {
+            txn.commit().await?;
+            if changed {
+                self.database.publish_catalog().await?;
+            }
+        }
         Ok(())
     }
 
@@ -210,9 +230,7 @@ impl<'db, S: Storage> Session<'db, S> {
 
             // MySQL behavior: SET autocommit=1 commits any open transaction
             if new_value && !self.autocommit {
-                if let Some(txn) = self.active_transaction.take() {
-                    txn.commit().await?;
-                }
+                self.finish_transaction(true).await?;
             }
 
             self.autocommit = new_value;
@@ -233,16 +251,46 @@ impl<'db, S: Storage> Session<'db, S> {
         }
 
         // Execute within the session's transaction
-        if let Some(ref mut txn) = self.active_transaction {
+        if let Some(txn) = self.active_transaction.as_mut() {
+            // After DDL the shared catalog is stale for this transaction: rebuild the private
+            // one from what the transaction itself sees (its uncommitted DDL included).
+            if self.catalog_dirty {
+                let state = &self.database.state;
+                let base = match &self.private_catalog {
+                    Some(private) => private.as_ref(),
+                    None => state.catalog(),
+                };
+                let rebuilt = state.build_catalog(base, &txn.inner).await?;
+                self.private_catalog = Some(rebuilt);
+                self.catalog_dirty = false;
+            }
+
+            let state = &self.database.state;
+            let catalog = match &self.private_catalog {
+                Some(private) => private.as_ref(),
+                None => state.catalog(),
+            };
+
             // For statement-level atomicity: execute and handle errors
             // If execution fails, the transaction remains open (MySQL semantics)
-
-            let result = BindSource::execute(txn, false, |state, tx| {
-                state
-                    .build_plan(&[], tx, |binder, arena| binder.bind(&statement, arena))
-                    .map(Executor::from_plan)
-            })
-            .await?;
+            let (plan, arena) =
+                state.build_plan_in(catalog, &[], &txn.inner, |binder, arena| {
+                    binder.bind(&statement, arena)
+                })?;
+            if matches!(
+                plan.operator.command_type(),
+                crate::planner::operator::CommandType::DDL
+                    | crate::planner::operator::CommandType::Analyze
+            ) {
+                // Even a failed DDL may have written part of its change: rebuild either way.
+                self.catalog_dirty = true;
+                self.catalog_changed = true;
+            }
+            let executor = Executor::new(plan, &arena);
+            let (arena, executor) = state
+                .execute(&mut txn.inner, executor, arena, txn.enable_undo)
+                .await?;
+            let result = TransactionIter::new(arena, executor);
 
             Ok(SessionIter::Transaction(Box::new(result)))
         } else {

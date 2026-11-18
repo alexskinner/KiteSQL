@@ -74,7 +74,7 @@ impl StatisticsMetaCache {
 pub(crate) type TableCache = HashMap<TableId, TableCatalog>;
 pub(crate) type ViewCache = HashMap<TableId, View>;
 
-#[derive(Debug, Default)]
+#[derive(Debug, Default, Clone)]
 pub struct NameMapping {
     names: HashMap<TableName, TableMeta>,
 }

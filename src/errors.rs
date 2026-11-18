@@ -140,6 +140,7 @@ pub enum DatabaseError {
     ObjectStore(slatedb::object_store::Error),
     SharedNotAlign,
     SourceNotFound,
+    StaleCatalog,
     TableExists,
     TableNotFound,
     TransactionAlreadyExists,
@@ -267,6 +268,7 @@ impl fmt::Display for DatabaseError {
                 f.write_str("the number of caches cannot be divisible by the number of shards")
             }
             Self::SourceNotFound => f.write_str("the table or view not found"),
+            Self::StaleCatalog => f.write_str("prepared program was bound to an older catalog generation and cannot be reused after DDL. prepare a new program to see the latest schema"),
             Self::TableExists => f.write_str("the table already exists"),
             Self::TableNotFound => f.write_str("the table not found"),
             Self::TransactionAlreadyExists => f.write_str("transaction already exists"),

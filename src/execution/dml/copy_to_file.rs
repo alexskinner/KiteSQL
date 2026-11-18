@@ -167,17 +167,19 @@ mod tests {
             .done()
             .await?;
 
-        let mut plan_arena = crate::planner::PlanArena::new(db.state.table_arena());
+        let catalog = db.state.catalog();
+        let mut plan_arena = crate::planner::PlanArena::new(catalog.arena);
         let transaction = db.storage.transaction()?;
+        let arena_borrow = catalog.arena.borrow();
         let table = transaction
-            .table(db.state.names(), db.state.table_cache(), "t1")?
+            .table(&arena_borrow.names, &arena_borrow.tables, "t1")?
             .unwrap();
 
         let mut input_plan = TableScanOperator::build(table, true, &mut plan_arena)?;
         input_plan.populate_output_schema_recursive(&mut plan_arena);
         let mut executor = crate::execution::execute_input::<_, CopyToFile>(
             (&op, &input_plan),
-            db.state.table_cache(),
+            &arena_borrow.tables,
             plan_arena,
             &transaction,
         );

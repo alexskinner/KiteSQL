@@ -390,19 +390,21 @@ mod wasm_tests {
 
         let transaction = kite_sql.storage.transaction()?;
         let table_name: TableName = "t1".to_string().into();
+        let catalog = kite_sql.state.catalog();
+        let arena_borrow = catalog.arena.borrow();
         let table = transaction
             .table(
-                kite_sql.state.names(),
-                kite_sql.state.table_cache(),
+                &arena_borrow.names,
+                &arena_borrow.tables,
                 &table_name,
             )?
             .unwrap()
             .clone();
         let pk_index = table.indexes().next().unwrap().clone();
-        let plan_arena = PlanArena::new(kite_sql.state.table_arena());
+        let plan_arena = PlanArena::new(catalog.arena);
         let deserializers = crate::storage::project_deserializers_for_test(
-            kite_sql.state.names(),
-            kite_sql.state.table_cache(),
+            &arena_borrow.names,
+            &arena_borrow.tables,
             &table_name,
             &table.columns().cloned().collect::<Vec<_>>(),
             &plan_arena,
@@ -414,10 +416,9 @@ mod wasm_tests {
         };
         let mut iter = transaction.read_by_index(
             &plan_arena,
-            kite_sql
-                .state
-                .names()
-                .table(kite_sql.state.table_cache(), &table_name)
+            arena_borrow
+                .names
+                .table(&arena_borrow.tables, &table_name)
                 .unwrap()
                 .id(),
             (Some(0), None),
@@ -594,19 +595,21 @@ mod native_tests {
 
         let transaction = kite_sql.storage.transaction()?;
         let table_name: TableName = "t1".to_string();
+        let catalog = kite_sql.state.catalog();
+        let arena_borrow = catalog.arena.borrow();
         let table = transaction
             .table(
-                kite_sql.state.names(),
-                kite_sql.state.table_cache(),
+                &arena_borrow.names,
+                &arena_borrow.tables,
                 &table_name,
             )?
             .unwrap()
             .clone();
         let pk_index = *table.indexes().next().unwrap();
-        let plan_arena = PlanArena::new(kite_sql.state.table_arena());
+        let plan_arena = PlanArena::new(catalog.arena);
         let deserializers = crate::storage::project_deserializers_for_test(
-            kite_sql.state.names(),
-            kite_sql.state.table_cache(),
+            &arena_borrow.names,
+            &arena_borrow.tables,
             &table_name,
             &table.columns().cloned().collect::<Vec<_>>(),
             &plan_arena,
@@ -618,10 +621,9 @@ mod native_tests {
         };
         let mut iter = transaction.read_by_index(
             &plan_arena,
-            kite_sql
-                .state
-                .names()
-                .table(kite_sql.state.table_cache(), &table_name)
+            arena_borrow
+                .names
+                .table(&arena_borrow.tables, &table_name)
                 .unwrap()
                 .id(),
             (Some(0), None),

@@ -78,14 +78,16 @@ impl<'p> Program<'p> {
         'txn: 'p,
         'p: 'a,
     {
-        self.bind(transaction.state.table_arena(), params.as_ref())?;
+        // One generation for the whole execution: the one the program was prepared against.
+        let catalog = transaction.state.catalog();
+        self.bind(catalog.arena, params.as_ref())?;
         if transaction.read_only && !self.read_only() {
             return Err(DatabaseError::UnsupportedStmt(
                 "cannot write in a read-only transaction".into(),
             ));
         }
         let arena = start_execution_inner(
-            transaction.state.table_cache(),
+            &catalog.arena.borrow().tables,
             &mut transaction.inner,
             &mut self.executor,
             &mut self.arena,
@@ -111,9 +113,7 @@ impl<'p> Program<'p> {
             self.arena.parent().plan_arena().table_arena_cell(),
             table_arena,
         ) {
-            return Err(DatabaseError::UnsupportedStmt(
-                "plan belongs to another database".into(),
-            ));
+            return Err(DatabaseError::StaleCatalog);
         }
         self.arena.parent_mut().bind(params)?;
         self.arena.reset();
@@ -971,6 +971,33 @@ mod tests {
                 .collect::<Vec<_>>();
             assert_eq!(rows, expected);
         }
+        Ok(())
+    }
+
+    #[test]
+    async fn stale_program_after_ddl_publish_returns_clear_error() -> Result<(), DatabaseError> {
+        let mut db = DataBaseBuilder::path(".").build_in_memory().await?;
+        db.ddl("create table t (id int primary key, name varchar)").await?;
+        db.run("insert into t values (1, 'a'), (2, 'b')").await?.done().await?;
+        let mut program = db.program_sql("select id from t where name = $1", &[(1, LogicalType::Varchar(None, crate::types::CharLengthUnits::Characters))])?;
+        let mut tx = db.new_transaction(false)?;
+        let mut iter = program.execute(&mut tx, [(1, "a".into())]).await?;
+        assert_eq!(
+            iter.next_tuple(|_, row| row.value_at(0).clone()).await?,
+            Some(DataValue::Int32(1))
+        );
+        iter.done().await?;
+        tx.commit().await?;
+        {
+            let mut s = db.session();
+            s.run("BEGIN")?.done()?;
+            s.run("ALTER TABLE t ADD COLUMN age INT")?.done()?;
+            s.run("COMMIT")?;
+        }
+        let mut tx = db.new_transaction(false)?;
+        let err = program.execute(&mut tx, [(1, "a".into())]).await.unwrap_err();
+        assert!(matches!(err, DatabaseError::StaleCatalog));
+        assert!(err.to_string().contains("older catalog generation"));
         Ok(())
     }
 }

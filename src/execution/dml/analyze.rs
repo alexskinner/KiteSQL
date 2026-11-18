@@ -310,20 +310,20 @@ mod test {
             kite_sql.analyze("t1").await?;
 
             let table_name = "t1".to_string();
-            let table_id = kite_sql
-                .state
-                .names()
-                .table(kite_sql.state.table_cache(), "t1")
+            let catalog = kite_sql.state.catalog();
+            let arena_borrow = catalog.arena.borrow();
+            let table_id = arena_borrow
+                .names
+                .table(&arena_borrow.tables, "t1")
                 .unwrap()
                 .id();
-            let a_id = *kite_sql
-                .state
-                .names()
-                .table(kite_sql.state.table_cache(), &table_name)
+            let a_id = *arena_borrow
+                .names
+                .table(&arena_borrow.tables, &table_name)
                 .unwrap()
                 .get_column_id_by_name("a")
                 .unwrap();
-            let loader = StatisticMetaLoader::new(kite_sql.state.meta_cache());
+            let loader = StatisticMetaLoader::new(catalog.meta);
             let column = loader.load_column(table_id, a_id).unwrap();
             assert_eq!(column.distinct_values_len(), expected);
             let index = loader.load(table_id, 1)?.unwrap();
@@ -355,13 +355,14 @@ mod test {
                 .await?;
             kite_sql.analyze("t1").await?;
 
-            let table_id = kite_sql
-                .state
-                .names()
-                .table(kite_sql.state.table_cache(), "t1")
+            let catalog = kite_sql.state.catalog();
+            let arena_borrow = catalog.arena.borrow();
+            let table_id = arena_borrow
+                .names
+                .table(&arena_borrow.tables, "t1")
                 .unwrap()
                 .id();
-            let loader = StatisticMetaLoader::new(kite_sql.state.meta_cache());
+            let loader = StatisticMetaLoader::new(catalog.meta);
             let index = loader.load(table_id, 0)?.unwrap();
             assert_eq!(index.sketch().error_bound(width), 2);
         }
