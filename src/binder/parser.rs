@@ -62,6 +62,7 @@ use sqlparser::tokenizer::Span;
 use std::borrow::Cow;
 use std::cmp;
 use std::slice;
+use std::sync::Arc;
 
 /// Parsed SQL statement type used by KiteSQL SQL frontend APIs.
 pub type Statement = sqlparser::ast::Statement;
@@ -280,10 +281,12 @@ impl<S: Storage> Database<S> {
                 Ok::<_, DatabaseError>(read_only && statement_is_read_only(stmt)?)
             })
             .map_err(|err| err.with_sql_context(sql))?;
-        let transaction = OwnedPtr::new(
-            self.storage
-                .transaction_with_isolation(self.transaction_isolation, read_only)?,
-        );
+        let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
+            self.transaction_isolation,
+            read_only,
+            Some(Arc::clone(self.state.scala_functions_arc())),
+            Some(Arc::clone(self.state.table_functions_arc())),
+        )?);
         let mut statements = statements.into_iter().peekable();
 
         while let Some(statement) = statements.next() {

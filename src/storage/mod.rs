@@ -52,6 +52,7 @@ use std::io::Cursor;
 use std::mem;
 use std::ops::SubAssign;
 use std::path::Path;
+use std::sync::Arc;
 
 pub type KeyValueRef<'a> = (&'a [u8], &'a [u8]);
 
@@ -178,6 +179,29 @@ pub trait Storage: Clone + MaybeSend + MaybeSync {
         read_only: bool,
     ) -> Result<Self::TransactionType<'_>, DatabaseError>;
 
+    /// Creates a transaction with function context for decoding column defaults.
+    ///
+    /// # Important
+    ///
+    /// The default implementation **silently ignores** the function context arguments
+    /// and returns a transaction without function support. This will cause DDL operations
+    /// (CREATE INDEX, ALTER TABLE, etc.) on tables with function DEFAULT expressions to
+    /// fail with "scalar function decode context missing" errors.
+    ///
+    /// **All Storage implementations must override this method** to store the function
+    /// context and return it from the transaction's `scala_functions()` and
+    /// `table_functions()` methods. The default is provided only for temporary
+    /// backward compatibility during migration.
+    fn transaction_with_functions(
+        &self,
+        isolation: TransactionIsolationLevel,
+        read_only: bool,
+        _scala_functions: Option<Arc<ScalaFunctions>>,
+        _table_functions: Option<Arc<TableFunctions>>,
+    ) -> Result<Self::TransactionType<'_>, DatabaseError> {
+        self.transaction_with_isolation(isolation, read_only)
+    }
+
     fn default_transaction_isolation(&self) -> TransactionIsolationLevel {
         TransactionIsolationLevel::RepeatableRead
     }
@@ -234,6 +258,20 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
     /// The scope of a transaction whose reads stay valid, unchanged and at the same address
     /// until it ends. Strings decoded from its reads then point into them instead of copying.
     fn mapped_scope(&self) -> Option<&MappedScope> {
+        None
+    }
+
+    /// Returns the scalar function registry for decoding function expressions in column defaults.
+    /// The default implementation returns None. Storage implementations may override this to
+    /// provide function context when available.
+    fn scala_functions(&self) -> Option<&ScalaFunctions> {
+        None
+    }
+
+    /// Returns the table function registry for decoding function expressions in column defaults.
+    /// The default implementation returns None. Storage implementations may override this to
+    /// provide function context when available.
+    fn table_functions(&self) -> Option<&TableFunctions> {
         None
     }
 
@@ -993,18 +1031,26 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         else {
             return Ok(None);
         };
-        self.table_collect(table_codec, meta.id, arena)
-            .await?
-            .map(|(columns, indexes)| {
-                TableCatalog::reload(
-                    meta.id,
-                    meta.table_name,
-                    columns.into_iter(),
-                    indexes.into_iter(),
-                    arena,
-                )
-            })
-            .transpose()
+        let scala_functions = self.scala_functions();
+        let table_functions = self.table_functions();
+        self.table_collect_impl(
+            table_codec,
+            meta.id,
+            arena,
+            scala_functions,
+            table_functions,
+        )
+        .await?
+        .map(|(columns, indexes)| {
+            TableCatalog::reload(
+                meta.id,
+                meta.table_name,
+                columns.into_iter(),
+                indexes.into_iter(),
+                arena,
+            )
+        })
+        .transpose()
     }
 
     async fn tables<'a>(
@@ -1217,6 +1263,27 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         table_id: TableId,
         arena: &mut (impl MetaArena + ?Sized),
     ) -> Result<Option<(Vec<ColumnCatalog>, Vec<IndexMeta>)>, DatabaseError> {
+        let scala_functions = self.scala_functions();
+        let table_functions = self.table_functions();
+        self.table_collect_impl(
+            table_codec,
+            table_id,
+            arena,
+            scala_functions,
+            table_functions,
+        )
+        .await
+    }
+
+    #[allow(clippy::type_complexity)]
+    async fn table_collect_impl(
+        &self,
+        table_codec: &mut TableCodec,
+        table_id: TableId,
+        arena: &mut (impl MetaArena + ?Sized),
+        scala_functions: Option<&ScalaFunctions>,
+        table_functions: Option<&TableFunctions>,
+    ) -> Result<Option<(Vec<ColumnCatalog>, Vec<IndexMeta>)>, DatabaseError> {
         table_codec
             .with_table_bound(table_id, async |table_min, table_max, pool| {
                 let mut column_iter = self
@@ -1230,9 +1297,19 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                 while let Some((key, value)) = column_iter.try_next().await.ok().flatten() {
                     if key.starts_with(table_min) {
                         let mut cursor = Cursor::new(value);
-                        columns.push(TableCodec::decode_column::<Self, _>(&mut cursor, arena)?);
+                        columns.push(TableCodec::decode_column::<Self, _>(
+                            &mut cursor,
+                            scala_functions,
+                            table_functions,
+                            arena,
+                        )?);
                     } else {
-                        index_metas.push(TableCodec::decode_index_meta::<Self>(value, arena)?);
+                        index_metas.push(TableCodec::decode_index_meta::<Self>(
+                            value,
+                            scala_functions,
+                            table_functions,
+                            arena,
+                        )?);
                     }
                 }
                 column_iter.recycle(pool);

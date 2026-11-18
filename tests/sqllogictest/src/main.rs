@@ -79,7 +79,7 @@ fn main() {
         println!("-> Pass!\n");
         file_num += 1;
     }
-    println!("Passed all tests for a total of {} files!!!", file_num + 1);
+    println!("Passed all tests for a total of {} files!!!", file_num);
     println!("|- Total time spent: {:?}", start.elapsed());
     if cfg!(debug_assertions) {
         println!("|- Debug mode");

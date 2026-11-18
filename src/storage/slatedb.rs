@@ -308,6 +308,26 @@ impl Storage for SlateDbStorage {
             await_durable: self.await_durable,
             scan_options: self.scan_options,
             statements: 0,
+            scala_functions: None,
+            table_functions: None,
+        })
+    }
+
+    fn transaction_with_functions(
+        &self,
+        isolation: TransactionIsolationLevel,
+        _read_only: bool,
+        scala_functions: Option<std::sync::Arc<crate::db::ScalaFunctions>>,
+        table_functions: Option<std::sync::Arc<crate::db::TableFunctions>>,
+    ) -> Result<Self::TransactionType<'_>, DatabaseError> {
+        self.validate_transaction_isolation(isolation)?;
+        Ok(SlateDbTransaction {
+            txn: self.db.begin(IsolationLevel::Snapshot)?,
+            await_durable: self.await_durable,
+            scan_options: self.scan_options,
+            statements: 0,
+            scala_functions,
+            table_functions,
         })
     }
 }
@@ -317,6 +337,8 @@ pub struct SlateDbTransaction {
     await_durable: bool,
     scan_options: SlateDbScanOptions,
     statements: u64,
+    scala_functions: Option<std::sync::Arc<crate::db::ScalaFunctions>>,
+    table_functions: Option<std::sync::Arc<crate::db::TableFunctions>>,
 }
 
 pub struct SlateDbIter {
@@ -396,6 +418,14 @@ impl StorageTransaction for SlateDbTransaction {
             ));
         }
         Ok((sequence << STATEMENT_BITS) | self.statements)
+    }
+
+    fn scala_functions(&self) -> Option<&crate::db::ScalaFunctions> {
+        self.scala_functions.as_deref()
+    }
+
+    fn table_functions(&self) -> Option<&crate::db::TableFunctions> {
+        self.table_functions.as_deref()
     }
 
     fn point_cursor(&self) -> Result<Self::PointCursor<'_>, DatabaseError> {
