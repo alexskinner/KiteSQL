@@ -408,6 +408,12 @@ impl<'txn, S: Storage> Transaction<'txn, S> {
                 })
                 .map_err(|err| err.with_sql_context(sql))?;
             let executor = crate::execution::Executor::new(plan, &arena);
+            if self.read_only && !executor.plan().operator.command_type().is_read_only() {
+                return Err(DatabaseError::UnsupportedStmt(
+                    "cannot write in a read-only transaction".into(),
+                )
+                .with_sql_context(sql));
+            }
             let (arena, executor) = self
                 .state
                 .execute(&mut self.inner, executor, arena, self.enable_undo)
@@ -427,6 +433,12 @@ impl<'txn, S: Storage> Transaction<'txn, S> {
             })
             .map_err(|err| err.with_sql_context(sql))?;
         let executor = crate::execution::Executor::new(plan, &arena);
+        if self.read_only && !executor.plan().operator.command_type().is_read_only() {
+            return Err(DatabaseError::UnsupportedStmt(
+                "cannot write in a read-only transaction".into(),
+            )
+            .with_sql_context(sql));
+        }
         let (arena, executor) = self
             .state
             .execute(&mut self.inner, executor, arena, self.enable_undo)

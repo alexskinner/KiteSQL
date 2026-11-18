@@ -2147,7 +2147,7 @@ pub struct Transaction<'a, S: Storage + 'a> {
     /// was created. All statements in this transaction use this generation, never the
     /// latest one, ensuring consistent schema even if other sessions publish DDL.
     pub(crate) catalog: CatalogRef<'a>,
-    read_only: bool,
+    pub(crate) read_only: bool,
     pub(crate) enable_undo: bool,
 }
 
