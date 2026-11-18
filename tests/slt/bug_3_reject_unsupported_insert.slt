@@ -1,0 +1,41 @@
+# Bug #3: INSERT ... ON CONFLICT / ON DUPLICATE KEY UPDATE / RETURNING
+# were parsed and silently ignored, now they should return clear errors
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, value INT)
+
+statement ok
+INSERT INTO t VALUES (1, 10)
+
+# Test ON CONFLICT (PostgreSQL syntax) - should error
+statement error
+INSERT INTO t VALUES (1, 20) ON CONFLICT (id) DO UPDATE SET value = 20
+
+# Test ON CONFLICT DO NOTHING - should error
+statement error
+INSERT INTO t VALUES (1, 30) ON CONFLICT DO NOTHING
+
+# Test ON DUPLICATE KEY UPDATE (MySQL syntax) - should error
+statement error
+INSERT INTO t VALUES (1, 40) ON DUPLICATE KEY UPDATE value = 40
+
+# Test RETURNING (PostgreSQL syntax) - should error
+statement error
+INSERT INTO t VALUES (2, 50) RETURNING *
+
+# Test RETURNING with specific columns - should error
+statement error
+INSERT INTO t VALUES (3, 60) RETURNING id
+
+# Verify that normal INSERT still works
+statement ok
+INSERT INTO t VALUES (2, 20)
+
+query II rowsort
+SELECT * FROM t
+----
+1 10
+2 20
+
+statement ok
+DROP TABLE t

@@ -1125,8 +1125,30 @@ where
             or,
             replace_into,
             source,
+            on,
+            returning,
+            assignments,
             ..
         } = insert;
+
+        if on.is_some() {
+            return Err(DatabaseError::UnsupportedStmt(
+                "INSERT ... ON CONFLICT / ON DUPLICATE KEY UPDATE is not supported".to_string(),
+            ));
+        }
+
+        if returning.is_some() {
+            return Err(DatabaseError::UnsupportedStmt(
+                "INSERT ... RETURNING is not supported".to_string(),
+            ));
+        }
+
+        if !assignments.is_empty() {
+            return Err(DatabaseError::UnsupportedStmt(
+                "INSERT ... SET is not supported".to_string(),
+            ));
+        }
+
         let is_overwrite =
             *overwrite || *replace_into || matches!(or, Some(SqliteOnConflict::Replace));
         let table_name = match table {
