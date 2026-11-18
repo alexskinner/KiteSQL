@@ -107,48 +107,44 @@ impl<'db, S: Storage> Session<'db, S> {
     }
 
     fn is_set_autocommit(statement: &Statement) -> bool {
-        if let Statement::Set(set) = statement {
-            if let sqlparser::ast::Set::SingleAssignment {
-                variable, values, ..
-            } = set
-            {
-                let var_name = variable.to_string();
+        if let Statement::Set(sqlparser::ast::Set::SingleAssignment {
+            variable, values, ..
+        }) = statement
+        {
+            let var_name = variable.to_string();
 
-                if var_name.eq_ignore_ascii_case("autocommit") && values.len() == 1 {
-                    return matches!(
-                        &values[0],
-                        sqlparser::ast::Expr::Value(sqlparser::ast::ValueWithSpan { value: sqlparser::ast::Value::Number(n, _), .. }) if n == "0" || n == "1"
-                    );
-                }
+            if var_name.eq_ignore_ascii_case("autocommit") && values.len() == 1 {
+                return matches!(
+                    &values[0],
+                    sqlparser::ast::Expr::Value(sqlparser::ast::ValueWithSpan { value: sqlparser::ast::Value::Number(n, _), .. }) if n == "0" || n == "1"
+                );
             }
         }
         false
     }
 
     async fn handle_set_autocommit(&mut self, statement: &Statement) -> Result<(), DatabaseError> {
-        if let Statement::Set(set) = statement {
-            if let sqlparser::ast::Set::SingleAssignment { values, .. } = set {
-                let new_value = match &values[0] {
-                    sqlparser::ast::Expr::Value(sqlparser::ast::ValueWithSpan {
-                        value: sqlparser::ast::Value::Number(n, _),
-                        ..
-                    }) => n == "1",
-                    _ => {
-                        return Err(DatabaseError::UnsupportedStmt(
-                            "autocommit must be 0 or 1".to_string(),
-                        ))
-                    }
-                };
-
-                if new_value && !self.autocommit {
-                    if let Some(txn) = self.active_transaction.take() {
-                        txn.commit().await?;
-                    }
+        if let Statement::Set(sqlparser::ast::Set::SingleAssignment { values, .. }) = statement {
+            let new_value = match &values[0] {
+                sqlparser::ast::Expr::Value(sqlparser::ast::ValueWithSpan {
+                    value: sqlparser::ast::Value::Number(n, _),
+                    ..
+                }) => n == "1",
+                _ => {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "autocommit must be 0 or 1".to_string(),
+                    ))
                 }
+            };
 
-                self.autocommit = new_value;
-                return Ok(());
+            if new_value && !self.autocommit {
+                if let Some(txn) = self.active_transaction.take() {
+                    txn.commit().await?;
+                }
             }
+
+            self.autocommit = new_value;
+            return Ok(());
         }
         Err(DatabaseError::UnsupportedStmt(
             "Invalid SET statement".to_string(),
