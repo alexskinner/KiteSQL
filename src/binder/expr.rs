@@ -648,15 +648,28 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
             .map(|arg| arg.return_type(arena).into_owned())
             .collect();
 
-        if let Ok(function) = self
+        match self
             .context
             .function_registry
             .resolve_scalar(function_name.as_str(), &arg_type_refs)
         {
-            return Ok(ScalarExpression::ScalaFunction(ScalarFunction {
-                args,
-                inner: ArcScalarFunctionImpl(function),
-            }));
+            Ok(function) => {
+                return Ok(ScalarExpression::ScalaFunction(ScalarFunction {
+                    args,
+                    inner: ArcScalarFunctionImpl(function),
+                }));
+            }
+            Err(DatabaseError::AmbiguousFunction { .. }) => {
+                // Propagate ambiguous function error
+                return Err(self
+                    .context
+                    .function_registry
+                    .resolve_scalar(function_name.as_str(), &arg_type_refs)
+                    .unwrap_err());
+            }
+            Err(_) => {
+                // Continue to check for table functions
+            }
         }
 
         let summary = FunctionSummary {

@@ -507,6 +507,29 @@ mod tests {
     }
 
     #[test]
+    fn test_two_overloads_work() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let database = DataBaseBuilder::path(temp_dir.path())
+            .register_scalar_function(AddOneFunction::new())
+            .register_scalar_function(AddOneInt64Function::new())
+            .build_in_memory()?;
+
+        // Test Integer overload
+        let mut iter = database.run("select add_one(CAST(41 AS INTEGER))")?;
+        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple[0], DataValue::Int32(42));
+        iter.done()?;
+
+        // Test Bigint overload  
+        let mut iter = database.run("select add_one(CAST(41 AS BIGINT))")?;
+        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple[0], DataValue::Int64(42));
+        iter.done()?;
+
+        Ok(())
+    }
+
+    #[test]
     fn test_ambiguous_overload_error() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
