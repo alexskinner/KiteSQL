@@ -15,7 +15,11 @@
 use sqlparser::parser::ParserError;
 use sqlparser::{ast::Statement, dialect::Dialect, parser::Parser};
 
-/// Parse a string to a collection of statements.
+/// Parse a string to a collection of statements using the Generic SQL dialect.
+///
+/// This is a convenience wrapper around [`parse_sql_with_dialect`] that uses
+/// [`GenericDialect`](sqlparser::dialect::GenericDialect). For dialect-specific
+/// parsing, use [`parse_sql_with_dialect`] directly.
 ///
 /// # Example
 /// ```rust
@@ -32,6 +36,9 @@ pub fn parse_sql<S: AsRef<str>>(sql: S) -> Result<Vec<Statement>, ParserError> {
     parse_sql_with_dialect_and_limit(sql, &GenericDialect {}, None)
 }
 
+/// Parse a string to a collection of statements using the Generic SQL dialect with a recursion limit.
+///
+/// This is a convenience wrapper for Generic dialect parsing with a custom recursion limit.
 #[allow(dead_code)]
 pub(crate) fn parse_sql_with_recursion_limit<S: AsRef<str>>(
     sql: S,

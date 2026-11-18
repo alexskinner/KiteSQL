@@ -3480,13 +3480,22 @@ pub(crate) mod test {
 
     #[cfg(feature = "parser")]
     #[test]
-    fn test_generic_dialect_rejects_mysql_syntax() -> Result<(), DatabaseError> {
+    fn test_generic_dialect_rejects_mysql_comment_syntax() -> Result<(), DatabaseError> {
         let database_generic = DataBaseBuilder::path(".").build_in_memory()?;
+        let database_mysql = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
 
-        let parse_result = database_generic
+        let generic_result = database_generic
             .state
-            .prepare_all("SELECT id FROM t LIMIT 1, 2");
-        assert!(parse_result.is_ok());
+            .prepare_all("SELECT 1 # MySQL comment");
+        assert!(generic_result.is_err());
+
+        let mysql_result = database_mysql.state.prepare_all("SELECT 1 # MySQL comment");
+        assert!(mysql_result.is_ok());
+
+        let generic_result2 = database_generic.state.prepare_all("SELECT 1 -- comment\n");
+        assert!(generic_result2.is_ok());
 
         Ok(())
     }
@@ -3530,6 +3539,91 @@ pub(crate) mod test {
         let row = result.next_tuple(|_, row| row.clone())?.unwrap();
         assert_eq!(row[0], DataValue::Int32(1));
         assert_eq!(row[1], DataValue::Int32(100));
+        result.done()?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_run_mut_statement_with_ddl() -> Result<(), DatabaseError> {
+        use crate::parser::parse_sql_with_dialect;
+        use sqlparser::dialect::MySqlDialect;
+
+        let mut database = DataBaseBuilder::path(".")
+            .default_dialect("mysql")?
+            .build_in_memory()?;
+
+        let dialect = MySqlDialect {};
+        let statements =
+            parse_sql_with_dialect("CREATE TABLE `ddl_test` (`id` INT PRIMARY KEY)", &dialect)?;
+        let statement = statements.into_iter().next().unwrap();
+
+        database.run_mut_statement(statement, ()).await?;
+
+        database.run("INSERT INTO `ddl_test` VALUES (1)")?.done()?;
+
+        let mut result = database.run("SELECT `id` FROM `ddl_test`")?;
+        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row[0], DataValue::Int32(1));
+        result.done()?;
+
+        Ok(())
+    }
+
+    #[cfg(feature = "parser")]
+    #[test]
+    fn test_dialect_rewrite_hook() -> Result<(), DatabaseError> {
+        use crate::dialect::SqlDialect;
+        use sqlparser::ast::Statement;
+        use std::sync::Arc;
+
+        #[derive(Debug)]
+        struct RewritingDialect {
+            inner: crate::dialect::GenericSqlDialect,
+        }
+
+        impl SqlDialect for RewritingDialect {
+            fn name(&self) -> &str {
+                "rewriting_test"
+            }
+
+            fn parser_dialect(&self) -> &dyn sqlparser::dialect::Dialect {
+                self.inner.parser_dialect()
+            }
+
+            fn rewrite(&self, stmt: &mut Statement) -> Result<(), DatabaseError> {
+                if let Statement::Query(query) = stmt {
+                    if let sqlparser::ast::SetExpr::Select(select) = query.body.as_mut() {
+                        for proj in &mut select.projection {
+                            if let sqlparser::ast::SelectItem::UnnamedExpr(
+                                sqlparser::ast::Expr::Value(val),
+                            ) = proj
+                            {
+                                if let sqlparser::ast::Value::Number(ref mut n, _) = &mut val.value
+                                {
+                                    if n == "42" {
+                                        *n = "99".to_string();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(())
+            }
+        }
+
+        let database = DataBaseBuilder::path(".")
+            .register_dialect(Arc::new(RewritingDialect {
+                inner: crate::dialect::GenericSqlDialect::new(),
+            }))
+            .default_dialect("rewriting_test")?
+            .build_in_memory()?;
+
+        let mut result = database.run("SELECT 42")?;
+        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+        assert_eq!(row[0], DataValue::Int32(99));
         result.done()?;
 
         Ok(())

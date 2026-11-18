@@ -141,13 +141,16 @@ impl<S: Storage> State<S> {
         sql: T,
     ) -> Result<Vec<Statement>, DatabaseError> {
         let dialect = self.dialect_registry().default_dialect();
-        let stmts = crate::parser::parse_sql_with_dialect_and_limit(
+        let mut stmts = crate::parser::parse_sql_with_dialect_and_limit(
             sql,
             dialect.parser_dialect(),
             self.parser_recursion_limit(),
         )?;
         if stmts.is_empty() {
             return Err(DatabaseError::EmptyStatement);
+        }
+        for stmt in &mut stmts {
+            dialect.rewrite(stmt)?;
         }
         Ok(stmts)
     }
@@ -264,7 +267,7 @@ impl<S: Storage> Database<S> {
         let has_mutation = statement_mutates_catalog_or_statistics(&statement)?;
         if has_mutation {
             return Err(DatabaseError::UnsupportedStmt(
-                "`Database::run_statement` does not allow catalog or statistics mutations; use `Database::run_mut` for DDL".to_string(),
+                "`Database::run_statement` does not allow catalog or statistics mutations; use `run_mut_statement` for DDL".to_string(),
             ));
         }
         let read_only = statement_is_read_only(&statement)?;
@@ -276,6 +279,28 @@ impl<S: Storage> Database<S> {
             let executor = crate::execution::Executor::new(plan, &arena);
             Ok((executor, arena))
         })
+        .await
+    }
+
+    /// Executes a pre-parsed statement with catalog mutations allowed.
+    ///
+    /// This is the pre-parsed equivalent of [`run_mut`](Self::run_mut), accepting a
+    /// sqlparser [`Statement`] directly. DDL statements (CREATE, ALTER, DROP) are allowed.
+    #[cfg(feature = "parser")]
+    pub async fn run_mut_statement<C>(
+        &mut self,
+        statement: Statement,
+        consume: C,
+    ) -> Result<C::Output, DatabaseError>
+    where
+        C: ConsumeMut<S>,
+    {
+        self.execute_mut_with(
+            "run_mut_statement",
+            &[],
+            |binder, arena| binder.bind(&statement, arena),
+            consume,
+        )
         .await
     }
 
