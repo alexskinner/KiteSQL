@@ -736,13 +736,14 @@ async fn start_execution<'a, 'p, T: StorageTransaction + 'p, A: MetaArena + 'p>(
     transaction: &'a mut T,
     mut executor: Executor<'p>,
     plan_arena: A,
+    function_registry: Option<&'p crate::function::registry::FunctionRegistry>,
 ) -> Result<Execution<'a, 'p, A, T>, DatabaseError>
 where
     'p: 'a,
 {
     let mut plan_arena = ExecMetaArena::new(plan_arena);
     let arena =
-        start_execution_inner(table_cache, transaction, &mut executor, &mut plan_arena).await?;
+        start_execution_inner(table_cache, transaction, &mut executor, &mut plan_arena, function_registry).await?;
 
     Ok((plan_arena, (executor, arena)))
 }
@@ -753,6 +754,7 @@ async fn start_execution_inner<'a, 'p, T: StorageTransaction + 'p, A: MetaArena 
     transaction: &'a mut T,
     executor: &mut Executor<'p>,
     plan_arena: &mut ExecMetaArena<A>,
+    function_registry: Option<&'p crate::function::registry::FunctionRegistry>,
 ) -> Result<ExecArena<'p, 'a, T>, DatabaseError>
 where
     'p: 'a,
@@ -760,6 +762,9 @@ where
     let stamp = statement_stamp(transaction, executor.plan())?;
     let iters = executor.buffer.iter_slots(executor.iters());
     let mut arena = ExecArena::new(table_cache, transaction).with_iters(iters);
+    if let Some(registry) = function_registry {
+        arena = arena.with_function_registry(registry);
+    }
     executor.buffer.set_statement_stamp(stamp);
     executor.start(&mut arena, plan_arena).await?;
 
@@ -916,7 +921,7 @@ impl<S: Storage> State<S> {
         'txn: 'p,
         'p: 'a,
     {
-        start_execution(self.table_cache(), transaction, executor, plan_arena).await
+        start_execution(self.table_cache(), transaction, executor, plan_arena, Some(&self.function_registry)).await
     }
 
     pub(crate) async fn execute_mut<'a, 'txn, A, F>(
@@ -977,7 +982,7 @@ impl<S: Storage> State<S> {
 
         plan.populate_output_schema_recursive(&mut plan_arena);
         let executor = Executor::new(plan, &plan_arena);
-        start_execution(table_cache, transaction, executor, plan_arena).await
+        start_execution(table_cache, transaction, executor, plan_arena, Some(function_registry)).await
     }
 }
 

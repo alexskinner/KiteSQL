@@ -89,6 +89,7 @@ impl<'p> Program<'p> {
             &mut transaction.inner,
             &mut self.executor,
             &mut self.arena,
+            Some(&transaction.state.function_registry),
         )
         .await?;
         Ok(ProgramIter {

@@ -79,6 +79,7 @@ pub(crate) fn create_accumulator(
     kind: AggKind,
     ty: &crate::types::LogicalType,
     distinct: bool,
+    registry: Option<&crate::function::registry::FunctionRegistry>,
 ) -> Result<Box<dyn Accumulator>, DatabaseError> {
     Ok(match (&kind, distinct) {
         (AggKind::Count, false) => Box::new(CountAccumulator::new()),
@@ -90,10 +91,15 @@ pub(crate) fn create_accumulator(
         (AggKind::Avg, distinct) => Box::new(AvgAccumulator::new(distinct)),
         (AggKind::Total, distinct) => Box::new(TotalAccumulator::new(distinct)),
         (AggKind::GroupConcat, distinct) => Box::new(GroupConcatAccumulator::new(distinct)),
-        (AggKind::Udf(_), _) => {
-            return Err(DatabaseError::UnsupportedStmt(
-                "User-defined aggregate functions not yet fully implemented".to_string(),
-            ));
+        (AggKind::Udf(id), _) => {
+            let registry = registry.ok_or_else(|| {
+                DatabaseError::UnsupportedStmt(
+                    "Function registry required for UDAF execution".to_string(),
+                )
+            })?;
+            let arg_types: Vec<_> = id.arg_types.iter().collect();
+            let agg_impl = registry.resolve_aggregate(&id.name, &arg_types)?;
+            agg_impl.create_accumulator(distinct)?
         }
     })
 }
@@ -103,6 +109,7 @@ pub(crate) fn push_accumulators(
     accs: &mut Vec<Box<dyn Accumulator>>,
     exprs: &[ExprRef],
     arena: &(dyn MetaArena + '_),
+    registry: Option<&crate::function::registry::FunctionRegistry>,
 ) -> Result<(), DatabaseError> {
     for expr in exprs {
         let ScalarExpression::AggCall {
@@ -111,7 +118,7 @@ pub(crate) fn push_accumulators(
         else {
             unreachable!("push_accumulators called with non-aggregate expression {expr}")
         };
-        accs.push(create_accumulator(kind.clone(), ty, *distinct)?);
+        accs.push(create_accumulator(kind.clone(), ty, *distinct, registry)?);
     }
     Ok(())
 }
@@ -120,9 +127,10 @@ pub(crate) fn prepare_accumulators(
     accs: &mut Vec<Box<dyn Accumulator>>,
     exprs: &[ExprRef],
     arena: &(dyn MetaArena + '_),
+    registry: Option<&crate::function::registry::FunctionRegistry>,
 ) -> Result<(), DatabaseError> {
     if accs.is_empty() {
-        return push_accumulators(accs, exprs, arena);
+        return push_accumulators(accs, exprs, arena, registry);
     }
     for acc in accs {
         acc.reset();

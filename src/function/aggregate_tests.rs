@@ -94,6 +94,7 @@ mod tests {
             Ok(Box::new(SumTimes10Accumulator {
                 sum: DataValue::Int32(0),
                 result: DataValue::Null,
+                has_values: false,
             }))
         }
     }
@@ -102,11 +103,13 @@ mod tests {
     struct SumTimes10Accumulator {
         sum: DataValue,
         result: DataValue,
+        has_values: bool,
     }
 
     impl Accumulator for SumTimes10Accumulator {
         fn update_value(&mut self, value: &DataValue) -> Result<(), DatabaseError> {
             if !value.is_null() {
+                self.has_values = true;
                 self.sum = match (&self.sum, value) {
                     (DataValue::Int32(a), DataValue::Int32(b)) => DataValue::Int32(a + b),
                     (DataValue::Int64(a), DataValue::Int64(b)) => DataValue::Int64(a + b),
@@ -117,6 +120,10 @@ mod tests {
         }
 
         fn evaluate(&mut self) -> Result<(), DatabaseError> {
+            if !self.has_values {
+                self.result = DataValue::Null;
+                return Ok(());
+            }
             self.result = match &self.sum {
                 DataValue::Int32(val) => DataValue::Int32(val * 10),
                 DataValue::Int64(val) => DataValue::Int64(val * 10),
@@ -136,6 +143,7 @@ mod tests {
         fn reset(&mut self) {
             self.sum = DataValue::Int32(0);
             self.result = DataValue::Null;
+            self.has_values = false;
         }
     }
 
@@ -202,6 +210,138 @@ mod tests {
         let mut iter = database.run("select sum_times_10(value) from (values (10), (NULL), (20)) as t(value)")?;
         let tuple = next_tuple_owned(&mut iter)?.unwrap();
         assert_eq!(tuple[0], DataValue::Int32(300));
+        iter.done()?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_udaf_with_builtin_aggregates() -> Result<(), DatabaseError> {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let database = DataBaseBuilder::path(temp_dir.path())
+            .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
+            .build_in_memory()?;
+
+        let mut iter = database.run(
+            "select sum_times_10(value), sum(value), count(value) from (values (10), (20), (15)) as t(value)"
+        )?;
+        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple[0], DataValue::Int32(450));
+        assert_eq!(tuple[1], DataValue::Int32(45));
+        assert_eq!(tuple[2], DataValue::Int32(3));
+        iter.done()?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_udaf_with_having() -> Result<(), DatabaseError> {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let database = DataBaseBuilder::path(temp_dir.path())
+            .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
+            .build_in_memory()?;
+
+        let mut iter = database.run(
+            "select category, sum_times_10(value) from (values ('A', 10), ('A', 20), ('B', 5), ('B', 5)) as t(category, value) group by category having sum_times_10(value) > 200 order by category"
+        )?;
+        
+        let tuple_a = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple_a[1], DataValue::Int32(300));
+        
+        assert!(next_tuple_owned(&mut iter)?.is_none());
+        iter.done()?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_udaf_empty_table() -> Result<(), DatabaseError> {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let database = DataBaseBuilder::path(temp_dir.path())
+            .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
+            .build_in_memory()?;
+
+        let mut iter = database.run(
+            "select sum_times_10(value) from (values (1)) as t(value) where value > 100"
+        )?;
+        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple[0], DataValue::Null);
+        iter.done()?;
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_udaf_all_null_group() -> Result<(), DatabaseError> {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let database = DataBaseBuilder::path(temp_dir.path())
+            .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
+            .build_in_memory()?;
+
+        let mut iter = database.run(
+            "select category, sum_times_10(value) from (values ('A', 10), ('B', NULL)) as t(category, value) group by category order by category"
+        )?;
+        
+        let tuple_a = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple_a[1], DataValue::Int32(100));
+        
+        let tuple_b = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple_b[1], DataValue::Null);
+        
+        iter.done()?;
+        Ok(())
+    }
+
+    #[test]
+    fn test_udaf_name_clash_with_builtin() -> Result<(), DatabaseError> {
+        use tempfile::TempDir;
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        
+        #[derive(Debug)]
+        struct SumOverride {
+            input_type: LogicalType,
+        }
+        
+        impl AggregateFunctionImpl for SumOverride {
+            fn kind(&self) -> AggKind {
+                AggKind::Udf(AggFnId {
+                    name: "sum".to_string(),
+                    arg_types: vec![self.input_type.clone()],
+                })
+            }
+            
+            fn input_type(&self) -> &LogicalType {
+                &self.input_type
+            }
+            
+            fn output_type(&self) -> &LogicalType {
+                &self.input_type
+            }
+            
+            fn supports_distinct(&self) -> bool {
+                false
+            }
+            
+            fn create_accumulator(&self, _distinct: bool) -> Result<Box<dyn Accumulator>, DatabaseError> {
+                Ok(Box::new(SumTimes10Accumulator {
+                    sum: DataValue::Int32(0),
+                    result: DataValue::Null,
+                    has_values: false,
+                }))
+            }
+        }
+        
+        let database = DataBaseBuilder::path(temp_dir.path())
+            .register_aggregate_function(Arc::new(SumOverride { input_type: LogicalType::Integer }))
+            .build_in_memory()?;
+
+        let mut iter = database.run("select sum(value) from (values (10), (20)) as t(value)")?;
+        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        assert_eq!(tuple[0], DataValue::Int32(30));
         iter.done()?;
 
         Ok(())

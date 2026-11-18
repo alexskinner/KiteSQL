@@ -555,13 +555,17 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
                 }
                 LogicalType::Varchar(None, CharLengthUnits::Characters)
             }
-            AggKind::Udf(_) => {
-                // For UDAFs, we would look up the output type from the registry
-                // For now, use the input type of the first argument
+            AggKind::Udf(id) => {
                 if args.is_empty() {
                     return Err(DatabaseError::MisMatch("number of UDAF parameters", ">= 1"));
                 }
-                args[0].return_type(arena).into_owned()
+                let arg_types: Vec<_> = id.arg_types.iter().collect();
+                match self.context.function_registry.resolve_aggregate(&id.name, &arg_types) {
+                    Ok(agg_impl) => agg_impl.output_type().clone(),
+                    Err(_) => {
+                        return Err(DatabaseError::function_not_found(&id.name));
+                    }
+                }
             }
         };
         Ok(ScalarExpression::AggCall {

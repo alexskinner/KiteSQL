@@ -2705,7 +2705,17 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
         let result = if let Some(kind) = AggKind::from_name(&function_name) {
             self.bind_aggregate_function(kind, args, is_distinct, arena)
         } else {
-            self.bind_function_call(function_name, args, arena)
+            let arg_types: Vec<_> = args.iter()
+                .map(|arg| arg.return_type(arena).into_owned())
+                .collect();
+            let arg_type_refs: Vec<_> = arg_types.iter().collect();
+            
+            if let Ok(agg_impl) = self.context.function_registry.resolve_aggregate(&function_name, &arg_type_refs) {
+                let kind = agg_impl.kind();
+                self.bind_aggregate_function(kind, args, is_distinct, arena)
+            } else {
+                self.bind_function_call(function_name, args, arena)
+            }
         };
         result.map_err(|err| attach_span_if_absent(err, func_span))
     }

@@ -44,7 +44,7 @@ impl AggregateFunctionImpl for SumAggregate {
 
     fn create_accumulator(&self, distinct: bool) -> Result<Box<dyn Accumulator>, DatabaseError> {
         use crate::execution::dql::aggregate::create_accumulator;
-        create_accumulator(AggKind::Sum, &self.input_type, distinct)
+        create_accumulator(AggKind::Sum, &self.input_type, distinct, None)
     }
 }
 
@@ -79,7 +79,7 @@ impl AggregateFunctionImpl for CountAggregate {
 
     fn create_accumulator(&self, distinct: bool) -> Result<Box<dyn Accumulator>, DatabaseError> {
         use crate::execution::dql::aggregate::create_accumulator;
-        create_accumulator(AggKind::Count, &self.input_type, distinct)
+        create_accumulator(AggKind::Count, &self.input_type, distinct, None)
     }
 }
 
@@ -125,7 +125,7 @@ impl AggregateFunctionImpl for MinMaxAggregate {
 
     fn create_accumulator(&self, distinct: bool) -> Result<Box<dyn Accumulator>, DatabaseError> {
         use crate::execution::dql::aggregate::create_accumulator;
-        create_accumulator(self.kind.clone(), &self.input_type, distinct)
+        create_accumulator(self.kind.clone(), &self.input_type, distinct, None)
     }
 }
 
@@ -160,7 +160,7 @@ impl AggregateFunctionImpl for AvgAggregate {
 
     fn create_accumulator(&self, distinct: bool) -> Result<Box<dyn Accumulator>, DatabaseError> {
         use crate::execution::dql::aggregate::create_accumulator;
-        create_accumulator(AggKind::Avg, &self.input_type, distinct)
+        create_accumulator(AggKind::Avg, &self.input_type, distinct, None)
     }
 }
 
@@ -195,7 +195,7 @@ impl AggregateFunctionImpl for GroupConcatAggregate {
 
     fn create_accumulator(&self, distinct: bool) -> Result<Box<dyn Accumulator>, DatabaseError> {
         use crate::execution::dql::aggregate::create_accumulator;
-        create_accumulator(AggKind::GroupConcat, &self.input_type, distinct)
+        create_accumulator(AggKind::GroupConcat, &self.input_type, distinct, None)
     }
 }
 
