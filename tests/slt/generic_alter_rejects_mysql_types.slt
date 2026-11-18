@@ -1,0 +1,23 @@
+# Test that Generic dialect rejects MySQL-specific types in ALTER TABLE ADD COLUMN
+
+statement ok
+CREATE TABLE alter_generic_test (id INT PRIMARY KEY)
+
+# mediumtext should be rejected in ALTER
+statement error
+ALTER TABLE alter_generic_test ADD COLUMN col MEDIUMTEXT
+
+# longtext should be rejected in ALTER
+statement error
+ALTER TABLE alter_generic_test ADD COLUMN col LONGTEXT
+
+# tinytext should be rejected in ALTER
+statement error
+ALTER TABLE alter_generic_test ADD COLUMN col TINYTEXT
+
+# bit(n) should be rejected in ALTER
+statement error
+ALTER TABLE alter_generic_test ADD COLUMN col BIT(1)
+
+statement ok
+DROP TABLE alter_generic_test
