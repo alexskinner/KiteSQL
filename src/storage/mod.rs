@@ -586,7 +586,7 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         // Update display types if changed
         if let (Some(column_id), Some(display)) = (changed_column_id, new_display_type) {
             updated_table.set_display_type(column_id, display.clone());
-        } else if let Some(column_id) = changed_column_id {
+        } else if let Some(_column_id) = changed_column_id {
             // Column type changed but no display type provided - keep existing or clear
             // Load existing display types from storage
             let existing_display_types = table_codec

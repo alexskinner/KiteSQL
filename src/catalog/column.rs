@@ -23,7 +23,6 @@ use kite_sql_serde_macros::ReferenceSerialization;
 use std::borrow::Cow;
 use std::fmt;
 use std::hash::Hash;
-use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, Hash, Eq, PartialEq)]
 pub struct ColumnRef {

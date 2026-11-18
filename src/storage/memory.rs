@@ -307,6 +307,7 @@ mod wasm_tests {
             source_columns,
             false,
             Vec::new(),
+            std::collections::BTreeMap::new(),
         )? {
             let table = table.transplant_to_table_arena(&plan_arena)?;
             names.insert_table(&mut table_cache, table);
@@ -510,6 +511,7 @@ mod native_tests {
             source_columns,
             false,
             Vec::new(),
+            std::collections::BTreeMap::new(),
         )? {
             let table = table.transplant_to_table_arena(&plan_arena)?;
             names.insert_table(&mut table_cache, table);

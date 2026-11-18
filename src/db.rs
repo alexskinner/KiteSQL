@@ -2389,6 +2389,7 @@ pub(crate) mod test {
                 columns,
                 false,
                 Vec::new(),
+                std::collections::BTreeMap::new(),
             )
             .await?
         {
