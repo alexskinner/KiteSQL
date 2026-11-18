@@ -2855,8 +2855,10 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
             into,
             named_window,
             qualify,
+            top: _,
             ..
         } = select;
+        
         if !named_window.is_empty() {
             return Err(DatabaseError::UnsupportedStmt(
                 "named windows are not supported".to_string(),
@@ -3272,6 +3274,12 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
             }
         }
         let is_plain_select = matches!(query.body.as_ref(), SetExpr::Select(_));
+        let top_from_select = if let SetExpr::Select(select) = query.body.as_ref() {
+            select.top.clone()
+        } else {
+            None
+        };
+        
         let mut plan = match query.body.as_ref() {
             SetExpr::Select(select) => self.bind_select(select, order_by_exprs, arena),
             SetExpr::Query(query) => self.bind_query(query, arena),
@@ -3297,6 +3305,24 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
 
         if let Some(limit_clause) = &query.limit_clause {
             plan = self.bind_limit(plan, limit_clause, arena)?;
+        }
+        
+        if let Some(top) = top_from_select {
+            use sqlparser::ast::TopQuantity;
+            let limit = match &top.quantity {
+                Some(TopQuantity::Expr(expr)) => Some(self.bind_non_negative_limit_value(expr, arena)?),
+                Some(TopQuantity::Constant(n)) => Some(*n as usize),
+                None => Some(1),
+            };
+            plan = self.bind_limit_values(plan, None, limit)?;
+        }
+        
+        if let Some(fetch) = &query.fetch {
+            let limit = match fetch.quantity {
+                Some(ref expr) => Some(self.bind_non_negative_limit_value(expr, arena)?),
+                None => Some(1),
+            };
+            plan = self.bind_limit_values(plan, None, limit)?;
         }
 
         self.context.restore_ctes(cte_checkpoint);
