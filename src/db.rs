@@ -152,6 +152,9 @@ pub struct DataBaseBuilder {
     storage_config: StorageConfig,
     #[cfg(all(not(target_arch = "wasm32"), feature = "lmdb"))]
     lmdb_config: LmdbConfig,
+    scalar_functions: Vec<Arc<dyn ScalarFunctionImpl>>,
+    table_functions: Vec<Arc<dyn TableFunctionImpl>>,
+    function_packs: Vec<Arc<dyn crate::function::pack::FunctionPack>>,
 }
 
 impl DataBaseBuilder {
@@ -186,6 +189,9 @@ impl DataBaseBuilder {
             storage_config: Default::default(),
             #[cfg(all(not(target_arch = "wasm32"), feature = "lmdb"))]
             lmdb_config: Default::default(),
+            scalar_functions: Vec::new(),
+            table_functions: Vec::new(),
+            function_packs: Vec::new(),
         }
     }
 
@@ -226,6 +232,49 @@ impl DataBaseBuilder {
     /// Sets the transaction isolation level used by database-created transactions.
     pub fn transaction_isolation(mut self, isolation: TransactionIsolationLevel) -> Self {
         self.transaction_isolation = Some(isolation);
+        self
+    }
+
+    /// Register a scalar function that will be available in the database.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let db = DataBaseBuilder::path("./data")
+    ///     .register_scalar_function(MyFunction::new())
+    ///     .build()?;
+    /// ```
+    pub fn register_scalar_function(
+        mut self,
+        function: Arc<dyn ScalarFunctionImpl>,
+    ) -> Self {
+        self.scalar_functions.push(function);
+        self
+    }
+
+    /// Register a table function that will be available in the database.
+    pub fn register_table_function(
+        mut self,
+        function: Arc<dyn TableFunctionImpl>,
+    ) -> Self {
+        self.table_functions.push(function);
+        self
+    }
+
+    /// Install a function pack, adding all functions from the pack to the database.
+    ///
+    /// # Example
+    ///
+    /// ```ignore
+    /// let db = DataBaseBuilder::path("./data")
+    ///     .with_function_pack(Arc::new(MyDialectFunctions))
+    ///     .build()?;
+    /// ```
+    pub fn with_function_pack(
+        mut self,
+        pack: Arc<dyn crate::function::pack::FunctionPack>,
+    ) -> Self {
+        self.function_packs.push(pack);
         self
     }
 
@@ -310,6 +359,9 @@ impl DataBaseBuilder {
             self.statistics_relative_error,
             self.parser_recursion_limit,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
@@ -340,6 +392,9 @@ impl DataBaseBuilder {
             self.statistics_relative_error,
             self.parser_recursion_limit,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
@@ -357,6 +412,9 @@ impl DataBaseBuilder {
             self.statistics_relative_error,
             self.parser_recursion_limit,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
@@ -372,6 +430,9 @@ impl DataBaseBuilder {
             self.statistics_relative_error,
             self.parser_recursion_limit,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
@@ -388,6 +449,9 @@ impl DataBaseBuilder {
             self.statistics_relative_error,
             self.parser_recursion_limit,
             self.transaction_isolation,
+            self.scalar_functions,
+            self.table_functions,
+            self.function_packs,
         )
     }
 
@@ -398,6 +462,9 @@ impl DataBaseBuilder {
         statistics_relative_error: Option<f64>,
         parser_recursion_limit: Option<usize>,
         transaction_isolation: Option<TransactionIsolationLevel>,
+        scalar_functions: Vec<Arc<dyn ScalarFunctionImpl>>,
+        table_functions: Vec<Arc<dyn TableFunctionImpl>>,
+        function_packs: Vec<Arc<dyn crate::function::pack::FunctionPack>>,
     ) -> Result<Database<T>, DatabaseError> {
         if matches!(histogram_buckets, Some(0)) {
             return Err(DatabaseError::InvalidValue(
@@ -434,7 +501,25 @@ impl DataBaseBuilder {
 
         let mut function_registry = FunctionRegistry::new();
         install_core_functions(&mut function_registry, &mut table_arena.borrow_mut())?;
-
+        
+        for function in scalar_functions {
+            function_registry.register_scalar(function)?;
+        }
+        
+        for function in table_functions {
+            let mut schema = Schema::new();
+            function.output_schema_into(&mut table_arena.borrow_mut(), &mut schema);
+            let catalog = TableFunctionCatalog {
+                inner: ArcTableFunctionImpl(function),
+                schema,
+            };
+            function_registry.register_table(Arc::new(catalog))?;
+        }
+        
+        for pack in function_packs {
+            pack.install(&mut function_registry)?;
+        }
+        
         let scala_functions = function_registry.scalar_functions().clone();
         let table_functions = function_registry
             .table_functions()

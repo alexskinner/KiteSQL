@@ -16,8 +16,37 @@ use crate::errors::DatabaseError;
 use crate::function::registry::FunctionRegistry;
 use std::fmt::Debug;
 
+/// A pack of related functions that can be installed together into a FunctionRegistry.
+///
+/// Function packs allow grouping related functions (e.g., all MySQL-dialect functions)
+/// and installing them as a unit. This is useful for dialect-specific function sets
+/// that should be loaded together.
+///
+/// # Example
+///
+/// ```ignore
+/// use kite_sql::function::pack::FunctionPack;
+/// use kite_sql::function::registry::FunctionRegistry;
+///
+/// #[derive(Debug)]
+/// struct MyFunctions;
+///
+/// impl FunctionPack for MyFunctions {
+///     fn name(&self) -> &str { "my_functions" }
+///     
+///     fn install(&self, registry: &mut FunctionRegistry) -> Result<(), DatabaseError> {
+///         // Register functions here
+///         Ok(())
+///     }
+/// }
+/// ```
 pub trait FunctionPack: Debug + Send + Sync {
+    /// Returns the name of this function pack.
     fn name(&self) -> &str;
-
+    
+    /// Install all functions from this pack into the given registry.
+    ///
+    /// This method should call `registry.register_scalar()` or `registry.register_table()`
+    /// for each function in the pack.
     fn install(&self, registry: &mut FunctionRegistry) -> Result<(), DatabaseError>;
 }
