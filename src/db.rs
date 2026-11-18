@@ -1363,7 +1363,6 @@ impl<S: Storage> Database<S> {
             inner: transaction,
             state: &self.state,
             read_only,
-            statement_undo_log: std::cell::RefCell::new(Vec::new()),
         })
     }
 
@@ -1869,9 +1868,6 @@ pub struct Transaction<'a, S: Storage + 'a> {
     pub(crate) inner: S::TransactionType<'a>,
     pub(crate) state: &'a State<S>,
     read_only: bool,
-    /// Statement-level undo log for atomicity - infrastructure for future implementation
-    #[allow(dead_code)]
-    pub(crate) statement_undo_log: std::cell::RefCell<Vec<u8>>,
 }
 
 #[maybe_async]

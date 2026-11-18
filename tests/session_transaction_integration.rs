@@ -139,10 +139,13 @@ fn test_statement_atomicity_insert() -> Result<(), DatabaseError> {
 
     // Multi-row insert that fails on row 2 (duplicate key)
     // MySQL: failing statement should be rolled back, transaction stays open
-    let result = session.run("INSERT INTO test VALUES (11,11),(1,1)");
-    let is_err = result.is_err();
-    drop(result);
-    assert!(is_err, "Duplicate key should fail");
+    let iter = session.run("INSERT INTO test VALUES (11,11),(1,1)")?;
+    // Error surfaces during done()/iteration, not run()
+    let result = iter.done();
+    assert!(
+        result.is_err(),
+        "Duplicate key should fail during iteration"
+    );
 
     // Transaction should still be open
     assert!(session.in_transaction());
@@ -174,7 +177,7 @@ fn test_statement_atomicity_insert() -> Result<(), DatabaseError> {
 }
 
 #[test]
-#[ignore = "Statement atomicity executor integration incomplete - infrastructure present"]
+#[ignore = "Statement atomicity will be implemented in follow-up PR"]
 fn test_statement_atomicity_update() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
     let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
@@ -190,10 +193,13 @@ fn test_statement_atomicity_update() -> Result<(), DatabaseError> {
     session.run("BEGIN")?.done()?;
 
     // Update that fails partway (trying to set val=100 which violates UNIQUE constraint on row 2)
-    let result = session.run("UPDATE test SET val = 100");
-    let is_err = result.is_err();
-    drop(result);
-    assert!(is_err, "UNIQUE constraint should fail");
+    let iter = session.run("UPDATE test SET val = 100")?;
+    // Error surfaces during done()/iteration, not run()
+    let result = iter.done();
+    assert!(
+        result.is_err(),
+        "UNIQUE constraint should fail during iteration"
+    );
 
     // Transaction should still be open
     assert!(session.in_transaction());

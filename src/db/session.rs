@@ -44,19 +44,17 @@
 //! holds an LMDB write transaction will deadlock (LMDB is single-writer). Use `Session::run()`
 //! for all operations while the session is active.
 //!
-//! # Statement-Level Atomicity
+//! # Statement-Level Atomicity Limitation
 //!
-//! MySQL semantics require that a failing statement inside a transaction rolls back only that
-//! statement's effects, keeping the transaction open. Full implementation requires:
+//! **Known limitation**: A statement that fails mid-execution inside an explicit transaction
+//! may leave partial writes until ROLLBACK. MySQL semantics require that only the failing
+//! statement's effects are rolled back while keeping the transaction open, but this is not
+//! currently implemented.
 //!
-//! 1. Capturing inverse operations in DML executors (insert.rs, update.rs, delete.rs) before writes
-//! 2. Recording these in a statement-scoped undo log on Transaction
-//! 3. On statement error during iteration/done(), applying inverses in reverse
-//! 4. On success, clearing the undo log
-//!
-//! The infrastructure (Transaction.statement_undo_log) is present but executor integration
-//! remains to be completed. LMDB nested transactions (RwTransaction::begin_nested_txn) could
-//! also be used as an alternative implementation strategy.
+//! Implementation will be added in a follow-up PR using one of:
+//! - Capturing inverse operations in DML executors before writes
+//! - LMDB nested transactions (RwTransaction::begin_nested_txn)
+//! - Write buffering at the executor level
 
 use crate::binder::Statement;
 use crate::db::{
