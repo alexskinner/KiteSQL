@@ -610,8 +610,18 @@ mod tests {
             .register_table_function(RangeTableFunction::new())
             .build_in_memory()?;
 
-        // Use TABLE keyword for table function calls
+        // Test with TABLE keyword
         let mut iter = database.run("select * from table(range())")?;
+        let mut count = 0;
+        while let Some(tuple) = next_tuple_owned(&mut iter)? {
+            assert_eq!(tuple[0], DataValue::Int32(count));
+            count += 1;
+        }
+        assert_eq!(count, 5);
+        iter.done()?;
+
+        // Test bare form without TABLE keyword
+        let mut iter = database.run("select * from range()")?;
         let mut count = 0;
         while let Some(tuple) = next_tuple_owned(&mut iter)? {
             assert_eq!(tuple[0], DataValue::Int32(count));
@@ -623,65 +633,94 @@ mod tests {
         Ok(())
     }
 
-    #[derive(Debug, Clone)]
-    struct DurableUdfFunction {
-        summary: FunctionSummary,
-        return_type: LogicalType,
-    }
+    #[test]
+    #[cfg(feature = "lmdb")]
+    fn test_durable_function_persistence() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let db_path = temp_dir.path();
 
-    impl DurableUdfFunction {
-        fn new() -> Arc<Self> {
-            Arc::new(Self {
+        let durable_add = Arc::new({
+            #[derive(Debug, Clone)]
+            struct DurableAddFunction {
+                summary: FunctionSummary,
+                return_type: LogicalType,
+            }
+            impl ScalarFunctionImpl for DurableAddFunction {
+                fn eval(
+                    &self,
+                    args: &[crate::planner::ExprRef],
+                    arena: &(dyn crate::planner::MetaArena + '_),
+                    tuple: Option<&dyn crate::types::tuple::Input>,
+                ) -> Result<DataValue, DatabaseError> {
+                    let value = arena.expression(args[0]).eval(arena, tuple)?;
+                    Ok(match value.as_ref() {
+                        DataValue::Int32(v) => DataValue::Int32(v + 1),
+                        _ => value.into_owned(),
+                    })
+                }
+                fn return_type(&self) -> &LogicalType {
+                    &self.return_type
+                }
+                fn summary(&self) -> &FunctionSummary {
+                    &self.summary
+                }
+                fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
+                    Some(vec![Some(true)])
+                }
+            }
+            DurableAddFunction {
                 summary: FunctionSummary {
-                    name: "durable_add".into(),
+                    name: "add_one".into(),
                     arg_types: vec![LogicalType::Integer],
                     persistence: PersistencePolicy::Durable,
                 },
                 return_type: LogicalType::Integer,
-            })
-        }
-    }
+            }
+        });
 
-    impl ScalarFunctionImpl for DurableUdfFunction {
-        fn eval(
-            &self,
-            args: &[crate::planner::ExprRef],
-            arena: &(dyn crate::planner::MetaArena + '_),
-            tuple: Option<&dyn crate::types::tuple::Input>,
-        ) -> Result<DataValue, DatabaseError> {
-            let value = arena.expression(args[0]).eval(arena, tuple)?;
-            Ok(match value.as_ref() {
-                DataValue::Int32(v) => DataValue::Int32(v + 100),
-                _ => value.into_owned(),
-            })
+        {
+            let mut database = DataBaseBuilder::path(db_path)
+                .register_scalar_function(durable_add.clone())
+                .build_lmdb()?;
+
+            database.ddl("CREATE VIEW v AS SELECT add_one(41) AS x")?;
         }
 
-        fn return_type(&self) -> &LogicalType {
-            &self.return_type
+        {
+            let mut database = DataBaseBuilder::path(db_path)
+                .register_scalar_function(durable_add.clone())
+                .build_lmdb()?;
+
+            database.load(CatalogKind::View("v".into()))?;
+
+            let mut iter = database.run("SELECT * FROM v")?;
+            let tuple = next_tuple_owned(&mut iter)?.unwrap();
+            assert_eq!(tuple[0], DataValue::Int32(42));
+            iter.done()?;
         }
 
-        fn summary(&self) -> &FunctionSummary {
-            &self.summary
+        {
+            let mut database = DataBaseBuilder::path(db_path).build_lmdb()?;
+
+            let result = database.load(CatalogKind::View("v".into()));
+            assert!(result.is_err());
+            match result {
+                Err(DatabaseError::InvalidValue(msg)) => {
+                    assert!(
+                        msg.contains("scalar function not found when decoding")
+                            && msg.contains("add_one"),
+                        "Expected clear error about missing function, got: {}",
+                        msg
+                    );
+                }
+                Err(e) => panic!(
+                    "Expected InvalidValue error for missing function, got: {:?}",
+                    e
+                ),
+                Ok(_) => panic!("Expected error when loading view without registered function"),
+            }
         }
 
-        fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
-            Some(vec![Some(true)])
-        }
-    }
-
-    fn next_tuple_owned_sync(
-        iter: &mut impl crate::db::ResultIter,
-    ) -> Result<Option<crate::types::tuple::TupleImpl>, DatabaseError> {
-        iter.next_tuple(|_, tuple| tuple.clone())
-    }
-
-    // TODO: LMDB persistence test skipped - requires async/sync API alignment
-    // The test should validate that Durable functions persist across database reopens
-    // but currently requires proper ddl() method access in sync LMDB mode
-    #[test]
-    #[ignore]
-    #[cfg(feature = "lmdb")]
-    fn test_durable_function_persistence() {
-        // Test implementation pending async/sync API resolution for LMDB
+        Ok(())
     }
 }
