@@ -1084,14 +1084,13 @@ impl TableCodec {
 
     pub fn decode_view<T: StorageTransaction>(
         bytes: &[u8],
-        scala_functions: &ScalaFunctions,
-        table_functions: &TableFunctions,
+        function_registry: &crate::function::registry::FunctionRegistry,
         arena: &mut (impl MetaArena + ?Sized),
     ) -> Result<View, DatabaseError> {
         let mut cursor = Cursor::new(bytes);
 
         let mut context =
-            ReferenceDecodeContext::<T>::with_functions(scala_functions, table_functions);
+            ReferenceDecodeContext::<T>::with_functions(function_registry);
         View::decode(&mut cursor, Some(&mut context), arena)
     }
 
@@ -1595,8 +1594,7 @@ mod tests {
 
         let mut table_codec = TableCodec::default();
         let table_state = build_t1_table().await?;
-        let scala_functions = Default::default();
-        let table_functions = Default::default();
+        let function_registry = crate::function::registry::FunctionRegistry::new();
         let build_view = |name: &str, sql: &str| -> Result<(View, PlanArena<'_>), DatabaseError> {
             let mut plan_arena = PlanArena::new(&table_state.table_arena);
             let mut plan = table_state.plan_with_arena(sql, &mut plan_arena)?;
@@ -1622,8 +1620,7 @@ mod tests {
             let decoded = table_codec.with_view_value(0, &view, &plan_arena, |_, value| {
                 TableCodec::decode_view::<TestTransaction>(
                     value,
-                    &scala_functions,
-                    &table_functions,
+                    &function_registry,
                     &mut decode_arena,
                 )
             })?;
@@ -1643,8 +1640,7 @@ mod tests {
             let decoded = table_codec.with_view_value(0, &view, &plan_arena, |_, value| {
                 TableCodec::decode_view::<TestTransaction>(
                     value,
-                    &scala_functions,
-                    &table_functions,
+                    &function_registry,
                     &mut decode_arena,
                 )
             })?;
@@ -1664,8 +1660,7 @@ mod tests {
             let decoded = table_codec.with_view_value(0, &view, &plan_arena, |_, value| {
                 TableCodec::decode_view::<TestTransaction>(
                     value,
-                    &scala_functions,
-                    &table_functions,
+                    &function_registry,
                     &mut decode_arena,
                 )
             })?;

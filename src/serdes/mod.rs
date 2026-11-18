@@ -65,8 +65,7 @@ pub trait ReferenceSerialization {
 
 pub struct ReferenceDecodeContext<'a, T: StorageTransaction> {
     _transaction: PhantomData<&'a T>,
-    scala_functions: Option<&'a ScalaFunctions>,
-    table_functions: Option<&'a TableFunctions>,
+    function_registry: Option<&'a crate::function::registry::FunctionRegistry>,
     sources: HashMap<SourceId, SourceId>,
 }
 
@@ -80,30 +79,23 @@ impl<'a, T: StorageTransaction> ReferenceDecodeContext<'a, T> {
     pub fn new() -> Self {
         Self {
             _transaction: PhantomData,
-            scala_functions: None,
-            table_functions: None,
+            function_registry: None,
             sources: HashMap::new(),
         }
     }
 
     pub fn with_functions(
-        scala_functions: &'a ScalaFunctions,
-        table_functions: &'a TableFunctions,
+        function_registry: &'a crate::function::registry::FunctionRegistry,
     ) -> Self {
         Self {
             _transaction: PhantomData,
-            scala_functions: Some(scala_functions),
-            table_functions: Some(table_functions),
+            function_registry: Some(function_registry),
             sources: HashMap::new(),
         }
     }
 
-    pub(crate) fn scala_functions(&self) -> Option<&'a ScalaFunctions> {
-        self.scala_functions
-    }
-
-    pub(crate) fn table_functions(&self) -> Option<&'a TableFunctions> {
-        self.table_functions
+    pub(crate) fn function_registry(&self) -> Option<&'a crate::function::registry::FunctionRegistry> {
+        self.function_registry
     }
 
     pub(crate) fn source_id(

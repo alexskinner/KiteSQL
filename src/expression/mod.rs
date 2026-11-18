@@ -1145,20 +1145,16 @@ mod test {
         let mut names = crate::storage::NameMapping::default();
         let mut table_cache = crate::storage::TableCache::default();
         let table_arena = TableArenaCell::default();
-        let mut scala_functions = ScalaFunctions::default();
+        let mut function_registry = crate::function::registry::FunctionRegistry::new();
         let current_date = CurrentDate::new();
-        scala_functions.insert(current_date.summary().clone(), current_date);
-        let mut table_functions = TableFunctions::default();
+        function_registry.load_scalar(current_date);
         let numbers = Numbers::new();
         let mut schema = Vec::new();
         numbers.output_schema_into(table_arena.borrow_mut(), &mut schema);
-        table_functions.insert(
-            numbers.summary().clone(),
-            TableFunctionCatalog {
-                schema,
-                inner: ArcTableFunctionImpl(numbers),
-            },
-        );
+        function_registry.load_table(std::sync::Arc::new(TableFunctionCatalog {
+            schema,
+            inner: ArcTableFunctionImpl(numbers),
+        }));
         let mut plan_arena = PlanArena::new(&table_arena);
         build_table(
             &mut names,
@@ -1175,7 +1171,7 @@ mod test {
             table.get_column_by_name("c3").unwrap()
         };
         let mut context =
-            ReferenceDecodeContext::with_functions(&scala_functions, &table_functions);
+            ReferenceDecodeContext::with_functions(&function_registry);
         let empty = plan_arena.alloc_expression(ScalarExpression::Empty);
 
         fn_assert(

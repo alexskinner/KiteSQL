@@ -648,21 +648,22 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
             .iter()
             .map(|arg| arg.return_type(arena).into_owned())
             .collect_vec();
-        let summary = FunctionSummary {
-            name: function_name.into(),
-            arg_types,
-            persistence: crate::expression::function::PersistencePolicy::Durable,
-        };
-        // TODO: a NULL literal argument has type `SqlNull`, so the exact lookup
-        // misses e.g. `upper(null)` (FunctionNotFound). PostgreSQL treats it as
-        // an unknown type that matches any parameter and returns NULL.
-        if let Some(function) = self.context.scala_functions.get(&summary) {
+        let arg_type_refs: Vec<_> = args.iter().map(|arg| arg.return_type(arena).into_owned()).collect();
+        
+        if let Ok(function) = self.context.function_registry.resolve_scalar(function_name.as_str(), &arg_type_refs) {
             return Ok(ScalarExpression::ScalaFunction(ScalarFunction {
                 args,
-                inner: ArcScalarFunctionImpl(function.clone()),
+                inner: ArcScalarFunctionImpl(function),
             }));
         }
-        if let Some(function) = self.context.table_functions.get(&summary) {
+        
+        let summary = FunctionSummary {
+            name: function_name.into(),
+            arg_types: arg_type_refs,
+            persistence: crate::expression::function::PersistencePolicy::Durable,
+        };
+        
+        if let Some(function) = self.context.function_registry.get_table(&summary) {
             if !matches!(self.context.step_now(), QueryBindStep::From) {
                 return Err(DatabaseError::UnsupportedStmt(
                     "`TableFunction` cannot bind in non-From step".to_string(),
@@ -670,7 +671,7 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
             }
             return Ok(ScalarExpression::TableFunction(TableFunction {
                 args,
-                catalog: function.clone(),
+                catalog: (**function).clone(),
             }));
         }
 

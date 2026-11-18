@@ -519,18 +519,9 @@ impl DataBaseBuilder {
         for pack in function_packs {
             pack.install(&mut function_registry)?;
         }
-        
-        let scala_functions = function_registry.scalar_functions().clone();
-        let table_functions = function_registry
-            .table_functions()
-            .iter()
-            .map(|(k, v)| (k.clone(), v.as_ref().clone()))
-            .collect();
 
         let state = State {
             function_registry,
-            scala_functions,
-            table_functions,
             meta_cache,
             table_arena,
             optimizer_pipeline: optimizer_pipeline(),
@@ -762,8 +753,6 @@ where
 
 pub(crate) struct State<S> {
     function_registry: FunctionRegistry,
-    scala_functions: ScalaFunctions,
-    table_functions: TableFunctions,
     meta_cache: StatisticsMetaCache,
     table_arena: TableArenaCell,
     optimizer_pipeline: HepOptimizerPipeline,
@@ -781,12 +770,6 @@ impl<S: Storage> State<S> {
         self.parser_recursion_limit
     }
 
-    fn scala_functions(&self) -> &ScalaFunctions {
-        &self.scala_functions
-    }
-    fn table_functions(&self) -> &TableFunctions {
-        &self.table_functions
-    }
     pub(crate) fn function_registry(&self) -> &FunctionRegistry {
         &self.function_registry
     }
@@ -810,8 +793,6 @@ impl<S: Storage> State<S> {
     }
 
     fn load_scalar_function(&mut self, function: Arc<dyn ScalarFunctionImpl>) {
-        let summary = function.summary().clone();
-        self.scala_functions.insert(summary, function.clone());
         self.function_registry.load_scalar(function);
     }
 
@@ -826,10 +807,7 @@ impl<S: Storage> State<S> {
             inner: ArcTableFunctionImpl(function),
             schema,
         };
-        let catalog_arc = Arc::new(catalog);
-        self.table_functions
-            .insert(summary, catalog_arc.as_ref().clone());
-        self.function_registry.load_table(catalog_arc);
+        self.function_registry.load_table(Arc::new(catalog));
         Ok(())
     }
 
@@ -850,7 +828,7 @@ impl<S: Storage> State<S> {
                 view.visit_column_refs(table_arena, &mut live)?;
             }
 
-            for function in self.table_functions.values() {
+            for function in self.function_registry.table_functions().values() {
                 for column in &function.schema {
                     live(column);
                 }
@@ -881,8 +859,7 @@ impl<S: Storage> State<S> {
                 self.table_cache(),
                 self.view_cache(),
                 transaction,
-                self.scala_functions(),
-                self.table_functions(),
+                self.function_registry(),
             ),
             &params,
             None,
@@ -942,8 +919,7 @@ impl<S: Storage> State<S> {
         ) -> Result<LogicalPlan, DatabaseError>,
     {
         let State {
-            scala_functions,
-            table_functions,
+            function_registry,
             meta_cache,
             table_arena,
             optimizer_pipeline,
@@ -961,8 +937,7 @@ impl<S: Storage> State<S> {
                 table_cache,
                 &arena.views,
                 transaction,
-                scala_functions,
-                table_functions,
+                function_registry,
             ),
             &params,
             None,
@@ -1222,8 +1197,7 @@ impl<S: Storage> Database<S> {
                     .load_view(
                         &mut table_codec,
                         &self.state.table_arena,
-                        &self.state.scala_functions,
-                        &self.state.table_functions,
+                        &self.state.function_registry,
                         name.clone(),
                     )
                     .await?
@@ -2404,8 +2378,7 @@ pub(crate) mod test {
                 kite_sql.state.table_cache(),
                 kite_sql.state.view_cache(),
                 &transaction,
-                kite_sql.state.scala_functions(),
-                kite_sql.state.table_functions(),
+                kite_sql.state.function_registry(),
             ),
             &[],
             None,
@@ -2494,8 +2467,7 @@ pub(crate) mod test {
                 kite_sql.state.table_cache(),
                 kite_sql.state.view_cache(),
                 &transaction,
-                kite_sql.state.scala_functions(),
-                kite_sql.state.table_functions(),
+                kite_sql.state.function_registry(),
             ),
             &[],
             None,
