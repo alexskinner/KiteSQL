@@ -14,7 +14,11 @@
 
 mod program;
 #[cfg(feature = "parser")]
+mod session;
+#[cfg(feature = "parser")]
 pub use crate::binder::Statement;
+#[cfg(feature = "parser")]
+pub use session::Session;
 use crate::binder::{Binder, BinderContext};
 use crate::errors::DatabaseError;
 pub use crate::execution::Executor;
