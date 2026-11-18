@@ -651,6 +651,7 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
         let summary = FunctionSummary {
             name: function_name.into(),
             arg_types,
+            persistence: crate::expression::function::PersistencePolicy::Durable,
         };
         // TODO: a NULL literal argument has type `SqlNull`, so the exact lookup
         // misses e.g. `upper(null)` (FunctionNotFound). PostgreSQL treats it as

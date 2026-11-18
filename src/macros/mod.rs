@@ -96,7 +96,8 @@ macro_rules! scala_function {
                 ::std::sync::Arc::new(Self {
                     summary: ::kite_sql::expression::function::FunctionSummary {
                         name: function_name.into(),
-                        arg_types
+                        arg_types,
+                        persistence: ::kite_sql::expression::function::PersistencePolicy::Durable,
                     }
                 })
             }
@@ -167,7 +168,8 @@ macro_rules! table_function {
                 ::std::sync::Arc::new(Self {
                     summary: ::kite_sql::expression::function::FunctionSummary {
                         name: function_name.into(),
-                        arg_types
+                        arg_types,
+                        persistence: ::kite_sql::expression::function::PersistencePolicy::Durable,
                     },
                 })
             }
