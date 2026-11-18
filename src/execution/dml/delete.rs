@@ -24,6 +24,7 @@ use crate::storage::StorageTransaction;
 use crate::types::index::{Index, IndexType};
 use crate::types::tuple_builder::TupleBuilder;
 use std::mem;
+use std::sync::Arc;
 
 pub struct Delete<'a> {
     table_id: TableId,
@@ -105,12 +106,12 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Delete<'a> {
                 .table_cache()
                 .get(&table_id)
                 .ok_or(DatabaseError::TableNotFound)?;
-            Some(
+            Some(Arc::new(
                 table
                     .columns()
                     .map(|col| plan_arena.column(*col).datatype().serializable())
                     .collect::<Vec<_>>(),
-            )
+            ))
         } else {
             None
         };
@@ -155,7 +156,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Delete<'a> {
                 }
                 arena
                     .undo_log()
-                    .record_append_tuple(table_id, tuple, serializers.clone());
+                    .record_append_tuple(table_id, tuple, Arc::clone(serializers.as_ref().unwrap()));
             }
 
             deleted_count += 1;

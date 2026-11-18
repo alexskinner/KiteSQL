@@ -52,7 +52,9 @@
 //!
 //! Implementation: DML executors record inverse operations after each successful write. If
 //! the statement errors during iteration or done(), the inverses replay in reverse, undoing
-//! only that statement. On success, the undo log is discarded.
+//! only that statement. On success, the undo log is discarded. Inside an explicit transaction,
+//! the undo log holds per-row state until the statement ends, so very large single statements
+//! use proportional memory.
 //!
 //! In autocommit mode, statement undo is skipped for performance since the entire transaction
 //! is dropped on failure anyway.
@@ -152,7 +154,8 @@ impl<'db, S: Storage> Session<'db, S> {
             txn.commit().await?;
         }
 
-        let txn = self.database.new_transaction(false)?;
+        // Enable statement-level undo for explicit transactions
+        let txn = self.database.new_transaction_with_undo(false, true)?;
         self.active_transaction = Some(txn);
 
         Ok(())

@@ -832,12 +832,13 @@ where
 }
 
 #[maybe_async]
-async fn start_execution_with_undo<'a, 'p, T: StorageTransaction + 'p, A: MetaArena + 'p>(
+async fn start_execution<'a, 'p, T: StorageTransaction + 'p, A: MetaArena + 'p>(
     table_cache: &'p TableCache,
     transaction: &'a mut T,
     mut executor: Executor<'p>,
     plan_arena: A,
     function_registry: Option<&'p crate::function::registry::FunctionRegistry>,
+    enable_undo: bool,
 ) -> Result<Execution<'a, 'p, A, T>, DatabaseError>
 where
     'p: 'a,
@@ -849,7 +850,7 @@ where
         &mut executor,
         &mut plan_arena,
         function_registry,
-        true,
+        enable_undo,
     )
     .await?;
 
@@ -1052,18 +1053,20 @@ impl<S: Storage> State<S> {
         transaction: &'a mut S::TransactionType<'txn>,
         executor: Executor<'p>,
         plan_arena: A,
+        enable_undo: bool,
     ) -> Result<Execution<'a, 'p, A, S::TransactionType<'txn>>, DatabaseError>
     where
         S: 'txn,
         'txn: 'p,
         'p: 'a,
     {
-        start_execution_with_undo(
+        start_execution(
             self.table_cache(),
             transaction,
             executor,
             plan_arena,
             Some(&self.function_registry),
+            enable_undo,
         )
         .await
     }
@@ -1396,7 +1399,18 @@ impl<S: Storage> Database<S> {
     /// transactional context until [`Transaction::commit`] is called.
     /// A `read_only` transaction rejects statements that write; on LMDB it runs
     /// alongside the single writer instead of waiting for it.
-    pub fn new_transaction(&self, read_only: bool) -> Result<Transaction<'_, S>, DatabaseError> {
+    /// Creates a new transaction.
+    /// 
+    /// `enable_undo`: Whether to enable statement-level undo for this transaction.
+    /// Should be true for explicit transactions (BEGIN/autocommit=0) to allow
+    /// statements to be rolled back individually while keeping the transaction open.
+    /// Should be false for implicit autocommit transactions where the entire
+    /// transaction is dropped on failure.
+    pub fn new_transaction_with_undo(
+        &self,
+        read_only: bool,
+        enable_undo: bool,
+    ) -> Result<Transaction<'_, S>, DatabaseError> {
         let transaction = self.storage.transaction_with_functions(
             self.transaction_isolation,
             read_only,
@@ -1408,7 +1422,13 @@ impl<S: Storage> Database<S> {
             inner: transaction,
             state: &self.state,
             read_only,
+            enable_undo,
         })
+    }
+
+    /// Creates a new transaction without statement-level undo (for backwards compatibility).
+    pub fn new_transaction(&self, read_only: bool) -> Result<Transaction<'_, S>, DatabaseError> {
+        self.new_transaction_with_undo(read_only, false)
     }
 
     /// Returns storage-engine-specific metrics when supported.
@@ -1483,7 +1503,8 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
         // SAFETY: the transaction stays boxed, and so in place, until the iterator is gone.
         let tx = unsafe { &mut *transaction.get() };
         let (executor, arena) = build(&self.state, tx)?;
-        let (arena, executor) = self.state.execute(tx, executor, arena).await?;
+        // Disable undo for autocommit: entire transaction is dropped on failure
+        let (arena, executor) = self.state.execute(tx, executor, arena, false).await?;
         Ok(DatabaseIter {
             inner: Some(OwnedPtr::new(TransactionIter::new(arena, executor))),
             transaction: Some(transaction),
@@ -1913,6 +1934,7 @@ pub struct Transaction<'a, S: Storage + 'a> {
     pub(crate) inner: S::TransactionType<'a>,
     pub(crate) state: &'a State<S>,
     read_only: bool,
+    enable_undo: bool,
 }
 
 #[maybe_async]
@@ -1946,7 +1968,10 @@ impl<'a, 'txn, S: Storage> BindSource for &'a mut Transaction<'txn, S> {
                 "cannot write in a read-only transaction".into(),
             ));
         }
-        let (arena, executor) = self.state.execute(&mut self.inner, executor, arena).await?;
+        let (arena, executor) = self
+            .state
+            .execute(&mut self.inner, executor, arena, self.enable_undo)
+            .await?;
         Ok(TransactionIter::new(arena, executor))
     }
 
@@ -2010,23 +2035,27 @@ impl<'p, T: StorageTransaction + 'p> TransactionGuard<'_, 'p, T> {
                 Ok(None)
             }
             Err(original_err) => {
+                // Release iterators before rollback to avoid &mut aliasing
+                self.arena.release_iters(Some(&mut executor.buffer));
+                
                 let undo_log = self.arena.take_undo_log();
                 let rollback_result = {
-                    let transaction = self.arena.transaction_mut();
-                    let table_codec = executor.buffer.table_codec_mut();
+                    // Now safe to access transaction mutably since iters are released
+                    let mut state = self.arena.local_state(plan_arena);
+                    let (transaction, table_codec) = state.transaction_codec_mut();
                     undo_log.rollback(transaction, table_codec).await
                 };
                 match rollback_result {
                     Ok(()) => {
-                        self.finish(Some(&mut executor.buffer));
+                        self.finish(None);
                         Err(original_err)
                     }
                     Err(rollback_err) => {
-                        self.finish(Some(&mut executor.buffer));
-                        Err(DatabaseError::InvalidPlan(format!(
-                            "Statement failed: {}. Rollback also failed: {}. Transaction needs ROLLBACK.",
-                            original_err, rollback_err
-                        )))
+                        self.finish(None);
+                        Err(DatabaseError::StatementRollbackFailed {
+                            statement_error: original_err.to_string(),
+                            rollback_error: rollback_err.to_string(),
+                        })
                     }
                 }
             }

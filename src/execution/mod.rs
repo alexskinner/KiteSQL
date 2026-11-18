@@ -917,10 +917,6 @@ impl<'a, 't, T: StorageTransaction + 'a> ExecArena<'a, 't, T> {
         mem::take(&mut self.statement_undo_log)
     }
 
-    pub(crate) fn transaction_mut(&mut self) -> &mut T {
-        unsafe { &mut *self.transaction.0 }
-    }
-
     pub(crate) fn release_iters(&mut self, buffer: Option<&mut ExecBuffer>) {
         let Some(buffer) = buffer else {
             self.iters.fill_with(|| StorageIter::Empty);

@@ -19,6 +19,7 @@ use crate::storage::StorageTransaction;
 use crate::types::index::{Index, IndexId, IndexType};
 use crate::types::serialize::TupleValueSerializableImpl;
 use crate::types::tuple::{TupleId, TupleImpl};
+use std::sync::Arc;
 
 #[derive(Debug)]
 pub(crate) enum UndoOp {
@@ -29,7 +30,7 @@ pub(crate) enum UndoOp {
     AppendTuple {
         table_id: TableId,
         tuple: TupleImpl,
-        serializers: Vec<TupleValueSerializableImpl>,
+        serializers: Arc<Vec<TupleValueSerializableImpl>>,
         overwrite: bool,
     },
     DeleteIndex {
@@ -66,7 +67,7 @@ impl StatementUndoLog {
         &mut self,
         table_id: TableId,
         tuple: TupleImpl,
-        serializers: Vec<TupleValueSerializableImpl>,
+        serializers: Arc<Vec<TupleValueSerializableImpl>>,
     ) {
         self.ops.push(UndoOp::AppendTuple {
             table_id,
@@ -80,7 +81,7 @@ impl StatementUndoLog {
         &mut self,
         table_id: TableId,
         tuple: TupleImpl,
-        serializers: Vec<TupleValueSerializableImpl>,
+        serializers: Arc<Vec<TupleValueSerializableImpl>>,
     ) {
         self.ops.push(UndoOp::AppendTuple {
             table_id,

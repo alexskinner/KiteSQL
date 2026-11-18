@@ -330,6 +330,34 @@ fn test_statement_after_failed_statement() -> Result<(), DatabaseError> {
 }
 
 #[test]
+fn test_statement_atomicity_preserves_original_error() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+    database.run("INSERT INTO test VALUES (1, 100)")?.done()?;
+    database.run("INSERT INTO test VALUES (2, 200)")?.done()?;
+
+    let mut session = database.session();
+    session.run("BEGIN")?.done()?;
+
+    let iter = session.run("UPDATE test SET id = 1")?;
+    let result = iter.done();
+    
+    assert!(result.is_err(), "PK-changing update creating duplicate should fail");
+    let err_msg = result.unwrap_err().to_string();
+    assert!(
+        err_msg.contains("DuplicatePrimaryKey") || err_msg.contains("duplicate"),
+        "Error should mention the original constraint violation, got: {}",
+        err_msg
+    );
+
+    session.run("ROLLBACK")?.done()?;
+
+    Ok(())
+}
+
+#[test]
 fn test_statement_atomicity_insert() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
     let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;

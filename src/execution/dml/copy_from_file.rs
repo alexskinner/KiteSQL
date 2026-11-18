@@ -100,13 +100,22 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CopyFromFile<'a> {
             }
 
             tuple_builder.build_with_row(chunk.output_mut(), record.iter().take(column_count))?;
-            let tuple_id = chunk.pk().ok_or(DatabaseError::PrimaryKeyNotFound)?.clone();
+            let tuple_id = if enable_undo {
+                Some(
+                    chunk
+                        .pk()
+                        .ok_or(DatabaseError::PrimaryKeyNotFound)?
+                        .clone(),
+                )
+            } else {
+                None
+            };
             let mut state = arena.local_state(plan_arena);
             let (transaction, table_codec) = state.transaction_codec_mut();
             transaction
                 .append_tuple(table_codec, table.id(), &chunk, &serializers, false)
                 .await?;
-            if enable_undo {
+            if let Some(tuple_id) = tuple_id {
                 arena.undo_log().record_remove_tuple(table.id(), tuple_id);
             }
         }

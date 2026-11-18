@@ -143,6 +143,10 @@ pub enum DatabaseError {
     TableExists,
     TableNotFound,
     TransactionAlreadyExists,
+    StatementRollbackFailed {
+        statement_error: String,
+        rollback_error: String,
+    },
     #[cfg(feature = "decimal")]
     TryFromDecimal(rust_decimal::Error),
     TryFromInt(TryFromIntError),

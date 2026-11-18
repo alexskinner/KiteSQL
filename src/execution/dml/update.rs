@@ -26,6 +26,7 @@ use crate::types::index::Index;
 use crate::types::tuple::Tuple;
 use crate::types::tuple_builder::TupleBuilder;
 use std::mem;
+use std::sync::Arc;
 
 pub struct Update<'a> {
     table: &'a DmlTable,
@@ -82,6 +83,11 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
         let mut values = Vec::with_capacity(value_exprs.len());
 
         let enable_undo = arena.should_record_undo();
+        let serializers_arc = if enable_undo {
+            Some(Arc::new(table.serializers.clone()))
+        } else {
+            None
+        };
         while input.next_tuple(arena, plan_arena).await? {
             let mut tuple = arena.take_tuple();
             let Some(old_pk) = tuple.pk().cloned() else {
@@ -146,7 +152,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                     arena.undo_log().record_append_tuple(
                         table.table_id,
                         old_tuple.clone(),
-                        table.serializers.clone(),
+                        Arc::clone(serializers_arc.as_ref().unwrap()),
                     );
                 }
             }
@@ -209,7 +215,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                     arena.undo_log().record_append_tuple_overwrite(
                         table.table_id,
                         old_tuple,
-                        table.serializers.clone(),
+                        Arc::clone(serializers_arc.as_ref().unwrap()),
                     );
                 }
             }
