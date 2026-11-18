@@ -859,6 +859,8 @@ mod tests {
             false,
         )];
         let function_registry = crate::function::registry::FunctionRegistry::new();
+        #[cfg(feature = "parser")]
+        let generic_dialect = crate::dialect::GenericSqlDialect::new();
         let mut binder = Binder::new(
             BinderContext::new(
                 database.state.names(),
@@ -867,7 +869,7 @@ mod tests {
                 &transaction,
                 &function_registry,
                 #[cfg(feature = "parser")]
-                "generic",
+                &generic_dialect,
             ),
             &[],
             None,

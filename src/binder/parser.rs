@@ -635,7 +635,7 @@ where
                             data_type_to_logical_type(
                                 data_type,
                                 #[cfg(feature = "parser")]
-                                self.binder.context.dialect_name,
+                                self.binder.context.dialect,
                             )?,
                             DefaultChange::NoChange,
                             NotNullChange::NoChange,
@@ -705,7 +705,7 @@ where
                 let data_type = data_type_to_logical_type(
                     data_type,
                     #[cfg(feature = "parser")]
-                    self.binder.context.dialect_name,
+                    self.binder.context.dialect,
                 )?;
                 let (default_change, not_null_change) =
                     self.bind_change_column_options(options, &data_type)?;
@@ -754,7 +754,7 @@ where
                 let data_type = data_type_to_logical_type(
                     data_type,
                     #[cfg(feature = "parser")]
-                    self.binder.context.dialect_name,
+                    self.binder.context.dialect,
                 )?;
                 let (default_change, not_null_change) =
                     self.bind_change_column_options(options, &data_type)?;
@@ -906,7 +906,7 @@ where
             data_type_to_logical_type(
                 column_def.data_type,
                 #[cfg(feature = "parser")]
-                self.binder.context.dialect_name,
+                self.binder.context.dialect,
             )?,
             None,
             false,
@@ -1838,10 +1838,10 @@ impl TryFrom<&Value> for DataValue {
 
 pub(crate) fn data_type_to_logical_type(
     data_type: DataType,
-    #[cfg(feature = "parser")] dialect_name: &str,
+    #[cfg(feature = "parser")] dialect: &dyn crate::dialect::SqlDialect,
 ) -> Result<LogicalType, DatabaseError> {
     #[cfg(feature = "parser")]
-    if dialect_name == "mysql" {
+    if dialect.supports_mysql_types() {
         match &data_type {
             DataType::Bit(Some(size)) => {
                 if *size == 1 {
@@ -2089,7 +2089,9 @@ impl TryFrom<DataType> for LogicalType {
     fn try_from(value: DataType) -> Result<Self, Self::Error> {
         #[cfg(feature = "parser")]
         {
-            data_type_to_logical_type(value, "generic")
+            use crate::dialect::GenericSqlDialect;
+            let generic_dialect = GenericSqlDialect::new();
+            data_type_to_logical_type(value, &generic_dialect)
         }
         #[cfg(not(feature = "parser"))]
         {
@@ -2553,7 +2555,7 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                 Cow::Owned(data_type_to_logical_type(
                     data_type.clone(),
                     #[cfg(feature = "parser")]
-                    self.context.dialect_name,
+                    self.context.dialect,
                 )?),
                 arena,
             ),
@@ -2563,7 +2565,7 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                 let logical_type = data_type_to_logical_type(
                     data_type.clone(),
                     #[cfg(feature = "parser")]
-                    self.context.dialect_name,
+                    self.context.dialect,
                 )?;
                 let raw = value.clone().into_string().ok_or_else(|| {
                     DatabaseError::InvalidValue("typed string literal must be a string".to_string())
@@ -3836,6 +3838,8 @@ mod tests {
         let function_registry = crate::function::registry::FunctionRegistry::new();
         let transaction = tables.storage.transaction()?;
         let arena = tables.table_arena.borrow();
+        #[cfg(feature = "parser")]
+        let generic_dialect = crate::dialect::GenericSqlDialect::new();
         let mut binder = Binder::new(
             BinderContext::new(
                 &arena.names,
@@ -3844,7 +3848,7 @@ mod tests {
                 &transaction,
                 &function_registry,
                 #[cfg(feature = "parser")]
-                "generic",
+                &generic_dialect,
             ),
             &[],
             None,

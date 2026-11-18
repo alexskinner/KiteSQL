@@ -532,6 +532,8 @@ mod tests {
         let transaction = tables.storage.transaction()?;
         let arena = tables.table_arena.borrow();
         let args: [(usize, LogicalType); 0] = [];
+        #[cfg(feature = "parser")]
+        let generic_dialect = crate::dialect::GenericSqlDialect::new();
         let mut binder = Binder::new(
             BinderContext::new(
                 &arena.names,
@@ -540,7 +542,7 @@ mod tests {
                 &transaction,
                 &function_registry,
                 #[cfg(feature = "parser")]
-                "generic",
+                &generic_dialect,
             ),
             &args,
             None,

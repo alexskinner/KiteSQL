@@ -601,7 +601,7 @@ impl DataBaseBuilder {
         }
 
         #[cfg(feature = "parser")]
-        let dialect_name_cache = dialect_registry.default_dialect().name().to_string();
+        let default_dialect = dialect_registry.default_dialect();
 
         let state = State {
             function_registry,
@@ -615,7 +615,7 @@ impl DataBaseBuilder {
             #[cfg(feature = "parser")]
             dialect_registry,
             #[cfg(feature = "parser")]
-            dialect_name_cache,
+            default_dialect,
             _p: Default::default(),
         };
 
@@ -862,7 +862,7 @@ pub(crate) struct State<S> {
     #[cfg(feature = "parser")]
     dialect_registry: crate::dialect::DialectRegistry,
     #[cfg(feature = "parser")]
-    dialect_name_cache: String,
+    default_dialect: Arc<dyn crate::dialect::SqlDialect>,
     _p: PhantomData<S>,
 }
 
@@ -878,8 +878,8 @@ impl<S: Storage> State<S> {
     }
 
     #[cfg(feature = "parser")]
-    pub(crate) fn dialect_name(&self) -> &str {
-        &self.dialect_name_cache
+    pub(crate) fn dialect(&self) -> &dyn crate::dialect::SqlDialect {
+        self.default_dialect.as_ref()
     }
 
     pub(crate) fn function_registry(&self) -> &FunctionRegistry {
@@ -983,7 +983,7 @@ impl<S: Storage> State<S> {
                 transaction,
                 self.function_registry(),
                 #[cfg(feature = "parser")]
-                self.dialect_name(),
+                self.dialect(),
             ),
             &params,
             None,
@@ -1060,7 +1060,7 @@ impl<S: Storage> State<S> {
                 transaction,
                 &self.function_registry,
                 #[cfg(feature = "parser")]
-                self.dialect_name(),
+                self.dialect(),
             ),
             &params,
             None,

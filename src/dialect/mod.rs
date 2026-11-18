@@ -4,6 +4,9 @@ use sqlparser::dialect::{Dialect as SqlParserDialect, GenericDialect, MySqlDiale
 use std::fmt::Debug;
 use std::sync::Arc;
 
+pub const DIALECT_GENERIC: &str = "generic";
+pub const DIALECT_MYSQL: &str = "mysql";
+
 pub trait SqlDialect: Debug + Send + Sync + 'static {
     fn name(&self) -> &str;
 
@@ -11,6 +14,10 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
 
     fn rewrite(&self, _stmt: &mut Statement) -> Result<(), DatabaseError> {
         Ok(())
+    }
+
+    fn supports_mysql_types(&self) -> bool {
+        false
     }
 }
 
@@ -35,7 +42,7 @@ impl Default for GenericSqlDialect {
 
 impl SqlDialect for GenericSqlDialect {
     fn name(&self) -> &str {
-        "generic"
+        DIALECT_GENERIC
     }
 
     fn parser_dialect(&self) -> &dyn SqlParserDialect {
@@ -64,11 +71,15 @@ impl Default for MySqlSqlDialect {
 
 impl SqlDialect for MySqlSqlDialect {
     fn name(&self) -> &str {
-        "mysql"
+        DIALECT_MYSQL
     }
 
     fn parser_dialect(&self) -> &dyn SqlParserDialect {
         &self.parser
+    }
+
+    fn supports_mysql_types(&self) -> bool {
+        true
     }
 }
 
@@ -83,14 +94,14 @@ impl DialectRegistry {
         let mut dialects = std::collections::HashMap::new();
 
         let generic = Arc::new(GenericSqlDialect::new()) as Arc<dyn SqlDialect>;
-        dialects.insert("generic".to_string(), generic.clone());
+        dialects.insert(DIALECT_GENERIC.to_string(), generic.clone());
 
         let mysql = Arc::new(MySqlSqlDialect::new()) as Arc<dyn SqlDialect>;
-        dialects.insert("mysql".to_string(), mysql);
+        dialects.insert(DIALECT_MYSQL.to_string(), mysql);
 
         Self {
             dialects: Arc::new(dialects),
-            default_name: "generic".to_string(),
+            default_name: DIALECT_GENERIC.to_string(),
         }
     }
 
