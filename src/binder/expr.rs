@@ -539,7 +539,7 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
                 if args.len() != 1 {
                     return Err(DatabaseError::MisMatch("number of avg() parameters", "1"));
                 }
-                LogicalType::Double
+                self.avg_return_type(&args[0].return_type(arena))
             }
             AggKind::Total => {
                 if args.len() != 1 {
@@ -588,6 +588,17 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
             args,
             ty,
         })
+    }
+
+    /// AVG is DOUBLE unless the dialect types it DECIMAL (see `SqlDialect::avg_return_type`).
+    fn avg_return_type(&self, _arg: &LogicalType) -> LogicalType {
+        #[cfg(feature = "parser")]
+        if let Some(ty @ (LogicalType::Decimal(..) | LogicalType::Double)) =
+            self.context.dialect.avg_return_type(_arg)
+        {
+            return ty;
+        }
+        LogicalType::Double
     }
 
     pub(crate) fn bind_function_call(
