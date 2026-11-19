@@ -200,7 +200,7 @@ fn parameterize_right_subtree(
             let key_type = &arena.index(scan.index_infos[position].meta).value_ty;
             let left_type = left_expr.return_type(arena);
             if left_type.as_ref() != key_type {
-                let common = LogicalType::max_logical_type(&left_type, key_type)?;
+                let common = LogicalType::comparison_type(&left_type, key_type)?;
                 if common.as_ref() != key_type {
                     return Ok(None);
                 }

@@ -96,19 +96,28 @@ crate::define_cast_evaluator!(boolean_to_float_cast_eval, DataValue::Boolean(val
 crate::define_cast_evaluator!(boolean_to_double_cast_eval, DataValue::Boolean(value) => {
     Ok(DataValue::Float64(OrderedFloat(if value { 1.0 } else { 0.0 })))
 });
+/// Booleans as text are `'1'`/`'0'`, as in MySQL (BOOLEAN is TINYINT(1)), so
+/// they stay comparable with numeric strings and read back as booleans.
+fn boolean_text(value: bool) -> &'static str {
+    if value {
+        "1"
+    } else {
+        "0"
+    }
+}
 crate::define_cast_evaluator!(
     boolean_to_char_cast_eval {
         len: u32,
         unit: CharLengthUnits
     },
-    DataValue::Boolean(value) => |this| to_char(value.to_string(), this.len, this.unit)
+    DataValue::Boolean(value) => |this| to_char(boolean_text(value), this.len, this.unit)
 );
 crate::define_cast_evaluator!(
     boolean_to_varchar_cast_eval {
         len: Option<u32>,
         unit: CharLengthUnits
     },
-    DataValue::Boolean(value) => |this| to_varchar(value.to_string(), this.len, this.unit)
+    DataValue::Boolean(value) => |this| to_varchar(boolean_text(value), this.len, this.unit)
 );
 crate::define_cast_evaluator!(
     boolean_to_varbinary_cast_eval { len: Option<u32> },
@@ -231,7 +240,7 @@ mod test {
         assert_eq!(
             boolean_to_char_cast_eval(4, CharLengthUnits::Characters, value.clone()).unwrap(),
             DataValue::Utf8 {
-                value: "true".into(),
+                value: "1".into(),
                 ty: Utf8Type::Fixed(4),
                 unit: CharLengthUnits::Characters,
             }
@@ -240,7 +249,7 @@ mod test {
             boolean_to_varchar_cast_eval(Some(4), CharLengthUnits::Characters, value.clone())
                 .unwrap(),
             DataValue::Utf8 {
-                value: "true".into(),
+                value: "1".into(),
                 ty: Utf8Type::Variable(Some(4)),
                 unit: CharLengthUnits::Characters,
             }
@@ -257,7 +266,7 @@ mod test {
             )
             .unwrap(),
             DataValue::Utf8 {
-                value: "false".into(),
+                value: "0".into(),
                 ty: Utf8Type::Variable(None),
                 unit: CharLengthUnits::Characters,
             }

@@ -155,8 +155,15 @@ SELECT a FROM t ORDER BY (((a)))
 statement error
 ((SELECT a FROM t ORDER BY a)) ORDER BY a
 
-statement error
+# CASE mixing INT and BOOLEAN takes the integer type (MySQL); booleans are 0/1.
+query I
 SELECT CASE a WHEN 1 THEN b ELSE c END as val FROM t ORDER BY val
+----
+0
+9
+NULL
+NULL
+NULL
 
 statement error
 SELECT * FROM t ORDER BY 0

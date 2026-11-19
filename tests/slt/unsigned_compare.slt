@@ -1,0 +1,38 @@
+statement ok
+create table uc(id int unsigned primary key, v int, t tinyint unsigned)
+
+statement ok
+insert into uc values (1, 0, 255), (2, 1, 7), (3, 5, 0)
+
+query I rowsort
+select id from uc where id = 2
+----
+2
+
+query I rowsort
+select id from uc where id > 1
+----
+2
+3
+
+query I rowsort
+select id from uc where id = v + 1
+----
+1
+2
+
+query I rowsort
+select id from uc where t > -1 and t < v
+----
+3
+
+statement ok
+update uc set v = 9 where id = 2
+
+query II
+select id, v from uc where id = 2
+----
+2 9
+
+statement ok
+drop table uc
