@@ -59,3 +59,9 @@ drop table alias_order
 
 statement ok
 drop table alias_order_dst
+
+# TRIM with a NULL trim character is NULL
+query TTTT
+select trim(null from 'kate'), trim(leading null from 'kate'), trim(trailing null from 'xyz'), trim('x' from null)
+----
+NULL NULL NULL NULL

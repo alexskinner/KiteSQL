@@ -302,7 +302,11 @@ impl ScalarExpression {
                             arena.expression(*trim_what_expr).eval(arena, tuple)?,
                             &LogicalType::Varchar(None, CharLengthUnits::Characters),
                         )?;
-                        trim_what = value.utf8().unwrap_or("").to_owned();
+                        // TRIM(NULL FROM s) is NULL, like every other NULL operand
+                        let Some(what) = value.utf8() else {
+                            return Ok(Cow::Owned(DataValue::Null));
+                        };
+                        trim_what = what.to_owned();
                     }
                     let string_trimmed = trim_string(string, &trim_what, *trim_where);
 
@@ -699,6 +703,35 @@ mod tests {
                 .into_owned(),
             DataValue::Boolean(false)
         );
+        Ok(())
+    }
+
+    #[test]
+    fn trim_with_null_trim_character_is_null() -> Result<(), DatabaseError> {
+        let table_arena = TableArenaCell::default();
+        let mut arena = PlanArena::new(&table_arena);
+        let text = arena.alloc_expression(ScalarExpression::Constant(DataValue::from(
+            "kate".to_string(),
+        )));
+        let null = arena.alloc_expression(ScalarExpression::Constant(DataValue::Null));
+        for trim_where in [
+            None,
+            Some(TrimWhereField::Leading),
+            Some(TrimWhereField::Trailing),
+        ] {
+            let expr = arena.alloc_expression(ScalarExpression::Trim {
+                expr: text,
+                trim_what_expr: Some(null),
+                trim_where,
+            });
+            assert_eq!(
+                arena
+                    .expression(expr)
+                    .eval::<crate::types::tuple::Tuple>(&arena, None)?
+                    .into_owned(),
+                DataValue::Null
+            );
+        }
         Ok(())
     }
 
