@@ -236,3 +236,28 @@ NULL
 
 statement ok
 drop table case_ty
+
+# NULLIF and IFNULL are distinct expressions and explain as themselves
+statement ok
+create table nullif_explain (id int primary key, a int)
+
+query T
+explain select nullif(a, 1), ifnull(a, 1) from nullif_explain
+----
+Projection [nullif(nullif_explain.a, 1), ifnull(nullif_explain.a, 1)] [Project => (Sort Option: Follow)] TableScan nullif_explain -> [nullif_explain.a] [SeqScan => (Sort Option: None)]
+
+statement ok
+insert into nullif_explain values (1, 1), (2, 2), (3, null)
+
+query III
+select id, nullif(a, 1), ifnull(a, 1) from nullif_explain order by id
+----
+1 NULL 1
+2 2 2
+3 NULL 1
+
+statement error
+select nullif(1)
+
+statement ok
+drop table nullif_explain

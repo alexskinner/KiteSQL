@@ -615,7 +615,7 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
                 if args.len() != 2 {
                     return Err(DatabaseError::MisMatch(
                         "number of nullif() parameters",
-                        "3",
+                        "2",
                     ));
                 }
                 let ty = Self::return_type(&args[0], &args[1], arena)?;
@@ -632,7 +632,7 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
                 if args.len() != 2 {
                     return Err(DatabaseError::MisMatch(
                         "number of ifnull() parameters",
-                        "3",
+                        "2",
                     ));
                 }
                 let ty = Self::return_type(&args[0], &args[1], arena)?;

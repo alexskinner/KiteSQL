@@ -770,14 +770,19 @@ impl Explain for ExprRef {
                 left_expr,
                 right_expr,
                 ..
-            }
-            | ScalarExpression::NullIf {
+            } => write!(
+                f,
+                "ifnull({}, {})",
+                left_expr.explain(arena),
+                right_expr.explain(arena)
+            ),
+            ScalarExpression::NullIf {
                 left_expr,
                 right_expr,
                 ..
             } => write!(
                 f,
-                "ifnull({}, {})",
+                "nullif({}, {})",
                 left_expr.explain(arena),
                 right_expr.explain(arena)
             ),
