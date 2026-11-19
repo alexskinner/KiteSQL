@@ -2058,10 +2058,29 @@ where
                     }
                     group_by_exprs
                         .iter()
-                        .map(|expr| {
-                            self.binder
+                        .map(|expr| match expr {
+                            // `GROUP BY 2`: the second select item.
+                            Expr::Value(ValueWithSpan {
+                                value: Value::Number(n, _),
+                                ..
+                            }) => {
+                                let item = n
+                                    .parse::<usize>()
+                                    .ok()
+                                    .and_then(|position| position.checked_sub(1))
+                                    .and_then(|i| self.select_list.get(i))
+                                    .copied()
+                                    .ok_or_else(|| {
+                                        DatabaseError::InvalidValue(format!(
+                                            "Unknown column '{n}' in 'group statement'"
+                                        ))
+                                    })?;
+                                item.clone_expression(self.arena)
+                            }
+                            expr => self
+                                .binder
                                 .bind_expr(expr, self.arena)
-                                .map(|expr| self.arena.alloc_expression(expr))
+                                .map(|expr| self.arena.alloc_expression(expr)),
                         })
                         .collect::<Result<Vec<_>, DatabaseError>>()?
                 }

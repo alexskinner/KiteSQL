@@ -1,0 +1,87 @@
+# GROUP BY items need not be selected; select items may be expressions over grouped columns,
+# aggregates or constants; GROUP BY accepts select positions and aliases, and a name resolves to
+# an input column before a same-named select alias.
+
+statement ok
+create table gr_t (id int primary key, grp varchar, n int)
+
+statement ok
+insert into gr_t values (1, 'a', 10), (2, 'a', 20), (3, 'b', 30)
+
+query I rowsort
+select count(*) from gr_t group by grp
+----
+1
+2
+
+query II rowsort
+select n * 2, count(*) from gr_t group by n
+----
+20 1
+40 1
+60 1
+
+query TI rowsort
+select upper(grp), count(*) from gr_t group by grp
+----
+A 2
+B 1
+
+query II rowsort
+select n + 1 as m, count(*) from gr_t group by n + 1
+----
+11 1
+21 1
+31 1
+
+query TI rowsort
+select grp, count(*) from gr_t group by 1
+----
+a 2
+b 1
+
+query TI rowsort
+select grp as g, count(*) from gr_t group by g
+----
+a 2
+b 1
+
+query TI
+select grp, count(*) from gr_t group by grp, id order by id
+----
+a 1
+a 1
+b 1
+
+query TI rowsort
+select grp as n, count(*) from gr_t group by grp
+----
+a 2
+b 1
+
+statement error is not in GROUP BY clause
+select n as grp, count(*) from gr_t group by grp
+
+statement error is not in GROUP BY clause
+select grp, n from gr_t group by grp
+
+statement error is not in GROUP BY clause
+select grp, count(*) from gr_t group by grp order by n
+
+statement error is not in GROUP BY clause
+select n from gr_t group by n + 1
+
+statement error Can't group on
+select count(*) from gr_t group by 1
+
+statement error Can't group on
+select count(*) as c from gr_t group by c
+
+statement error Unknown column
+select grp from gr_t group by 2
+
+statement error Unknown column
+select grp from gr_t group by 0
+
+statement ok
+drop table gr_t
