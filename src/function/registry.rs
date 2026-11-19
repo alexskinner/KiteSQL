@@ -188,6 +188,13 @@ impl FunctionRegistry {
         self.table_functions.insert(summary, catalog);
     }
 
+    /// A parameter declared as length-unbounded `VARCHAR` accepts any character string
+    /// argument, whatever its declared length: `VARCHAR(n)` and `CHAR(n)` values fit losslessly.
+    fn is_string_widening(provided: &LogicalType, expected: &LogicalType) -> bool {
+        matches!(provided, LogicalType::Char(..) | LogicalType::Varchar(..))
+            && matches!(expected, LogicalType::Varchar(None, _))
+    }
+
     pub fn resolve_scalar(
         &self,
         name: &str,
@@ -222,7 +229,9 @@ impl FunctionRegistry {
                     continue;
                 } else if provided == &LogicalType::SqlNull {
                     overall_quality = overall_quality.max(MatchQuality::NullLiteral);
-                } else if LogicalType::can_implicit_cast(provided, expected) {
+                } else if LogicalType::can_implicit_cast(provided, expected)
+                    || Self::is_string_widening(provided, expected)
+                {
                     overall_quality = overall_quality.max(MatchQuality::ImplicitCast);
                 } else {
                     compatible = false;
