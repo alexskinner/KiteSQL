@@ -273,6 +273,57 @@ mod test {
         test_clean_expired_index().await?;
         test_hll_precision_is_configurable().await?;
         test_statistics_relative_error_is_configurable().await?;
+        test_analyze_empty_and_small_tables().await?;
+
+        Ok(())
+    }
+
+    async fn test_analyze_empty_and_small_tables() -> Result<(), DatabaseError> {
+        // Fewer rows than DEFAULT_NUM_OF_BUCKETS (and none at all) used to fail with
+        // TooManyBuckets; MySQL's ANALYZE TABLE accepts any table.
+        let mut kite_sql = DataBaseBuilder::path(".").build_in_memory().await?;
+        kite_sql
+            .ddl("create table t1 (a int primary key, b int)")
+            .await?;
+        kite_sql.ddl("create index b_index on t1 (b)").await?;
+
+        // Test empty table: should succeed with zero buckets
+        kite_sql.analyze("t1").await?;
+        let count = |db: &mut Database<_>, sql: &str| -> Result<usize, DatabaseError> {
+            let mut n = 0;
+            let mut it = db.run(sql)?;
+            while it.next_tuple(|_, _| ())?.is_some() {
+                n += 1;
+            }
+            it.done()?;
+            Ok(n)
+        };
+
+        // Verify optimizer works with zero-bucket histograms (no divide-by-zero)
+        assert_eq!(
+            count(&mut kite_sql, "select * from t1 where a = 1 and b > 0")?,
+            0
+        );
+        assert_eq!(count(&mut kite_sql, "select * from t1 where b is null")?, 0);
+
+        // Test 3-row table: should succeed with 3 buckets
+        kite_sql
+            .run("insert into t1 values (1, 10), (2, 20), (3, 30)")?
+            .done()?;
+        kite_sql.analyze("t1").await?;
+        assert_eq!(count(&mut kite_sql, "select * from t1 where b >= 20")?, 2);
+        assert_eq!(count(&mut kite_sql, "select * from t1 where a = 2")?, 1);
+
+        // Test 10-row table: should succeed with 10 buckets (at the boundary)
+        kite_sql
+            .run("insert into t1 values (4, 40), (5, 50), (6, 60), (7, 70), (8, 80), (9, 90), (10, 100)")?
+            .done()?;
+        kite_sql.analyze("t1").await?;
+        assert_eq!(count(&mut kite_sql, "select * from t1 where b > 50")?, 5);
+        assert_eq!(
+            count(&mut kite_sql, "select * from t1 where a >= 5 and a <= 8")?,
+            4
+        );
 
         Ok(())
     }
