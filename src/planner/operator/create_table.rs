@@ -29,9 +29,18 @@ pub struct CreateTableOperator {
     pub if_not_exists: bool,
     /// Composite unique constraints: each inner Vec contains column names for a unique constraint
     pub unique_constraints: Vec<Vec<String>>,
+    /// Regular (non-unique) index definitions: (optional name, column names, is_unique)
+    pub index_constraints: Vec<IndexConstraint>,
     /// Declared column types for introspection (column name -> display type).
     /// Populated from dialect-specific type mapping during parsing.
     pub display_types: BTreeMap<String, Arc<str>>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Hash, ReferenceSerialization)]
+pub struct IndexConstraint {
+    pub name: Option<String>,
+    pub columns: Vec<String>,
+    pub is_unique: bool,
 }
 
 impl fmt::Display for CreateTableOperator {

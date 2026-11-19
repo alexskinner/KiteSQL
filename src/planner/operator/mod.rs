@@ -1499,6 +1499,7 @@ mod tests {
             )],
             if_not_exists: false,
             unique_constraints: Vec::new(),
+            index_constraints: Vec::new(),
             display_types: std::collections::BTreeMap::new(),
         });
         assert!(referenced_columns(&create_table, &mut arena)?.is_empty());
@@ -1678,6 +1679,7 @@ mod tests {
                     columns: vec![column_catalog("id"), column_catalog("name")],
                     if_not_exists: true,
                     unique_constraints: Vec::new(),
+                    index_constraints: Vec::new(),
                     display_types: std::collections::BTreeMap::new(),
                 }),
                 "Create users -> [id, name], If Not Exists: true",

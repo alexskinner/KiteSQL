@@ -1030,6 +1030,7 @@ mod test {
             source_columns,
             false,
             Vec::new(),
+            Vec::new(),
             std::collections::BTreeMap::new(),
         )? {
             let table = table.transplant_to_table_arena(&plan_arena)?;

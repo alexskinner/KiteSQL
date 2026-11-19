@@ -1,0 +1,96 @@
+statement ok
+create table t (id int primary key, a int, b varchar(20), c int, KEY idx_a (a), INDEX (b), UNIQUE KEY uk_ab (a, b), UNIQUE INDEX (c), KEY k_composite (a, b), FULLTEXT KEY ft (b), INDEX idx_b_dup (b));
+
+statement ok
+insert into t values (1, 10, 'hello', 100);
+
+statement ok
+insert into t values (2, 20, 'world', 200);
+
+statement error
+insert into t values (3, 10, 'hello', 100);
+
+query IITI
+select * from t order by id;
+----
+1 10 hello 100
+2 20 world 200
+
+query IT
+select id, b from t where b = 'hello';
+----
+1 hello
+
+query I
+select id from t where a = 10 and b = 'hello';
+----
+1
+
+query I
+select id from t where c = 100;
+----
+1
+
+statement ok
+create table t2 (
+  id int primary key,
+  x int,
+  y int,
+  z varchar(50),
+  KEY (x),
+  SPATIAL KEY sk (y),
+  INDEX idx_z USING BTREE (z),
+  FULLTEXT ft_z (z)
+);
+
+statement ok
+insert into t2 values (1, 5, 10, 'spatial test');
+
+query IIIT
+select * from t2;
+----
+1 5 10 spatial test
+
+statement ok
+create table t3 (
+  id int primary key,
+  col1 int,
+  col2 int,
+  col3 int,
+  KEY col1 (col1),
+  KEY col1_2 (col1),
+  KEY col1_3 (col1)
+);
+
+statement ok
+insert into t3 values (1, 1, 2, 3);
+
+query IIII
+select * from t3 where col1 = 1;
+----
+1 1 2 3
+
+statement ok
+create table t4 (
+  id int primary key,
+  data varchar(100),
+  CONSTRAINT unique_data UNIQUE (data)
+);
+
+statement ok
+insert into t4 values (1, 'unique');
+
+statement error
+insert into t4 values (2, 'unique');
+
+statement ok
+drop table t;
+
+statement ok
+drop table t2;
+
+statement ok
+drop table t3;
+
+statement ok
+drop table t4;

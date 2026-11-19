@@ -307,6 +307,7 @@ mod wasm_tests {
             source_columns,
             false,
             Vec::new(),
+            Vec::new(),
             std::collections::BTreeMap::new(),
         )? {
             let table = table.transplant_to_table_arena(&plan_arena)?;
@@ -507,6 +508,7 @@ mod native_tests {
             "test".to_string(),
             source_columns,
             false,
+            Vec::new(),
             Vec::new(),
             std::collections::BTreeMap::new(),
         )? {

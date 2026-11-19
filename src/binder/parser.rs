@@ -906,6 +906,9 @@ where
             columns.push(col);
         }
         let mut unique_constraints = Vec::new();
+        let mut index_constraints = Vec::new();
+        let mut used_index_names = std::collections::HashSet::new();
+
         for constraint in create.constraints {
             match constraint {
                 TableConstraint::PrimaryKey(primary) => {
@@ -915,7 +918,6 @@ where
                 }
                 TableConstraint::Unique(unique) => {
                     if unique.columns.len() > 1 {
-                        // Composite unique constraint - collect it for later index creation
                         let column_names: Result<Vec<String>, DatabaseError> = unique
                             .columns
                             .iter()
@@ -930,13 +932,93 @@ where
                                 }
                             })
                             .collect();
-                        unique_constraints.push(column_names?);
+                        let cols = column_names?;
+
+                        let index_name = unique
+                            .name
+                            .as_ref()
+                            .or(unique.index_name.as_ref())
+                            .map(|ident| lower_ident(ident).into_owned());
+                        if let Some(ref name) = index_name {
+                            used_index_names.insert(name.clone());
+                        }
+
+                        unique_constraints.push(cols.clone());
+                        index_constraints.push(
+                            crate::planner::operator::create_table::IndexConstraint {
+                                name: index_name,
+                                columns: cols,
+                                is_unique: true,
+                            },
+                        );
                     } else {
-                        // Single-column unique - mark the column as unique
                         self.bind_constraint(&mut columns, unique.columns, |_, desc| {
                             desc.set_unique()
                         })?;
                     }
+                }
+                TableConstraint::Index(index) => {
+                    let column_names: Result<Vec<String>, DatabaseError> = index
+                        .columns
+                        .iter()
+                        .map(|index_col| {
+                            if let Expr::Identifier(ident) = &index_col.column.expr {
+                                Ok(lower_ident(ident).into_owned())
+                            } else {
+                                Err(DatabaseError::UnsupportedStmt(
+                                    "only identifier columns are supported in INDEX".to_string(),
+                                ))
+                            }
+                        })
+                        .collect();
+                    let cols = column_names?;
+                    let index_name = index
+                        .name
+                        .as_ref()
+                        .map(|ident| lower_ident(ident).into_owned());
+                    if let Some(ref name) = index_name {
+                        used_index_names.insert(name.clone());
+                    }
+
+                    index_constraints.push(
+                        crate::planner::operator::create_table::IndexConstraint {
+                            name: index_name,
+                            columns: cols,
+                            is_unique: false,
+                        },
+                    );
+                }
+                TableConstraint::FulltextOrSpatial(index) => {
+                    let column_names: Result<Vec<String>, DatabaseError> = index
+                        .columns
+                        .iter()
+                        .map(|index_col| {
+                            if let Expr::Identifier(ident) = &index_col.column.expr {
+                                Ok(lower_ident(ident).into_owned())
+                            } else {
+                                Err(DatabaseError::UnsupportedStmt(
+                                    "only identifier columns are supported in FULLTEXT/SPATIAL INDEX"
+                                        .to_string(),
+                                ))
+                            }
+                        })
+                        .collect();
+                    let cols = column_names?;
+                    let index_name = index
+                        .opt_index_name
+                        .as_ref()
+                        .map(|ident| lower_ident(ident).into_owned());
+                    if let Some(ref name) = index_name {
+                        used_index_names.insert(name.clone());
+                    }
+
+                    index_constraints.push(
+                        crate::planner::operator::create_table::IndexConstraint {
+                            name: index_name,
+                            columns: cols,
+                            is_unique: false,
+                        },
+                    );
                 }
                 constraint => {
                     return Err(DatabaseError::UnsupportedStmt(format!(
@@ -946,11 +1028,26 @@ where
             }
         }
 
+        for index in &mut index_constraints {
+            if index.name.is_none() && !index.columns.is_empty() {
+                let base_name = &index.columns[0];
+                let mut name = base_name.clone();
+                let mut suffix = 2;
+                while used_index_names.contains(&name) {
+                    name = format!("{}_{}", base_name, suffix);
+                    suffix += 1;
+                }
+                used_index_names.insert(name.clone());
+                index.name = Some(name);
+            }
+        }
+
         self.binder.bind_create_table(
             table_name,
             columns,
             create.if_not_exists,
             unique_constraints,
+            index_constraints,
             display_types,
         )
     }
