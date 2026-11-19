@@ -2795,6 +2795,32 @@ pub(crate) mod test {
         Ok(())
     }
 
+    #[test]
+    async fn test_nullif_and_ifnull_output_names() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let kite_sql = DataBaseBuilder::path(temp_dir.path())
+            .build_in_memory()
+            .await?;
+        let mut iter = kite_sql
+            .run("select nullif(1, 1), nullif(1, 2), ifnull(null, 3)")
+            .await?;
+
+        iter.schema(|schema| {
+            let names: Vec<_> = schema.iter().map(|column| column.name()).collect();
+            assert_eq!(names, ["nullif(1, 1)", "nullif(1, 2)", "ifnull(NULL, 3)"]);
+        });
+        assert_eq!(
+            next_tuple_owned(&mut iter).await?.unwrap(),
+            Tuple::new(
+                None,
+                vec![DataValue::Null, DataValue::Int32(1), DataValue::Int32(3)]
+            )
+        );
+        assert!(iter.next_tuple(|_, _| ()).await?.is_none());
+
+        Ok(())
+    }
+
     /// use [Numbers](crate::function::numbers::Numbers) on this case
     #[test]
     async fn test_udtf() -> Result<(), DatabaseError> {
