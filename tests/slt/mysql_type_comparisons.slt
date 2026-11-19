@@ -1,5 +1,5 @@
 statement ok
-create table test_bool_int(id int primary key, b boolean null, i int null, u uint null, d double null, dec decimal(10,2) null)
+create table test_bool_int(id int primary key, b boolean null, i int null, u int unsigned null, d double null, dec decimal(10,2) null)
 
 statement ok
 insert into test_bool_int values (1, true, 1, 1, 1.0, 1.00)
@@ -114,7 +114,7 @@ statement ok
 drop table test_bool_int
 
 statement ok
-create table test_uint_int(id int primary key, ui uint null, si int null)
+create table test_uint_int(id int primary key, ui int unsigned null, si int null)
 
 statement ok
 insert into test_uint_int values (1, 0, 0)
