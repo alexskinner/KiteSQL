@@ -1,0 +1,21 @@
+# DECIMAL(p, s) values carry their declared scale, whatever the source type.
+
+query TTTT
+select cast('1.2' as decimal(3,2)), cast(2 as decimal(5,3)), cast(1.235 as decimal(5,2)), cast(cast(2.2 as decimal) as decimal(5,2))
+----
+1.20 2.000 1.24 2.20
+
+statement ok
+create table dec_scale(id int primary key, a decimal(10,6), b decimal(5,2))
+
+statement ok
+insert into dec_scale values (1, 1.1, 2), (2, '2.4', '3.335')
+
+query ITT rowsort
+select id, a, b from dec_scale
+----
+1 1.100000 2.00
+2 2.400000 3.34
+
+statement ok
+drop table dec_scale

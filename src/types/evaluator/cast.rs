@@ -757,8 +757,11 @@ pub fn cast_create(
             cast_timestamp_ref!(from, to, *precision, *zone)
         }
         #[cfg(feature = "decimal")]
-        (LogicalType::Char(_, _) | LogicalType::Varchar(_, _), LogicalType::Decimal(_, _)) => {
-            cast_ref!(from, to)
+        (
+            LogicalType::Char(_, _) | LogicalType::Varchar(_, _),
+            LogicalType::Decimal(precision, scale),
+        ) => {
+            cast_decimal_ref!(from, to, *precision, *scale)
         }
         (LogicalType::Date, LogicalType::Char(_, _)) => {
             cast_string_ref!(from, to, Some(char_params(to).0), char_params(to).1)
@@ -823,7 +826,6 @@ pub fn cast_create(
             LogicalType::Boolean
             | LogicalType::Float
             | LogicalType::Double
-            | LogicalType::Decimal(_, _)
             | LogicalType::Tinyint
             | LogicalType::Smallint
             | LogicalType::Integer
@@ -832,6 +834,9 @@ pub fn cast_create(
             | LogicalType::USmallint
             | LogicalType::UInteger
             | LogicalType::UBigint => cast_ref!(from, to),
+            LogicalType::Decimal(precision, scale) => {
+                cast_decimal_ref!(from, to, *precision, *scale)
+            }
             LogicalType::Char(len, unit) => cast_string_ref!(from, to, Some(*len), *unit),
             LogicalType::Varchar(len, unit) => cast_string_ref!(from, to, *len, *unit),
             _ => Err(cast_fail(from.clone(), to.clone())),
@@ -885,6 +890,20 @@ fn decimal_param(params: &CastEvaluatorParams) -> (Option<u8>, Option<u8>) {
         unreachable!("cast evaluator must have decimal parameters")
     };
     (*precision, *scale)
+}
+
+/// Round (half away from zero) and pad a DECIMAL value to the target scale. Plans serialised
+/// before string/decimal → DECIMAL casts carried their precision and scale use `Unit` params and
+/// keep the old unscaled behaviour.
+#[cfg(feature = "decimal")]
+fn with_decimal_scale(value: DataValue, params: &CastEvaluatorParams) -> DataValue {
+    match (value, params) {
+        (DataValue::Decimal(mut decimal), CastEvaluatorParams::Decimal { scale, .. }) => {
+            DataValue::decimal_round_f(scale, &mut decimal);
+            DataValue::Decimal(decimal)
+        }
+        (value, _) => value,
+    }
 }
 
 #[cfg(feature = "time")]
@@ -1118,7 +1137,9 @@ impl CastEvaluatorRef {
                 run!(utf8_to_timestamp_cast_eval { precision, zone })
             }
             #[cfg(feature = "decimal")]
-            (CAST_CHAR | CAST_VARCHAR, CAST_DECIMAL) => run!(utf8_to_decimal_cast_eval),
+            (CAST_CHAR | CAST_VARCHAR, CAST_DECIMAL) => {
+                run!(utf8_to_decimal_cast_eval).map(|value| with_decimal_scale(value, params))
+            }
             #[cfg(feature = "time")]
             (CAST_DATE, CAST_CHAR) => {
                 let (len, unit) = string_param(params);
@@ -1206,7 +1227,8 @@ impl CastEvaluatorRef {
                 CAST_BOOLEAN => run!(decimal_to_boolean_cast_eval),
                 CAST_FLOAT => run!(decimal_to_float_cast_eval),
                 CAST_DOUBLE => run!(decimal_to_double_cast_eval),
-                CAST_DECIMAL => run!(decimal_to_decimal_cast_eval),
+                CAST_DECIMAL => run!(decimal_to_decimal_cast_eval)
+                    .map(|value| with_decimal_scale(value, params)),
                 CAST_CHAR => {
                     let (len, unit) = string_param(params);
                     let len = len.expect("char cast must have fixed length");
@@ -2238,6 +2260,75 @@ mod test {
             ),
             Err(DatabaseError::CastFail { .. })
         ));
+    }
+
+    #[cfg(feature = "decimal")]
+    #[test]
+    fn test_decimal_casts_take_the_target_scale() -> Result<(), DatabaseError> {
+        let shown = |from: LogicalType,
+                     to: LogicalType,
+                     value: DataValue|
+         -> Result<String, DatabaseError> {
+            Ok(cast_eval(from, to, value)?.to_string())
+        };
+        let d = |p, s| LogicalType::Decimal(Some(p), Some(s));
+        let text = LogicalType::Varchar(None, CharLengthUnits::Characters);
+        // pad to the scale
+        assert_eq!(
+            shown(text.clone(), d(3, 2), DataValue::from("1.2".to_string()))?,
+            "1.20"
+        );
+        assert_eq!(
+            shown(
+                LogicalType::Double,
+                d(22, 2),
+                DataValue::Float64(OrderedFloat(-1e18))
+            )?,
+            "-1000000000000000000.00"
+        );
+        assert_eq!(
+            shown(
+                LogicalType::Double,
+                d(10, 6),
+                DataValue::Float64(OrderedFloat(1.1))
+            )?,
+            "1.100000"
+        );
+        assert_eq!(
+            shown(LogicalType::Integer, d(5, 3), DataValue::Int32(2))?,
+            "2.000"
+        );
+        assert_eq!(
+            shown(
+                LogicalType::Decimal(None, None),
+                d(5, 2),
+                DataValue::Decimal(Decimal::new(22, 1))
+            )?,
+            "2.20"
+        );
+        // round half away from zero when the scale shrinks
+        assert_eq!(
+            shown(text.clone(), d(5, 2), DataValue::from("1.235".to_string()))?,
+            "1.24"
+        );
+        assert_eq!(
+            shown(
+                LogicalType::Decimal(None, None),
+                d(5, 1),
+                DataValue::Decimal(Decimal::new(-125, 2))
+            )?,
+            "-1.3"
+        );
+        // no scale given: value unchanged
+        assert_eq!(
+            shown(
+                text,
+                LogicalType::Decimal(None, None),
+                DataValue::from("1.2".to_string())
+            )?,
+            "1.2"
+        );
+        Ok(())
     }
 
     #[cfg(feature = "decimal")]
