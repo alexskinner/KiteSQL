@@ -18,7 +18,7 @@ use crate::planner::PlanArena;
 
 use crate::errors::DatabaseError;
 use crate::expression::function::scala::ScalarFunction;
-use crate::expression::{BinaryOperator, ScalarExpression, TrimWhereField};
+use crate::expression::{BinaryOperator, ScalarExpression, TrimWhereField, TypeCast};
 use crate::planner::MetaArena;
 use crate::types::evaluator::binary_create;
 use crate::types::tuple::{Input, InputRef};
@@ -280,7 +280,17 @@ impl ScalarExpression {
                     Some(tuple) => inner.eval(args, arena, Some(&InputRef(tuple)))?,
                     None => inner.eval(args, arena, None)?,
                 };
-                value.cast(inner.return_type()).map(Cow::Owned)
+                if inner.accepts_any_args() {
+                    let arg_types: Vec<LogicalType> = args
+                        .iter()
+                        .map(|arg| arena.expression(*arg).return_type(arena).into_owned())
+                        .collect();
+                    value
+                        .cast(&inner.return_type_for(&arg_types))
+                        .map(Cow::Owned)
+                } else {
+                    value.cast(inner.return_type()).map(Cow::Owned)
+                }
             }
             ScalarExpression::Empty => unreachable!(),
             ScalarExpression::If {
