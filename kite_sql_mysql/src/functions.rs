@@ -17,6 +17,7 @@
 use kite_sql::errors::DatabaseError;
 use kite_sql::expression::function::scala::ScalarFunctionImpl;
 use kite_sql::expression::function::{FunctionSummary, PersistencePolicy};
+use kite_sql::expression::TypeCast;
 use kite_sql::planner::{ExprRef, MetaArena};
 use kite_sql::types::tuple::Input;
 use kite_sql::types::value::DataValue;
@@ -285,6 +286,10 @@ impl ScalarFunctionImpl for Concat {
     fn accepts_any_args(&self) -> bool {
         true
     }
+
+    fn accepts_arity(&self, n: usize) -> bool {
+        n >= 1
+    }
 }
 
 /// `CONCAT_WS(separator, str1, str2, ...)`: concatenates strings with separator. Skips NULL values.
@@ -347,6 +352,10 @@ impl ScalarFunctionImpl for ConcatWs {
 
     fn accepts_any_args(&self) -> bool {
         true
+    }
+
+    fn accepts_arity(&self, n: usize) -> bool {
+        n >= 2
     }
 }
 
@@ -479,22 +488,23 @@ impl ScalarFunctionImpl for Locate {
             return Ok(DataValue::Null);
         }
 
-        let sub = substr.unwrap().to_lowercase();
-        let s = str_val.unwrap();
-        let s_lower = s.to_lowercase();
+        // Case-insensitive, character by character, so positions map 1:1 onto characters.
+        let fold = |text: &str| -> Vec<char> {
+            text.chars()
+                .map(|c| c.to_lowercase().next().unwrap_or(c))
+                .collect()
+        };
+        let sub = fold(&substr.unwrap());
+        let hay = fold(&str_val.unwrap());
 
-        let start_char_pos = if args.len() == 3 {
+        let start = if args.len() == 3 {
             let pos = arena.expression(args[2]).eval(arena, tuple)?;
             if pos.is_null() {
                 return Ok(DataValue::Null);
             }
-            match pos.as_ref() {
-                DataValue::Int32(p) => {
-                    if *p < 1 {
-                        return Ok(DataValue::Int32(0));
-                    }
-                    *p as usize
-                }
+            match pos.into_owned().cast(&LogicalType::Bigint)? {
+                DataValue::Int64(p) if p >= 1 => p as usize,
+                DataValue::Int64(_) => return Ok(DataValue::Int32(0)),
                 _ => {
                     return Err(DatabaseError::InvalidValue(
                         "position must be integer".into(),
@@ -505,30 +515,17 @@ impl ScalarFunctionImpl for Locate {
             1
         };
 
-        // Empty substring always matches at the starting position
-        if sub.is_empty() {
-            return Ok(DataValue::Int32(start_char_pos as i32));
-        }
-
-        let char_count = s.chars().count();
-        if start_char_pos == 0 || start_char_pos > char_count {
+        // A start past the end (one past it for an empty needle) never matches.
+        if start > hay.len() + 1 {
             return Ok(DataValue::Int32(0));
         }
-
-        let start_byte_offset = s
-            .char_indices()
-            .nth(start_char_pos - 1)
-            .map(|(idx, _)| idx)
-            .unwrap_or(s.len());
-
-        let search = &s_lower[start_byte_offset..];
-        if let Some(byte_pos) = search.find(&sub) {
-            let found_byte_offset = start_byte_offset + byte_pos;
-            let char_pos = s[..found_byte_offset].chars().count() + 1;
-            Ok(DataValue::Int32(char_pos as i32))
-        } else {
-            Ok(DataValue::Int32(0))
+        if sub.is_empty() {
+            return Ok(DataValue::Int32(start as i32));
         }
+        let found = hay[start - 1..]
+            .windows(sub.len())
+            .position(|window| window == sub.as_slice());
+        Ok(DataValue::Int32(found.map_or(0, |i| (start + i) as i32)))
     }
 
     fn return_type(&self) -> &LogicalType {
@@ -1161,285 +1158,264 @@ impl ScalarFunctionImpl for Uuid {
     }
 }
 
-/// `GREATEST(val1, val2, ...)`: returns the largest value. NULL if any argument is NULL.
-/// Works with numeric and text types.
-#[derive(Debug)]
-pub struct Greatest {
-    summary: FunctionSummary,
-}
-
-impl Greatest {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            summary: FunctionSummary {
-                name: "greatest".into(),
-                arg_types: vec![TEXT, TEXT], // Placeholder, actual count checked at runtime
-                persistence: PersistencePolicy::Durable,
-            },
-        })
+/// Common comparison type of GREATEST/LEAST arguments, following MySQL 8: any string makes the
+/// comparison a string comparison; all-temporal arguments compare as temporal; otherwise any
+/// decimal widens to Decimal (unless a float is present, which gives Double); booleans and
+/// integers compare as integers.
+fn common_type(arg_types: &[LogicalType]) -> LogicalType {
+    use LogicalType::*;
+    let types: Vec<&LogicalType> = arg_types.iter().filter(|t| **t != SqlNull).collect();
+    if types.is_empty() {
+        return TEXT;
+    }
+    let is_temporal = |t: &LogicalType| matches!(t, Date | DateTime | Time(_) | TimeStamp(..));
+    if types.iter().all(|t| is_temporal(t)) {
+        if types.iter().all(|t| **t == *types[0]) {
+            return types[0].clone();
+        }
+        if types
+            .iter()
+            .all(|t| matches!(t, Date | DateTime | TimeStamp(..)))
+        {
+            return DateTime;
+        }
+        return TEXT;
+    }
+    let is_text = |t: &LogicalType| matches!(t, Char(..) | Varchar(..));
+    let is_numeric = |t: &LogicalType| {
+        matches!(
+            t,
+            Boolean
+                | Tinyint
+                | UTinyint
+                | Smallint
+                | USmallint
+                | Integer
+                | UInteger
+                | Bigint
+                | UBigint
+                | Float
+                | Double
+                | Decimal(..)
+        )
+    };
+    if types.iter().all(|t| is_numeric(t) || is_text(t)) && types.iter().any(|t| is_text(t)) {
+        // A mix of numbers and strings compares as numbers (all strings: as strings).
+        return if types.iter().any(|t| is_numeric(t)) {
+            Double
+        } else {
+            TEXT
+        };
+    }
+    if !types.iter().all(|t| is_numeric(t)) {
+        return TEXT;
+    }
+    if types.iter().any(|t| matches!(t, Float | Double)) {
+        Double
+    } else if types.iter().any(|t| matches!(t, Decimal(..))) {
+        Decimal(None, None)
+    } else {
+        // Widest integer among the arguments; booleans count as TINYINT 0/1.
+        let rank = |t: &LogicalType| match t {
+            Boolean | Tinyint | UTinyint => 1,
+            Smallint | USmallint => 2,
+            Integer | UInteger => 3,
+            _ => 4,
+        };
+        let width = types.iter().map(|t| rank(t)).max().unwrap_or(4);
+        if types
+            .iter()
+            .all(|t| matches!(t, UBigint | UInteger | USmallint | UTinyint))
+        {
+            [UTinyint, USmallint, UInteger, UBigint][width - 1].clone()
+        } else {
+            [Tinyint, Smallint, Integer, Bigint][width - 1].clone()
+        }
     }
 }
 
-impl ScalarFunctionImpl for Greatest {
-    fn eval(
-        &self,
-        args: &[ExprRef],
-        arena: &(dyn MetaArena + '_),
-        tuple: Option<&dyn Input>,
-    ) -> Result<DataValue, DatabaseError> {
-        if args.len() < 2 {
-            return Err(DatabaseError::InvalidValue(
-                "GREATEST requires at least 2 arguments".into(),
-            ));
+/// Numeric value of a string the way MySQL converts it in a numeric context: the longest numeric
+/// prefix after leading whitespace, otherwise 0.
+fn lenient_f64(text: &str) -> f64 {
+    let t = text.trim_start();
+    let b = t.as_bytes();
+    let mut i = 0;
+    if i < b.len() && (b[i] == b'+' || b[i] == b'-') {
+        i += 1;
+    }
+    let digits = |mut j: usize| {
+        while j < b.len() && b[j].is_ascii_digit() {
+            j += 1;
         }
+        j
+    };
+    let int_end = digits(i);
+    let mut end = int_end;
+    let mut has_digits = int_end > i;
+    if end < b.len() && b[end] == b'.' {
+        let frac_end = digits(end + 1);
+        if frac_end > end + 1 {
+            has_digits = true;
+        }
+        end = frac_end;
+    }
+    if !has_digits {
+        return 0.0;
+    }
+    if end < b.len() && (b[end] == b'e' || b[end] == b'E') {
+        let mut j = end + 1;
+        if j < b.len() && (b[j] == b'+' || b[j] == b'-') {
+            j += 1;
+        }
+        let exp_end = digits(j);
+        if exp_end > j {
+            end = exp_end;
+        }
+    }
+    t[..end].parse().unwrap_or(0.0)
+}
 
-        // Evaluate all arguments
-        let mut values = Vec::new();
-        for arg in args {
-            let value = arena.expression(*arg).eval(arena, tuple)?;
-            if value.is_null() {
-                return Ok(DataValue::Null);
+/// Shared GREATEST/LEAST evaluation: NULL if any argument is NULL, otherwise every argument is
+/// converted to the common type and the extreme value is returned.
+fn extremum(
+    name: &str,
+    greatest: bool,
+    args: &[ExprRef],
+    arena: &(dyn MetaArena + '_),
+    tuple: Option<&dyn Input>,
+) -> Result<DataValue, DatabaseError> {
+    if args.len() < 2 {
+        return Err(DatabaseError::InvalidValue(format!(
+            "{name} requires at least 2 arguments, got {}",
+            args.len()
+        )));
+    }
+    let arg_types: Vec<LogicalType> = args
+        .iter()
+        .map(|arg| arena.expression(*arg).return_type(arena).into_owned())
+        .collect();
+    let ty = common_type(&arg_types);
+    let mut best: Option<DataValue> = None;
+    let mut saw_null = false;
+    for arg in args {
+        let value = arena.expression(*arg).eval(arena, tuple)?.into_owned();
+        if value.is_null() {
+            saw_null = true;
+            continue;
+        }
+        let value = match value {
+            DataValue::Boolean(b) => DataValue::Int8(b as i8),
+            other => other,
+        };
+        let value = if ty == LogicalType::Double {
+            match value {
+                DataValue::Utf8 { value, .. } => {
+                    DataValue::Float64(ordered_float::OrderedFloat(lenient_f64(value.as_ref())))
+                }
+                other => other.cast(&ty)?,
             }
-            values.push(value.into_owned());
-        }
-
-        // Determine common type: strings > decimals > floats > ints
-        let has_string = values.iter().any(|v| matches!(v, DataValue::Utf8 { .. }));
-        if has_string {
-            // String comparison
-            let mut max_str = match &values[0] {
-                v => v.to_string(),
-                DataValue::Boolean(b) => if *b { "1" } else { "0" }.to_string(),
-                v => v.to_string(),
-            };
-            for v in &values[1..] {
-                let s = match v {
-                    v => v.to_string(),
-                    DataValue::Boolean(b) => if *b { "1" } else { "0" }.to_string(),
-                    v => v.to_string(),
+        } else if ty == TEXT {
+            match value {
+                DataValue::Float32(f) => DataValue::from(f.0.to_string()),
+                DataValue::Float64(f) => DataValue::from(f.0.to_string()),
+                other => other.cast(&ty)?,
+            }
+        } else {
+            value.cast(&ty)?
+        };
+        best = Some(match best {
+            None => value,
+            Some(current) => {
+                let replace = match value.partial_cmp(&current) {
+                    Some(std::cmp::Ordering::Greater) => greatest,
+                    Some(std::cmp::Ordering::Less) => !greatest,
+                    _ => false,
                 };
-                if s > max_str {
-                    max_str = s;
+                if replace {
+                    value
+                } else {
+                    current
                 }
             }
-            return Ok(DataValue::from(max_str));
-        }
-
-        let has_decimal = values.iter().any(|v| matches!(v, DataValue::Decimal(_)));
-        if has_decimal {
-            // Decimal comparison: widen all to Decimal
-            use rust_decimal::Decimal;
-            let mut max_dec = Decimal::MIN;
-            for v in values {
-                let d = match v {
-                    DataValue::Decimal(d) => d,
-                    DataValue::Boolean(b) => Decimal::from(if b { 1 } else { 0 }),
-                    DataValue::Int8(i) => Decimal::from(i),
-                    DataValue::Int16(i) => Decimal::from(i),
-                    DataValue::Int32(i) => Decimal::from(i),
-                    DataValue::Int64(i) => Decimal::from(i),
-                    DataValue::UInt8(i) => Decimal::from(i),
-                    DataValue::UInt16(i) => Decimal::from(i),
-                    DataValue::UInt32(i) => Decimal::from(i),
-                    DataValue::UInt64(i) => Decimal::from(i),
-                    DataValue::Float32(f) => Decimal::try_from(f.0 as f64).unwrap_or(Decimal::ZERO),
-                    DataValue::Float64(f) => Decimal::try_from(f.0).unwrap_or(Decimal::ZERO),
-                    _ => Decimal::ZERO,
-                };
-                if d > max_dec {
-                    max_dec = d;
-                }
-            }
-            return Ok(DataValue::Decimal(max_dec));
-        }
-
-        // Numeric comparison (int/float/bool): convert to f64
-        let mut max_numeric = f64::NEG_INFINITY;
-        for v in &values {
-            let num = match v {
-                DataValue::Boolean(b) => {
-                    if *b {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                }
-                DataValue::Int8(i) => *i as f64,
-                DataValue::Int16(i) => *i as f64,
-                DataValue::Int32(i) => *i as f64,
-                DataValue::Int64(i) => *i as f64,
-                DataValue::UInt8(i) => *i as f64,
-                DataValue::UInt16(i) => *i as f64,
-                DataValue::UInt32(i) => *i as f64,
-                DataValue::UInt64(i) => *i as f64,
-                DataValue::Float32(f) => f.0 as f64,
-                DataValue::Float64(f) => f.0,
-                _ => 0.0,
-            };
-            if num > max_numeric {
-                max_numeric = num;
-            }
-        }
-        use ordered_float::OrderedFloat;
-        Ok(DataValue::Float64(OrderedFloat(max_numeric)))
+        });
     }
-
-    fn return_type(&self) -> &LogicalType {
-        &LogicalType::Double
+    if saw_null {
+        return Ok(DataValue::Null);
     }
-
-    fn summary(&self) -> &FunctionSummary {
-        &self.summary
-    }
-
-    fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
-        None
-    }
-
-    fn accepts_any_args(&self) -> bool {
-        true
-    }
+    Ok(best.unwrap_or(DataValue::Null))
 }
 
-/// `LEAST(val1, val2, ...)`: returns the smallest value. NULL if any argument is NULL.
-/// Works with numeric and text types.
-#[derive(Debug)]
-pub struct Least {
-    summary: FunctionSummary,
+macro_rules! extremum_function {
+    ($ty:ident, $name:literal, $greatest:literal, $doc:literal) => {
+        #[doc = $doc]
+        #[derive(Debug)]
+        pub struct $ty {
+            summary: FunctionSummary,
+        }
+
+        impl $ty {
+            pub fn new() -> Arc<Self> {
+                Arc::new(Self {
+                    summary: FunctionSummary {
+                        name: $name.into(),
+                        arg_types: vec![TEXT, TEXT], // Placeholder; see `accepts_arity`
+                        persistence: PersistencePolicy::Durable,
+                    },
+                })
+            }
+        }
+
+        impl ScalarFunctionImpl for $ty {
+            fn eval(
+                &self,
+                args: &[ExprRef],
+                arena: &(dyn MetaArena + '_),
+                tuple: Option<&dyn Input>,
+            ) -> Result<DataValue, DatabaseError> {
+                extremum($name, $greatest, args, arena, tuple)
+            }
+
+            fn return_type(&self) -> &LogicalType {
+                &TEXT
+            }
+
+            fn return_type_for(&self, arg_types: &[LogicalType]) -> LogicalType {
+                common_type(arg_types)
+            }
+
+            fn summary(&self) -> &FunctionSummary {
+                &self.summary
+            }
+
+            fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
+                None
+            }
+
+            fn accepts_any_args(&self) -> bool {
+                true
+            }
+
+            fn accepts_arity(&self, n: usize) -> bool {
+                n >= 2
+            }
+        }
+    };
 }
 
-impl Least {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            summary: FunctionSummary {
-                name: "least".into(),
-                arg_types: vec![TEXT, TEXT], // Placeholder, actual count checked at runtime
-                persistence: PersistencePolicy::Durable,
-            },
-        })
-    }
-}
-
-impl ScalarFunctionImpl for Least {
-    fn eval(
-        &self,
-        args: &[ExprRef],
-        arena: &(dyn MetaArena + '_),
-        tuple: Option<&dyn Input>,
-    ) -> Result<DataValue, DatabaseError> {
-        if args.len() < 2 {
-            return Err(DatabaseError::InvalidValue(
-                "LEAST requires at least 2 arguments".into(),
-            ));
-        }
-
-        // Evaluate all arguments
-        let mut values = Vec::new();
-        for arg in args {
-            let value = arena.expression(*arg).eval(arena, tuple)?;
-            if value.is_null() {
-                return Ok(DataValue::Null);
-            }
-            values.push(value.into_owned());
-        }
-
-        // Determine common type: strings > decimals > floats > ints
-        let has_string = values.iter().any(|v| matches!(v, DataValue::Utf8 { .. }));
-        if has_string {
-            // String comparison
-            let mut min_str = match &values[0] {
-                v => v.to_string(),
-                DataValue::Boolean(b) => if *b { "1" } else { "0" }.to_string(),
-                v => v.to_string(),
-            };
-            for v in &values[1..] {
-                let s = match v {
-                    v => v.to_string(),
-                    DataValue::Boolean(b) => if *b { "1" } else { "0" }.to_string(),
-                    v => v.to_string(),
-                };
-                if s < min_str {
-                    min_str = s;
-                }
-            }
-            return Ok(DataValue::from(min_str));
-        }
-
-        let has_decimal = values.iter().any(|v| matches!(v, DataValue::Decimal(_)));
-        if has_decimal {
-            // Decimal comparison: widen all to Decimal
-            use rust_decimal::Decimal;
-            let mut min_dec = Decimal::MAX;
-            for v in values {
-                let d = match v {
-                    DataValue::Decimal(d) => d,
-                    DataValue::Boolean(b) => Decimal::from(if b { 1 } else { 0 }),
-                    DataValue::Int8(i) => Decimal::from(i),
-                    DataValue::Int16(i) => Decimal::from(i),
-                    DataValue::Int32(i) => Decimal::from(i),
-                    DataValue::Int64(i) => Decimal::from(i),
-                    DataValue::UInt8(i) => Decimal::from(i),
-                    DataValue::UInt16(i) => Decimal::from(i),
-                    DataValue::UInt32(i) => Decimal::from(i),
-                    DataValue::UInt64(i) => Decimal::from(i),
-                    DataValue::Float32(f) => Decimal::try_from(f.0 as f64).unwrap_or(Decimal::ZERO),
-                    DataValue::Float64(f) => Decimal::try_from(f.0).unwrap_or(Decimal::ZERO),
-                    _ => Decimal::ZERO,
-                };
-                if d < min_dec {
-                    min_dec = d;
-                }
-            }
-            return Ok(DataValue::Decimal(min_dec));
-        }
-
-        // Numeric comparison (int/float/bool): convert to f64
-        let mut min_numeric = f64::INFINITY;
-        for v in &values {
-            let num = match v {
-                DataValue::Boolean(b) => {
-                    if *b {
-                        1.0
-                    } else {
-                        0.0
-                    }
-                }
-                DataValue::Int8(i) => *i as f64,
-                DataValue::Int16(i) => *i as f64,
-                DataValue::Int32(i) => *i as f64,
-                DataValue::Int64(i) => *i as f64,
-                DataValue::UInt8(i) => *i as f64,
-                DataValue::UInt16(i) => *i as f64,
-                DataValue::UInt32(i) => *i as f64,
-                DataValue::UInt64(i) => *i as f64,
-                DataValue::Float32(f) => f.0 as f64,
-                DataValue::Float64(f) => f.0,
-                _ => 0.0,
-            };
-            if num < min_numeric {
-                min_numeric = num;
-            }
-        }
-        use ordered_float::OrderedFloat;
-        Ok(DataValue::Float64(OrderedFloat(min_numeric)))
-    }
-
-    fn return_type(&self) -> &LogicalType {
-        &LogicalType::Double
-    }
-
-    fn summary(&self) -> &FunctionSummary {
-        &self.summary
-    }
-
-    fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
-        None
-    }
-
-    fn accepts_any_args(&self) -> bool {
-        true
-    }
-}
+extremum_function!(
+    Greatest,
+    "greatest",
+    true,
+    "`GREATEST(val1, val2, ...)`: the largest argument, compared in the common type of all \
+     arguments. NULL if any argument is NULL."
+);
+extremum_function!(
+    Least,
+    "least",
+    false,
+    "`LEAST(val1, val2, ...)`: the smallest argument, compared in the common type of all \
+     arguments. NULL if any argument is NULL."
+);
 
 /// `IFNULL(expr1, expr2)`: returns expr1 if not NULL, otherwise expr2.
 #[derive(Debug)]
@@ -1488,38 +1464,93 @@ impl ScalarFunctionImpl for Ifnull {
     }
 }
 
-/// `ROUND(x[, d])`: rounds x to d decimal places (default 0). Uses MySQL half-away-from-zero rounding.
-/// Supports Float, Decimal, and Integer types.
+/// `ROUND(x[, d])`: rounds x to d decimal places (default 0, negative d rounds left of the
+/// decimal point), half away from zero. The result has the type of `x`: integers stay integers,
+/// DECIMAL stays DECIMAL, FLOAT/DOUBLE stay floating; other arguments are rounded as DOUBLE.
 #[derive(Debug)]
 pub struct Round {
     summary: FunctionSummary,
 }
 
 impl Round {
-    pub fn new(arg_type: LogicalType, with_decimals: bool) -> Arc<Self> {
-        let arg_types = if with_decimals {
-            vec![arg_type, LogicalType::Integer]
-        } else {
-            vec![arg_type]
-        };
+    pub fn new() -> Arc<Self> {
         Arc::new(Self {
             summary: FunctionSummary {
                 name: "round".into(),
-                arg_types,
+                arg_types: vec![LogicalType::Double], // Placeholder; see `accepts_arity`
                 persistence: PersistencePolicy::Durable,
             },
         })
     }
 
     pub fn new_variadic() -> Arc<Self> {
-        Arc::new(Self {
-            summary: FunctionSummary {
-                name: "round".into(),
-                arg_types: vec![LogicalType::Double], // Placeholder, accepts 1 or 2 args
-                persistence: PersistencePolicy::Durable,
-            },
-        })
+        Self::new()
     }
+}
+
+fn round_integer(value: i128, d: i64) -> Result<i128, DatabaseError> {
+    if d >= 0 {
+        return Ok(value);
+    }
+    let Some(divisor) = u32::try_from(-d)
+        .ok()
+        .and_then(|exp| 10_i128.checked_pow(exp))
+    else {
+        // 10^|d| exceeds every supported integer, so everything rounds to zero.
+        return Ok(0);
+    };
+    let (quotient, remainder) = (value / divisor, value % divisor);
+    let quotient = if remainder.unsigned_abs() * 2 >= divisor.unsigned_abs() {
+        quotient + value.signum()
+    } else {
+        quotient
+    };
+    quotient.checked_mul(divisor).ok_or(DatabaseError::OverFlow)
+}
+
+fn round_float(x: f64, d: i64) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    let exp = d.clamp(-400, 400) as i32;
+    let result = if exp >= 0 {
+        let multiplier = 10_f64.powi(exp);
+        if !multiplier.is_finite() || !(x * multiplier).is_finite() {
+            return x;
+        }
+        (x * multiplier).round() / multiplier
+    } else {
+        let divisor = 10_f64.powi(-exp);
+        if !divisor.is_finite() {
+            return 0.0;
+        }
+        (x / divisor).round() * divisor
+    };
+    if result.is_finite() {
+        result
+    } else {
+        x
+    }
+}
+
+fn round_decimal(
+    value: rust_decimal::Decimal,
+    d: i64,
+) -> Result<rust_decimal::Decimal, DatabaseError> {
+    use rust_decimal::{Decimal, RoundingStrategy};
+    if d >= 0 {
+        return Ok(
+            value.round_dp_with_strategy(d.min(28) as u32, RoundingStrategy::MidpointAwayFromZero)
+        );
+    }
+    if d < -28 {
+        return Ok(Decimal::ZERO);
+    }
+    let scale_factor = Decimal::from_i128_with_scale(10_i128.pow((-d) as u32), 0);
+    (value / scale_factor)
+        .round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero)
+        .checked_mul(scale_factor)
+        .ok_or(DatabaseError::OverFlow)
 }
 
 impl ScalarFunctionImpl for Round {
@@ -1529,26 +1560,22 @@ impl ScalarFunctionImpl for Round {
         arena: &(dyn MetaArena + '_),
         tuple: Option<&dyn Input>,
     ) -> Result<DataValue, DatabaseError> {
+        use ordered_float::OrderedFloat;
+
         if args.is_empty() || args.len() > 2 {
             return Err(DatabaseError::InvalidValue(format!(
                 "ROUND expects 1 or 2 arguments, got {}",
                 args.len()
             )));
         }
-
-        let x_val = arena.expression(args[0]).eval(arena, tuple)?;
-        if x_val.is_null() {
-            return Ok(DataValue::Null);
-        }
-
+        let x = arena.expression(args[0]).eval(arena, tuple)?.into_owned();
         let d = if args.len() == 2 {
-            let d_val = arena.expression(args[1]).eval(arena, tuple)?;
-            if d_val.is_null() {
+            let d = arena.expression(args[1]).eval(arena, tuple)?.into_owned();
+            if d.is_null() {
                 return Ok(DataValue::Null);
             }
-            match d_val.as_ref() {
-                DataValue::Int32(i) => *i,
-                DataValue::Int64(i) => *i as i32,
+            match d.cast(&LogicalType::Bigint)? {
+                DataValue::Int64(d) => d,
                 _ => {
                     return Err(DatabaseError::InvalidValue(
                         "decimals must be integer".into(),
@@ -1558,106 +1585,55 @@ impl ScalarFunctionImpl for Round {
         } else {
             0
         };
-
-        // Clamp d to prevent overflow and excessive computation
-        let d = d.max(-30).min(30);
-
-        match x_val.as_ref() {
-            DataValue::Int32(i) => {
-                if d >= 0 {
-                    Ok(DataValue::Int32(*i))
-                } else {
-                    // Widen to i128 to handle overflow
-                    let val = *i as i128;
-                    let abs_d = (-d) as u32;
-                    let divisor = 10_i128.pow(abs_d);
-                    let rounded = ((val as f64 / divisor as f64).round() as i128) * divisor;
-                    // Clamp to i32 range
-                    if rounded > i32::MAX as i128 || rounded < i32::MIN as i128 {
-                        Ok(DataValue::Int32(0))
-                    } else {
-                        Ok(DataValue::Int32(rounded as i32))
-                    }
-                }
-            }
-            DataValue::Int64(i) => {
-                if d >= 0 {
-                    Ok(DataValue::Int64(*i))
-                } else {
-                    // Widen to i128 to handle overflow
-                    let val = *i as i128;
-                    let abs_d = (-d) as u32;
-                    let divisor = 10_i128.pow(abs_d);
-                    let rounded = ((val as f64 / divisor as f64).round() as i128) * divisor;
-                    // Clamp to i64 range
-                    if rounded > i64::MAX as i128 || rounded < i64::MIN as i128 {
-                        Ok(DataValue::Int64(0))
-                    } else {
-                        Ok(DataValue::Int64(rounded as i64))
-                    }
-                }
-            }
-            DataValue::Decimal(dec) => {
-                use rust_decimal::prelude::*;
-                if d >= 0 {
-                    let rounded = dec
-                        .round_dp_with_strategy(d as u32, RoundingStrategy::MidpointAwayFromZero);
-                    Ok(DataValue::Decimal(rounded))
-                } else {
-                    // For negative d, scale by 10^-d using Decimal
-                    let abs_d = (-d) as u32;
-                    let scale_factor = Decimal::from_i128_with_scale(10_i128.pow(abs_d), 0);
-                    let scaled = *dec / scale_factor;
-                    let rounded =
-                        scaled.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
-                    Ok(DataValue::Decimal(rounded * scale_factor))
-                }
-            }
-            DataValue::Float32(f) => {
-                let val = f.0 as f64;
-                // Check for special values
-                if !val.is_finite() {
-                    return Ok(DataValue::Float32(*f));
-                }
-                // Clamp d to prevent NaN
-                let multiplier = 10_f64.powi(d);
-                if !multiplier.is_finite() {
-                    return Ok(DataValue::Float32(*f));
-                }
-                let result = (val * multiplier).round() / multiplier;
-                use ordered_float::OrderedFloat;
-                if result.is_finite() {
-                    Ok(DataValue::Float32(OrderedFloat(result as f32)))
-                } else {
-                    Ok(DataValue::Float32(*f))
-                }
-            }
-            DataValue::Float64(f) => {
-                // Check for special values
-                if !f.0.is_finite() {
-                    return Ok(DataValue::Float64(*f));
-                }
-                // Clamp d to prevent NaN
-                let multiplier = 10_f64.powi(d);
-                if !multiplier.is_finite() {
-                    return Ok(DataValue::Float64(*f));
-                }
-                let result = (f.0 * multiplier).round() / multiplier;
-                use ordered_float::OrderedFloat;
-                if result.is_finite() {
-                    Ok(DataValue::Float64(OrderedFloat(result)))
-                } else {
-                    Ok(DataValue::Float64(*f))
-                }
-            }
-            _ => Err(DatabaseError::InvalidValue(
-                "ROUND expects numeric argument".into(),
-            )),
+        if x.is_null() {
+            return Ok(DataValue::Null);
         }
+        macro_rules! int {
+            ($v:expr, $variant:ident) => {{
+                let rounded = round_integer(i128::from($v), d)?;
+                DataValue::$variant(rounded.try_into().map_err(|_| DatabaseError::OverFlow)?)
+            }};
+        }
+        Ok(match x {
+            DataValue::Boolean(b) => DataValue::Int64(round_integer(b as i128, d)? as i64),
+            DataValue::Int8(v) => int!(v, Int8),
+            DataValue::Int16(v) => int!(v, Int16),
+            DataValue::Int32(v) => int!(v, Int32),
+            DataValue::Int64(v) => int!(v, Int64),
+            DataValue::UInt8(v) => int!(v, UInt8),
+            DataValue::UInt16(v) => int!(v, UInt16),
+            DataValue::UInt32(v) => int!(v, UInt32),
+            DataValue::UInt64(v) => int!(v, UInt64),
+            DataValue::Decimal(v) => DataValue::Decimal(round_decimal(v, d)?),
+            DataValue::Float32(v) => {
+                DataValue::Float32(OrderedFloat(round_float(v.0 as f64, d) as f32))
+            }
+            DataValue::Float64(v) => DataValue::Float64(OrderedFloat(round_float(v.0, d))),
+            other => match other.cast(&LogicalType::Double)? {
+                DataValue::Float64(v) => DataValue::Float64(OrderedFloat(round_float(v.0, d))),
+                _ => {
+                    return Err(DatabaseError::InvalidValue(
+                        "ROUND expects numeric argument".into(),
+                    ))
+                }
+            },
+        })
     }
 
     fn return_type(&self) -> &LogicalType {
-        &self.summary.arg_types[0]
+        &LogicalType::Double
+    }
+
+    fn return_type_for(&self, arg_types: &[LogicalType]) -> LogicalType {
+        use LogicalType::*;
+        match arg_types.first() {
+            Some(Boolean) => Bigint,
+            Some(
+                t @ (Tinyint | UTinyint | Smallint | USmallint | Integer | UInteger | Bigint
+                | UBigint | Float | Double | Decimal(..)),
+            ) => t.clone(),
+            _ => Double,
+        }
     }
 
     fn summary(&self) -> &FunctionSummary {
@@ -1670,5 +1646,9 @@ impl ScalarFunctionImpl for Round {
 
     fn accepts_any_args(&self) -> bool {
         true
+    }
+
+    fn accepts_arity(&self, n: usize) -> bool {
+        (1..=2).contains(&n)
     }
 }

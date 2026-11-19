@@ -30,12 +30,18 @@ fn round_no_panic_on_overflow() -> Result<(), DatabaseError> {
     let dir = TempDir::new().unwrap();
     let db = database(&dir)?;
 
-    // These used to panic, now return 0
-    let result = scalar(&db, "select round(cast(123 as bigint), -10)")?;
-    assert!(!result.is_null()); // Just check it doesn't panic
-
-    let result = scalar(&db, "select round(2147483647, -1)")?;
-    assert!(!result.is_null());
+    // These used to panic. A divisor beyond every integer rounds to 0.
+    assert_eq!(
+        scalar(&db, "select round(cast(123 as bigint), -10)")?,
+        DataValue::Int64(0)
+    );
+    assert_eq!(
+        scalar(&db, "select round(cast(2147483647 as bigint), -1)")?,
+        DataValue::Int64(2147483650)
+    );
+    // A result outside the argument's type is a clean error, not a panic, wrap or 0.
+    assert!(scalar(&db, "select round(2147483647, -1)").is_err());
+    assert!(scalar(&db, "select round(9223372036854775807, -1)").is_err());
     Ok(())
 }
 

@@ -206,7 +206,8 @@ impl FunctionRegistry {
             .iter()
             .filter(|(summary, function)| {
                 summary.name.as_ref() == name
-                    && (summary.arg_types.len() == arg_types.len() || function.accepts_any_args())
+                    && (summary.arg_types.len() == arg_types.len()
+                        || (function.accepts_any_args() && function.accepts_arity(arg_types.len())))
             })
             .collect();
 

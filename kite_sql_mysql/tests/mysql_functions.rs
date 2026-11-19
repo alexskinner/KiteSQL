@@ -296,7 +296,7 @@ fn locate_instr_position_functions() -> Result<(), DatabaseError> {
     );
 
     assert_eq!(
-        scalar(&db, "select position('bar', 'foobarbar')")?,
+        scalar(&db, "select position('bar' in 'foobarbar')")?,
         DataValue::Int32(4)
     );
     Ok(())
@@ -433,6 +433,170 @@ fn round_function() -> Result<(), DatabaseError> {
     assert_eq!(
         scalar(&db, "select round(cast(null as double))")?,
         DataValue::Null
+    );
+    Ok(())
+}
+
+#[test]
+fn greatest_least_common_type() -> Result<(), DatabaseError> {
+    use ordered_float::OrderedFloat;
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+
+    let dir = TempDir::new().unwrap();
+    let mut db = database(&dir)?;
+
+    // literals are DOUBLE in this engine: compared numerically, not as the first argument
+    assert_eq!(
+        scalar(&db, "select least(12, 1.005, 2.5)")?,
+        DataValue::Float64(OrderedFloat(1.005))
+    );
+    // any decimal widens to Decimal; exact comparison
+    let dec = |s: &str| DataValue::Decimal(Decimal::from_str(s).unwrap());
+    db.ddl("create table n (id int primary key, d decimal(10,3), i int)")?;
+    db.run("insert into n values (1, 1.005, 12)")?.done()?;
+    assert_eq!(scalar(&db, "select least(i, d, 3) from n")?, dec("1.005"));
+    assert_eq!(scalar(&db, "select greatest(i, d, 3) from n")?, dec("12"));
+    // a float wins over decimals
+    assert_eq!(
+        scalar(&db, "select greatest(i, d, cast(3 as double)) from n")?,
+        DataValue::Float64(OrderedFloat(12.0))
+    );
+    // all strings compare as strings
+    assert_eq!(scalar(&db, "select greatest('b', 'a')")?, text("b"));
+    assert_eq!(scalar(&db, "select greatest('9', '10')")?, text("9"));
+    // a mix of numbers and strings compares as numbers (MySQL 8)
+    assert_eq!(
+        scalar(&db, "select greatest('10', 9)")?,
+        DataValue::Float64(OrderedFloat(10.0))
+    );
+    assert_eq!(
+        scalar(&db, "select least('b', 1)")?,
+        DataValue::Float64(OrderedFloat(0.0))
+    );
+    assert_eq!(
+        scalar(&db, "select greatest('2.5abc', 2)")?,
+        DataValue::Float64(OrderedFloat(2.5))
+    );
+    // booleans count as 0/1
+    assert_eq!(
+        scalar(&db, "select greatest(true, 2)")?,
+        DataValue::Int32(2)
+    );
+    assert_eq!(
+        scalar(&db, "select least(true, false)")?,
+        DataValue::Int8(0)
+    );
+    // temporal values compare as temporal
+    db.ddl("create table d (id int primary key, a date, b date)")?;
+    db.run("insert into d values (1, '2024-01-02', '2023-12-31')")?
+        .done()?;
+    assert_eq!(
+        scalar(&db, "select greatest(a, b) from d")?,
+        scalar(&db, "select a from d")?
+    );
+    assert_eq!(
+        scalar(&db, "select least(a, b) from d")?,
+        scalar(&db, "select b from d")?
+    );
+    // NULL anywhere gives NULL
+    assert_eq!(scalar(&db, "select greatest(1, null)")?, DataValue::Null);
+    assert_eq!(scalar(&db, "select least(1.5, null, 2)")?, DataValue::Null);
+    Ok(())
+}
+
+#[test]
+fn wrong_arity_is_an_error_not_a_panic() -> Result<(), DatabaseError> {
+    let dir = TempDir::new().unwrap();
+    let db = database(&dir)?;
+
+    for sql in [
+        "select hex()",
+        "select hex(1, 2)",
+        "select length()",
+        "select length('a', 'b')",
+        "select round()",
+        "select round(1, 2, 3)",
+        "select concat()",
+        "select concat_ws(',')",
+        "select greatest(1)",
+        "select least()",
+        "select locate('a')",
+        "select locate('a', 'b', 1, 2)",
+        "select left('a')",
+        "select reverse()",
+        "select lpad('a')",
+        "select substring_index('a', 'b')",
+        "select uuid(1)",
+        "select instr('a')",
+    ] {
+        assert!(scalar(&db, sql).is_err(), "{sql} should be an arity error");
+    }
+    Ok(())
+}
+
+#[test]
+fn round_return_type_follows_argument() -> Result<(), DatabaseError> {
+    use ordered_float::OrderedFloat;
+    use rust_decimal::Decimal;
+    use std::str::FromStr;
+
+    let dir = TempDir::new().unwrap();
+    let mut db = database(&dir)?;
+    db.ddl("create table r (id int primary key, i bigint, d decimal(10,3), f double)")?;
+    db.run("insert into r values (1, 1234, 1.005, 2.5)")?
+        .done()?;
+
+    assert_eq!(
+        scalar(&db, "select round(i, -2) from r")?,
+        DataValue::Int64(1200)
+    );
+    assert_eq!(
+        scalar(&db, "select round(d, 2) from r")?,
+        DataValue::Decimal(Decimal::from_str("1.01").unwrap())
+    );
+    assert_eq!(
+        scalar(&db, "select round(f) from r")?,
+        DataValue::Float64(OrderedFloat(3.0))
+    );
+    // huge or tiny d never gives NaN or infinity
+    assert_eq!(
+        scalar(&db, "select round(f, 400) from r")?,
+        DataValue::Float64(OrderedFloat(2.5))
+    );
+    assert_eq!(
+        scalar(&db, "select round(f, -400) from r")?,
+        DataValue::Float64(OrderedFloat(0.0))
+    );
+    assert_eq!(scalar(&db, "select round(null)")?, DataValue::Null);
+    assert_eq!(scalar(&db, "select round(1.5, null)")?, DataValue::Null);
+    Ok(())
+}
+
+#[test]
+fn locate_empty_needle_and_start_bounds() -> Result<(), DatabaseError> {
+    let dir = TempDir::new().unwrap();
+    let db = database(&dir)?;
+
+    assert_eq!(
+        scalar(&db, "select locate('', 'abc')")?,
+        DataValue::Int32(1)
+    );
+    assert_eq!(
+        scalar(&db, "select locate('', 'abc', 4)")?,
+        DataValue::Int32(4)
+    );
+    assert_eq!(
+        scalar(&db, "select locate('', 'abc', 5)")?,
+        DataValue::Int32(0)
+    );
+    assert_eq!(
+        scalar(&db, "select locate('b', 'abc', 0)")?,
+        DataValue::Int32(0)
+    );
+    assert_eq!(
+        scalar(&db, "select locate('É', 'héllo')")?,
+        DataValue::Int32(2)
     );
     Ok(())
 }
