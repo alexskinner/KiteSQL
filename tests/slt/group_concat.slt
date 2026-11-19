@@ -104,3 +104,50 @@ select group_concat(b separator '|') over () from gc
 
 statement ok
 drop table gc
+
+# Several values per row are concatenated, as CONCAT() would; a row with any NULL value is skipped.
+statement ok
+create table gcm (id int primary key, g int, b varchar(10), n int)
+
+statement ok
+insert into gcm values (1, 1, 'x', 3), (2, 1, 'y', 1), (3, 1, 'z', 2), (4, 2, 'x', null), (5, 2, null, 5), (6, 2, 'x', 4)
+
+query T
+select group_concat(id, '-', b) from gcm
+----
+1-x,2-y,3-z,4-x,6-x
+
+query T
+select group_concat(b, n) from gcm
+----
+x3,y1,z2,x4
+
+query T
+select group_concat(id, b order by 2 desc, 1 separator ' ') from gcm
+----
+3z 2y 1x 4x 6x
+
+query T
+select group_concat(distinct b, g order by b, g separator ';') from gcm
+----
+x1;x2;y1;z1
+
+query IT
+select g, group_concat(b, ':', n order by n desc) from gcm group by g order by g
+----
+1 x:3,z:2,y:1
+2 x:4
+
+query T
+select group_concat(b, n) from gcm where false
+----
+NULL
+
+statement error
+select group_concat(b, n order by 3) from gcm
+
+statement error
+select group_concat(b, n) over () from gcm
+
+statement ok
+drop table gcm

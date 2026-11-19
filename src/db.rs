@@ -2983,6 +2983,9 @@ pub(crate) mod test {
                 vec!["1|z-y-x", "2|x-x"],
             ),
             ("select group_concat(b order by n) from gc where false", vec!["NULL"]),
+            ("select group_concat(id, ':', b order by id) from gc", vec!["1:x,2:y,3:z,4:x,6:x"]),
+            ("select group_concat(distinct b, g order by 1 desc, 2) from gc", vec!["z1,y1,x1,x2"]),
+            ("select group_concat(b, n) from gc", vec!["x3,y1,z2,x4"]),
         ] {
             let mut iter = database.run(sql).await?;
             let mut rows = Vec::new();
@@ -3004,6 +3007,8 @@ pub(crate) mod test {
         }
         for sql in [
             "select group_concat(b order by 2) from gc",
+            "select group_concat(b, n order by 3) from gc",
+            "select group_concat(b, n) over () from gc",
             "select group_concat(b limit 1) from gc",
             "select count(b order by b) from gc",
             "select group_concat(b separator '|') over () from gc",
