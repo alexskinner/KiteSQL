@@ -44,15 +44,11 @@ impl FunctionPack for MySqlFunctions {
         // HEX: accepts any type (TEXT signature, handles numerics specially)
         registry.register_scalar(Hex::new(TEXT))?;
 
-        // CONCAT: truly variadic (1-100 arguments to cover all practical cases)
-        for count in 1..=100 {
-            registry.register_scalar(Concat::new(count))?;
-        }
+        // CONCAT: truly variadic with runtime arity check (minimum 1 arg)
+        registry.register_scalar(Concat::new())?;
 
-        // CONCAT_WS: truly variadic (2-100 arguments)
-        for count in 2..=100 {
-            registry.register_scalar(ConcatWs::new(count))?;
-        }
+        // CONCAT_WS: truly variadic with runtime arity check (minimum 2 args)
+        registry.register_scalar(ConcatWs::new())?;
 
         registry.register_scalar(SubstringIndex::new())?;
         registry.register_scalar(Locate::new(2))?;
@@ -69,18 +65,15 @@ impl FunctionPack for MySqlFunctions {
         registry.register_scalar(Rtrim::new())?;
         registry.register_scalar(Uuid::new())?;
 
-        // GREATEST/LEAST: truly variadic (2-100 arguments), single impl for all types
-        for count in 2..=100 {
-            registry.register_scalar(Greatest::new(count))?;
-            registry.register_scalar(Least::new(count))?;
-        }
+        // GREATEST/LEAST: truly variadic with runtime arity check (minimum 2 args)
+        registry.register_scalar(Greatest::new())?;
+        registry.register_scalar(Least::new())?;
 
         // ROUND: accepts any numeric type via accepts_any_args
         registry.register_scalar(Round::new(LogicalType::Double, false))?;
         registry.register_scalar(Round::new(LogicalType::Double, true))?;
 
         Ok(())
-    }
     }
 }
 
@@ -236,11 +229,11 @@ pub struct Concat {
 }
 
 impl Concat {
-    pub fn new(arg_count: usize) -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         Arc::new(Self {
             summary: FunctionSummary {
                 name: "concat".into(),
-                arg_types: vec![TEXT; arg_count],
+                arg_types: vec![TEXT], // Placeholder, actual count checked at runtime
                 persistence: PersistencePolicy::Durable,
             },
         })
@@ -254,6 +247,11 @@ impl ScalarFunctionImpl for Concat {
         arena: &(dyn MetaArena + '_),
         tuple: Option<&dyn Input>,
     ) -> Result<DataValue, DatabaseError> {
+        if args.is_empty() {
+            return Err(DatabaseError::InvalidValue(
+                "CONCAT requires at least 1 argument".into(),
+            ));
+        }
         let mut result = String::new();
         for arg in args {
             match eval_value_as_text(*arg, arena, tuple)? {
@@ -285,11 +283,11 @@ pub struct ConcatWs {
 }
 
 impl ConcatWs {
-    pub fn new(arg_count: usize) -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         Arc::new(Self {
             summary: FunctionSummary {
                 name: "concat_ws".into(),
-                arg_types: vec![TEXT; arg_count],
+                arg_types: vec![TEXT, TEXT], // Placeholder, actual count checked at runtime
                 persistence: PersistencePolicy::Durable,
             },
         })
@@ -303,13 +301,20 @@ impl ScalarFunctionImpl for ConcatWs {
         arena: &(dyn MetaArena + '_),
         tuple: Option<&dyn Input>,
     ) -> Result<DataValue, DatabaseError> {
-        let sep = match eval_text(args[0], arena, tuple)? {
-            Some(s) => s,
-            None => return Ok(DataValue::Null),
-        };
+        if args.len() < 2 {
+            return Err(DatabaseError::InvalidValue(
+                "CONCAT_WS requires at least 2 arguments".into(),
+            ));
+        }
+        let separator = eval_text(args[0], arena, tuple)?;
+        if separator.is_none() {
+            return Ok(DataValue::Null);
+        }
+        let sep = separator.unwrap();
+
         let mut parts = Vec::new();
         for arg in &args[1..] {
-            if let Some(s) = eval_text(*arg, arena, tuple)? {
+            if let Some(s) = eval_value_as_text(*arg, arena, tuple)? {
                 parts.push(s);
             }
         }
@@ -577,64 +582,6 @@ impl ScalarFunctionImpl for Instr {
 }
 
 /// `POSITION(substr IN str)`: returns 1-based character position of substr in str, or 0 if not found.
-/// Case-insensitive comparison following MySQL's default collation.
-#[derive(Debug)]
-pub struct Position {
-    summary: FunctionSummary,
-}
-
-impl Position {
-    pub fn new() -> Arc<Self> {
-        Arc::new(Self {
-            summary: FunctionSummary {
-                name: "position".into(),
-                arg_types: vec![TEXT, TEXT],
-                persistence: PersistencePolicy::Durable,
-            },
-        })
-    }
-}
-
-impl ScalarFunctionImpl for Position {
-    fn eval(
-        &self,
-        args: &[ExprRef],
-        arena: &(dyn MetaArena + '_),
-        tuple: Option<&dyn Input>,
-    ) -> Result<DataValue, DatabaseError> {
-        let substr = eval_text(args[0], arena, tuple)?;
-        let str_val = eval_text(args[1], arena, tuple)?;
-
-        if substr.is_none() || str_val.is_none() {
-            return Ok(DataValue::Null);
-        }
-
-        let sub = substr.unwrap().to_lowercase();
-        let s = str_val.unwrap();
-        let s_lower = s.to_lowercase();
-
-        if let Some(byte_pos) = s_lower.find(&sub) {
-            let char_pos = s[..byte_pos].chars().count() + 1;
-            Ok(DataValue::Int32(char_pos as i32))
-        } else {
-            Ok(DataValue::Int32(0))
-        }
-    }
-
-    fn return_type(&self) -> &LogicalType {
-        &LogicalType::Integer
-    }
-
-    fn summary(&self) -> &FunctionSummary {
-        &self.summary
-    }
-
-    fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
-        None
-    }
-}
-
-/// `LEFT(str, len)`: returns leftmost len characters.
 #[derive(Debug)]
 pub struct Left {
     summary: FunctionSummary,
@@ -1121,12 +1068,10 @@ impl ScalarFunctionImpl for Hex {
             DataValue::UInt64(i) => format!("{:X}", *i),
             DataValue::Float32(f) => format!("{:X}", f.0.round() as i64 as u64),
             DataValue::Float64(f) => format!("{:X}", f.0.round() as i64 as u64),
-            _ => {
-                match eval_value_as_text(args[0], arena, tuple)? {
-                    Some(s) => s.bytes().map(|b| format!("{:02X}", b)).collect(),
-                    None => return Ok(DataValue::Null),
-                }
-            }
+            _ => match eval_value_as_text(args[0], arena, tuple)? {
+                Some(s) => s.bytes().map(|b| format!("{:02X}", b)).collect(),
+                None => return Ok(DataValue::Null),
+            },
         };
         Ok(DataValue::from(hex))
     }
@@ -1198,11 +1143,11 @@ pub struct Greatest {
 }
 
 impl Greatest {
-    pub fn new(arg_type: LogicalType, arg_count: usize) -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         Arc::new(Self {
             summary: FunctionSummary {
                 name: "greatest".into(),
-                arg_types: vec![arg_type; arg_count],
+                arg_types: vec![TEXT, TEXT], // Placeholder, actual count checked at runtime
                 persistence: PersistencePolicy::Durable,
             },
         })
@@ -1216,28 +1161,76 @@ impl ScalarFunctionImpl for Greatest {
         arena: &(dyn MetaArena + '_),
         tuple: Option<&dyn Input>,
     ) -> Result<DataValue, DatabaseError> {
-        let mut max_value: Option<DataValue> = None;
+        if args.len() < 2 {
+            return Err(DatabaseError::InvalidValue(
+                "GREATEST requires at least 2 arguments".into(),
+            ));
+        }
+
+        // Evaluate all arguments
+        let mut values = Vec::new();
         for arg in args {
             let value = arena.expression(*arg).eval(arena, tuple)?;
             if value.is_null() {
                 return Ok(DataValue::Null);
             }
-            max_value = Some(match max_value {
-                None => value.into_owned(),
-                Some(current) => {
-                    if value.as_ref() > &current {
-                        value.into_owned()
-                    } else {
-                        current
-                    }
-                }
-            });
+            values.push(value.into_owned());
         }
-        Ok(max_value.unwrap())
+
+        // Check if all arguments are numeric
+        let all_numeric = values.iter().all(|v| {
+            matches!(
+                v,
+                DataValue::Int8(_)
+                    | DataValue::Int16(_)
+                    | DataValue::Int32(_)
+                    | DataValue::Int64(_)
+                    | DataValue::UInt8(_)
+                    | DataValue::UInt16(_)
+                    | DataValue::UInt32(_)
+                    | DataValue::UInt64(_)
+                    | DataValue::Float32(_)
+                    | DataValue::Float64(_)
+            )
+        });
+
+        if all_numeric {
+            // Numeric comparison: convert to f64
+            let mut max_numeric = f64::NEG_INFINITY;
+            for v in &values {
+                let num = match v {
+                    DataValue::Int8(i) => *i as f64,
+                    DataValue::Int16(i) => *i as f64,
+                    DataValue::Int32(i) => *i as f64,
+                    DataValue::Int64(i) => *i as f64,
+                    DataValue::UInt8(i) => *i as f64,
+                    DataValue::UInt16(i) => *i as f64,
+                    DataValue::UInt32(i) => *i as f64,
+                    DataValue::UInt64(i) => *i as f64,
+                    DataValue::Float32(f) => f.0 as f64,
+                    DataValue::Float64(f) => f.0,
+                    _ => unreachable!(),
+                };
+                if num > max_numeric {
+                    max_numeric = num;
+                }
+            }
+            use ordered_float::OrderedFloat;
+            Ok(DataValue::Float64(OrderedFloat(max_numeric)))
+        } else {
+            // String comparison
+            let mut max_value = values.remove(0);
+            for value in values {
+                if value > max_value {
+                    max_value = value;
+                }
+            }
+            Ok(max_value)
+        }
     }
 
     fn return_type(&self) -> &LogicalType {
-        &self.summary.arg_types[0]
+        &LogicalType::Double // Return Double for mixed numeric, varies otherwise
     }
 
     fn summary(&self) -> &FunctionSummary {
@@ -1246,6 +1239,10 @@ impl ScalarFunctionImpl for Greatest {
 
     fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
         None
+    }
+
+    fn accepts_any_args(&self) -> bool {
+        true // Accept any types, compare appropriately
     }
 }
 
@@ -1257,11 +1254,11 @@ pub struct Least {
 }
 
 impl Least {
-    pub fn new(arg_type: LogicalType, arg_count: usize) -> Arc<Self> {
+    pub fn new() -> Arc<Self> {
         Arc::new(Self {
             summary: FunctionSummary {
                 name: "least".into(),
-                arg_types: vec![arg_type; arg_count],
+                arg_types: vec![TEXT, TEXT], // Placeholder, actual count checked at runtime
                 persistence: PersistencePolicy::Durable,
             },
         })
@@ -1275,28 +1272,76 @@ impl ScalarFunctionImpl for Least {
         arena: &(dyn MetaArena + '_),
         tuple: Option<&dyn Input>,
     ) -> Result<DataValue, DatabaseError> {
-        let mut min_value: Option<DataValue> = None;
+        if args.len() < 2 {
+            return Err(DatabaseError::InvalidValue(
+                "LEAST requires at least 2 arguments".into(),
+            ));
+        }
+
+        // Evaluate all arguments
+        let mut values = Vec::new();
         for arg in args {
             let value = arena.expression(*arg).eval(arena, tuple)?;
             if value.is_null() {
                 return Ok(DataValue::Null);
             }
-            min_value = Some(match min_value {
-                None => value.into_owned(),
-                Some(current) => {
-                    if value.as_ref() < &current {
-                        value.into_owned()
-                    } else {
-                        current
-                    }
-                }
-            });
+            values.push(value.into_owned());
         }
-        Ok(min_value.unwrap())
+
+        // Check if all arguments are numeric
+        let all_numeric = values.iter().all(|v| {
+            matches!(
+                v,
+                DataValue::Int8(_)
+                    | DataValue::Int16(_)
+                    | DataValue::Int32(_)
+                    | DataValue::Int64(_)
+                    | DataValue::UInt8(_)
+                    | DataValue::UInt16(_)
+                    | DataValue::UInt32(_)
+                    | DataValue::UInt64(_)
+                    | DataValue::Float32(_)
+                    | DataValue::Float64(_)
+            )
+        });
+
+        if all_numeric {
+            // Numeric comparison: convert to f64
+            let mut min_numeric = f64::INFINITY;
+            for v in &values {
+                let num = match v {
+                    DataValue::Int8(i) => *i as f64,
+                    DataValue::Int16(i) => *i as f64,
+                    DataValue::Int32(i) => *i as f64,
+                    DataValue::Int64(i) => *i as f64,
+                    DataValue::UInt8(i) => *i as f64,
+                    DataValue::UInt16(i) => *i as f64,
+                    DataValue::UInt32(i) => *i as f64,
+                    DataValue::UInt64(i) => *i as f64,
+                    DataValue::Float32(f) => f.0 as f64,
+                    DataValue::Float64(f) => f.0,
+                    _ => unreachable!(),
+                };
+                if num < min_numeric {
+                    min_numeric = num;
+                }
+            }
+            use ordered_float::OrderedFloat;
+            Ok(DataValue::Float64(OrderedFloat(min_numeric)))
+        } else {
+            // String comparison
+            let mut min_value = values.remove(0);
+            for value in values {
+                if value < min_value {
+                    min_value = value;
+                }
+            }
+            Ok(min_value)
+        }
     }
 
     fn return_type(&self) -> &LogicalType {
-        &self.summary.arg_types[0]
+        &LogicalType::Double // Return Double for mixed numeric, varies otherwise
     }
 
     fn summary(&self) -> &FunctionSummary {
@@ -1305,6 +1350,10 @@ impl ScalarFunctionImpl for Least {
 
     fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
         None
+    }
+
+    fn accepts_any_args(&self) -> bool {
+        true // Accept any types, compare appropriately
     }
 }
 
@@ -1449,17 +1498,16 @@ impl ScalarFunctionImpl for Round {
             DataValue::Decimal(dec) => {
                 use rust_decimal::prelude::*;
                 if d >= 0 {
-                    let rounded = dec.round_dp_with_strategy(
-                        d as u32,
-                        RoundingStrategy::MidpointAwayFromZero,
-                    );
+                    let rounded = dec
+                        .round_dp_with_strategy(d as u32, RoundingStrategy::MidpointAwayFromZero);
                     Ok(DataValue::Decimal(rounded))
                 } else {
                     // For negative d, scale by 10^-d
                     let abs_d = (-d) as u32;
                     let scale_factor = Decimal::from(10_i64.pow(abs_d));
                     let scaled = *dec / scale_factor;
-                    let rounded = scaled.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
+                    let rounded =
+                        scaled.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
                     Ok(DataValue::Decimal(rounded * scale_factor))
                 }
             }
