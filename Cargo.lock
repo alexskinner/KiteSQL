@@ -2033,6 +2033,7 @@ version = "0.7.0"
 dependencies = [
  "kite_sql",
  "ordered-float",
+ "rust_decimal",
  "sqlparser",
  "tempfile",
  "uuid",

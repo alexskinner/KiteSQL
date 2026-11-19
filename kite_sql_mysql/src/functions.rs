@@ -37,15 +37,26 @@ impl FunctionPack for MySqlFunctions {
 
     fn install(&self, registry: &mut FunctionRegistry) -> Result<(), DatabaseError> {
         registry.register_scalar(Replace::new())?;
-        registry.register_scalar(Length::new())?;
-        registry.register_scalar(Concat::new(2))?;
-        registry.register_scalar(Concat::new(3))?;
-        registry.register_scalar(Concat::new(4))?;
-        registry.register_scalar(Concat::new(5))?;
-        registry.register_scalar(ConcatWs::new(2))?;
-        registry.register_scalar(ConcatWs::new(3))?;
-        registry.register_scalar(ConcatWs::new(4))?;
-        registry.register_scalar(ConcatWs::new(5))?;
+
+        // LENGTH: TEXT and Integer
+        registry.register_scalar(Length::new(TEXT))?;
+        registry.register_scalar(Length::new(LogicalType::Integer))?;
+
+        // HEX: TEXT and Integer (Integer returns two's complement hex for negatives)
+        registry.register_scalar(Hex::new(TEXT))?;
+        registry.register_scalar(Hex::new(LogicalType::Integer))?;
+        registry.register_scalar(Hex::new(LogicalType::Bigint))?;
+
+        // CONCAT: 1-10 arguments (variadic)
+        for count in 1..=10 {
+            registry.register_scalar(Concat::new(count))?;
+        }
+
+        // CONCAT_WS: 2-10 arguments
+        for count in 2..=10 {
+            registry.register_scalar(ConcatWs::new(count))?;
+        }
+
         registry.register_scalar(SubstringIndex::new())?;
         registry.register_scalar(Locate::new(2))?;
         registry.register_scalar(Locate::new(3))?;
@@ -59,17 +70,26 @@ impl FunctionPack for MySqlFunctions {
         registry.register_scalar(Reverse::new())?;
         registry.register_scalar(Ltrim::new())?;
         registry.register_scalar(Rtrim::new())?;
-        registry.register_scalar(Hex::new())?;
         registry.register_scalar(Uuid::new())?;
-        registry.register_scalar(Greatest::new(2))?;
-        registry.register_scalar(Greatest::new(3))?;
-        registry.register_scalar(Greatest::new(4))?;
-        registry.register_scalar(Least::new(2))?;
-        registry.register_scalar(Least::new(3))?;
-        registry.register_scalar(Least::new(4))?;
-        registry.register_scalar(Ifnull::new())?;
-        registry.register_scalar(Round::new(1))?;
-        registry.register_scalar(Round::new(2))?;
+
+        // GREATEST/LEAST: TEXT and Integer, 2-10 arguments
+        for count in 2..=10 {
+            registry.register_scalar(Greatest::new(TEXT, count))?;
+            registry.register_scalar(Greatest::new(LogicalType::Integer, count))?;
+            registry.register_scalar(Least::new(TEXT, count))?;
+            registry.register_scalar(Least::new(LogicalType::Integer, count))?;
+        }
+
+        // ROUND: Float64, Decimal, and Integer, with 1 or 2 arguments
+        registry.register_scalar(Round::new(LogicalType::Double, false))?;
+        registry.register_scalar(Round::new(LogicalType::Double, true))?;
+        registry.register_scalar(Round::new(LogicalType::Decimal(None, None), false))?;
+        registry.register_scalar(Round::new(LogicalType::Decimal(None, None), true))?;
+        registry.register_scalar(Round::new(LogicalType::Integer, false))?;
+        registry.register_scalar(Round::new(LogicalType::Integer, true))?;
+        registry.register_scalar(Round::new(LogicalType::Bigint, false))?;
+        registry.register_scalar(Round::new(LogicalType::Bigint, true))?;
+
         Ok(())
     }
 }
@@ -85,6 +105,35 @@ fn eval_text(
     }
     let value = value.into_owned().cast(&TEXT)?;
     Ok(value.utf8().map(str::to_string))
+}
+
+/// Evaluate an argument as text, converting numbers to their string representation (MySQL formatting).
+fn eval_value_as_text(
+    arg: ExprRef,
+    arena: &(dyn MetaArena + '_),
+    tuple: Option<&dyn Input>,
+) -> Result<Option<String>, DatabaseError> {
+    let value = arena.expression(arg).eval(arena, tuple)?;
+    if value.is_null() {
+        return Ok(None);
+    }
+    match value.as_ref() {
+        DataValue::Int8(i) => Ok(Some(i.to_string())),
+        DataValue::Int16(i) => Ok(Some(i.to_string())),
+        DataValue::Int32(i) => Ok(Some(i.to_string())),
+        DataValue::Int64(i) => Ok(Some(i.to_string())),
+        DataValue::UInt8(i) => Ok(Some(i.to_string())),
+        DataValue::UInt16(i) => Ok(Some(i.to_string())),
+        DataValue::UInt32(i) => Ok(Some(i.to_string())),
+        DataValue::UInt64(i) => Ok(Some(i.to_string())),
+        DataValue::Float32(f) => Ok(Some(f.0.to_string())),
+        DataValue::Float64(f) => Ok(Some(f.0.to_string())),
+        DataValue::Decimal(d) => Ok(Some(d.to_string())),
+        _ => {
+            let value = value.into_owned().cast(&TEXT)?;
+            Ok(value.utf8().map(str::to_string))
+        }
+    }
 }
 
 /// `REPLACE(str, from_str, to_str)`: every occurrence of `from_str` in `str`, matched
@@ -143,17 +192,18 @@ impl ScalarFunctionImpl for Replace {
 }
 
 /// `LENGTH(str)`: returns the byte length of `str` in UTF-8 encoding. NULL if argument is NULL.
+/// Accepts numeric arguments (converted to string first).
 #[derive(Debug)]
 pub struct Length {
     summary: FunctionSummary,
 }
 
 impl Length {
-    pub fn new() -> Arc<Self> {
+    pub fn new(arg_type: LogicalType) -> Arc<Self> {
         Arc::new(Self {
             summary: FunctionSummary {
                 name: "length".into(),
-                arg_types: vec![TEXT],
+                arg_types: vec![arg_type],
                 persistence: PersistencePolicy::Durable,
             },
         })
@@ -167,7 +217,7 @@ impl ScalarFunctionImpl for Length {
         arena: &(dyn MetaArena + '_),
         tuple: Option<&dyn Input>,
     ) -> Result<DataValue, DatabaseError> {
-        match eval_text(args[0], arena, tuple)? {
+        match eval_value_as_text(args[0], arena, tuple)? {
             Some(s) => Ok(DataValue::Int32(s.len() as i32)),
             None => Ok(DataValue::Null),
         }
@@ -213,7 +263,7 @@ impl ScalarFunctionImpl for Concat {
     ) -> Result<DataValue, DatabaseError> {
         let mut result = String::new();
         for arg in args {
-            match eval_text(*arg, arena, tuple)? {
+            match eval_value_as_text(*arg, arena, tuple)? {
                 Some(s) => result.push_str(&s),
                 None => return Ok(DataValue::Null),
             }
@@ -377,7 +427,8 @@ impl ScalarFunctionImpl for SubstringIndex {
     }
 }
 
-/// `LOCATE(substr, str[, pos])`: returns 1-based position of substr in str, or 0 if not found.
+/// `LOCATE(substr, str[, pos])`: returns 1-based character position of substr in str, or 0 if not found.
+/// Case-insensitive comparison following MySQL's default collation.
 #[derive(Debug)]
 pub struct Locate {
     summary: FunctionSummary,
@@ -414,10 +465,11 @@ impl ScalarFunctionImpl for Locate {
             return Ok(DataValue::Null);
         }
 
-        let sub = substr.unwrap();
+        let sub = substr.unwrap().to_lowercase();
         let s = str_val.unwrap();
+        let s_lower = s.to_lowercase();
 
-        let start_pos = if args.len() == 3 {
+        let start_char_pos = if args.len() == 3 {
             let pos = arena.expression(args[2]).eval(arena, tuple)?;
             if pos.is_null() {
                 return Ok(DataValue::Null);
@@ -434,13 +486,22 @@ impl ScalarFunctionImpl for Locate {
             1
         };
 
-        if start_pos == 0 || start_pos > s.len() {
+        let char_count = s.chars().count();
+        if start_char_pos == 0 || start_char_pos > char_count {
             return Ok(DataValue::Int32(0));
         }
 
-        let search = &s[(start_pos - 1)..];
-        if let Some(pos) = search.find(&sub) {
-            Ok(DataValue::Int32((start_pos + pos) as i32))
+        let start_byte_offset = s
+            .char_indices()
+            .nth(start_char_pos - 1)
+            .map(|(idx, _)| idx)
+            .unwrap_or(s.len());
+
+        let search = &s_lower[start_byte_offset..];
+        if let Some(byte_pos) = search.find(&sub) {
+            let found_byte_offset = start_byte_offset + byte_pos;
+            let char_pos = s[..found_byte_offset].chars().count() + 1;
+            Ok(DataValue::Int32(char_pos as i32))
         } else {
             Ok(DataValue::Int32(0))
         }
@@ -459,7 +520,8 @@ impl ScalarFunctionImpl for Locate {
     }
 }
 
-/// `INSTR(str, substr)`: returns 1-based position of substr in str, or 0 if not found.
+/// `INSTR(str, substr)`: returns 1-based character position of substr in str, or 0 if not found.
+/// Case-insensitive comparison following MySQL's default collation.
 #[derive(Debug)]
 pub struct Instr {
     summary: FunctionSummary,
@@ -492,10 +554,12 @@ impl ScalarFunctionImpl for Instr {
         }
 
         let s = str_val.unwrap();
-        let sub = substr.unwrap();
+        let s_lower = s.to_lowercase();
+        let sub = substr.unwrap().to_lowercase();
 
-        if let Some(pos) = s.find(&sub) {
-            Ok(DataValue::Int32((pos + 1) as i32))
+        if let Some(byte_pos) = s_lower.find(&sub) {
+            let char_pos = s[..byte_pos].chars().count() + 1;
+            Ok(DataValue::Int32(char_pos as i32))
         } else {
             Ok(DataValue::Int32(0))
         }
@@ -514,7 +578,8 @@ impl ScalarFunctionImpl for Instr {
     }
 }
 
-/// `POSITION(substr IN str)`: returns 1-based position of substr in str, or 0 if not found.
+/// `POSITION(substr IN str)`: returns 1-based character position of substr in str, or 0 if not found.
+/// Case-insensitive comparison following MySQL's default collation.
 #[derive(Debug)]
 pub struct Position {
     summary: FunctionSummary,
@@ -546,11 +611,13 @@ impl ScalarFunctionImpl for Position {
             return Ok(DataValue::Null);
         }
 
-        let sub = substr.unwrap();
+        let sub = substr.unwrap().to_lowercase();
         let s = str_val.unwrap();
+        let s_lower = s.to_lowercase();
 
-        if let Some(pos) = s.find(&sub) {
-            Ok(DataValue::Int32((pos + 1) as i32))
+        if let Some(byte_pos) = s_lower.find(&sub) {
+            let char_pos = s[..byte_pos].chars().count() + 1;
+            Ok(DataValue::Int32(char_pos as i32))
         } else {
             Ok(DataValue::Int32(0))
         }
@@ -1013,18 +1080,19 @@ impl ScalarFunctionImpl for Rtrim {
     }
 }
 
-/// `HEX(str)`: returns hexadecimal representation of str.
+/// `HEX(str_or_num)`: returns the hexadecimal representation.
+/// For strings, converts bytes to hex. For integers, returns the hex value (negatives in two's complement).
 #[derive(Debug)]
 pub struct Hex {
     summary: FunctionSummary,
 }
 
 impl Hex {
-    pub fn new() -> Arc<Self> {
+    pub fn new(arg_type: LogicalType) -> Arc<Self> {
         Arc::new(Self {
             summary: FunctionSummary {
                 name: "hex".into(),
-                arg_types: vec![TEXT],
+                arg_types: vec![arg_type],
                 persistence: PersistencePolicy::Durable,
             },
         })
@@ -1038,13 +1106,28 @@ impl ScalarFunctionImpl for Hex {
         arena: &(dyn MetaArena + '_),
         tuple: Option<&dyn Input>,
     ) -> Result<DataValue, DatabaseError> {
-        match eval_text(args[0], arena, tuple)? {
-            Some(s) => {
-                let hex: String = s.bytes().map(|b| format!("{:02X}", b)).collect();
-                Ok(DataValue::from(hex))
-            }
-            None => Ok(DataValue::Null),
+        let value = arena.expression(args[0]).eval(arena, tuple)?;
+        if value.is_null() {
+            return Ok(DataValue::Null);
         }
+
+        let hex = match value.as_ref() {
+            DataValue::Int8(i) => format!("{:016X}", *i as i64 as u64),
+            DataValue::Int16(i) => format!("{:016X}", *i as i64 as u64),
+            DataValue::Int32(i) => format!("{:016X}", *i as i64 as u64),
+            DataValue::Int64(i) => format!("{:016X}", *i as u64),
+            DataValue::UInt8(i) => format!("{:016X}", *i as u64),
+            DataValue::UInt16(i) => format!("{:016X}", *i as u64),
+            DataValue::UInt32(i) => format!("{:016X}", *i as u64),
+            DataValue::UInt64(i) => format!("{:016X}", *i),
+            _ => {
+                match eval_value_as_text(args[0], arena, tuple)? {
+                    Some(s) => s.bytes().map(|b| format!("{:02X}", b)).collect(),
+                    None => return Ok(DataValue::Null),
+                }
+            }
+        };
+        Ok(DataValue::from(hex))
     }
 
     fn return_type(&self) -> &LogicalType {
@@ -1102,18 +1185,19 @@ impl ScalarFunctionImpl for Uuid {
     }
 }
 
-/// `GREATEST(val1, val2, ...)`: returns the greatest value.
+/// `GREATEST(val1, val2, ...)`: returns the largest value. NULL if any argument is NULL.
+/// Works with numeric and text types.
 #[derive(Debug)]
 pub struct Greatest {
     summary: FunctionSummary,
 }
 
 impl Greatest {
-    pub fn new(arg_count: usize) -> Arc<Self> {
+    pub fn new(arg_type: LogicalType, arg_count: usize) -> Arc<Self> {
         Arc::new(Self {
             summary: FunctionSummary {
                 name: "greatest".into(),
-                arg_types: vec![TEXT; arg_count],
+                arg_types: vec![arg_type; arg_count],
                 persistence: PersistencePolicy::Durable,
             },
         })
@@ -1127,19 +1211,28 @@ impl ScalarFunctionImpl for Greatest {
         arena: &(dyn MetaArena + '_),
         tuple: Option<&dyn Input>,
     ) -> Result<DataValue, DatabaseError> {
-        let mut values = Vec::new();
+        let mut max_value: Option<DataValue> = None;
         for arg in args {
-            match eval_text(*arg, arena, tuple)? {
-                Some(v) => values.push(v),
-                None => return Ok(DataValue::Null),
+            let value = arena.expression(*arg).eval(arena, tuple)?;
+            if value.is_null() {
+                return Ok(DataValue::Null);
             }
+            max_value = Some(match max_value {
+                None => value.into_owned(),
+                Some(current) => {
+                    if value.as_ref() > &current {
+                        value.into_owned()
+                    } else {
+                        current
+                    }
+                }
+            });
         }
-        let max = values.into_iter().max().unwrap();
-        Ok(DataValue::from(max))
+        Ok(max_value.unwrap())
     }
 
     fn return_type(&self) -> &LogicalType {
-        &TEXT
+        &self.summary.arg_types[0]
     }
 
     fn summary(&self) -> &FunctionSummary {
@@ -1151,18 +1244,19 @@ impl ScalarFunctionImpl for Greatest {
     }
 }
 
-/// `LEAST(val1, val2, ...)`: returns the smallest value.
+/// `LEAST(val1, val2, ...)`: returns the smallest value. NULL if any argument is NULL.
+/// Works with numeric and text types.
 #[derive(Debug)]
 pub struct Least {
     summary: FunctionSummary,
 }
 
 impl Least {
-    pub fn new(arg_count: usize) -> Arc<Self> {
+    pub fn new(arg_type: LogicalType, arg_count: usize) -> Arc<Self> {
         Arc::new(Self {
             summary: FunctionSummary {
                 name: "least".into(),
-                arg_types: vec![TEXT; arg_count],
+                arg_types: vec![arg_type; arg_count],
                 persistence: PersistencePolicy::Durable,
             },
         })
@@ -1176,19 +1270,28 @@ impl ScalarFunctionImpl for Least {
         arena: &(dyn MetaArena + '_),
         tuple: Option<&dyn Input>,
     ) -> Result<DataValue, DatabaseError> {
-        let mut values = Vec::new();
+        let mut min_value: Option<DataValue> = None;
         for arg in args {
-            match eval_text(*arg, arena, tuple)? {
-                Some(v) => values.push(v),
-                None => return Ok(DataValue::Null),
+            let value = arena.expression(*arg).eval(arena, tuple)?;
+            if value.is_null() {
+                return Ok(DataValue::Null);
             }
+            min_value = Some(match min_value {
+                None => value.into_owned(),
+                Some(current) => {
+                    if value.as_ref() < &current {
+                        value.into_owned()
+                    } else {
+                        current
+                    }
+                }
+            });
         }
-        let min = values.into_iter().min().unwrap();
-        Ok(DataValue::from(min))
+        Ok(min_value.unwrap())
     }
 
     fn return_type(&self) -> &LogicalType {
-        &TEXT
+        &self.summary.arg_types[0]
     }
 
     fn summary(&self) -> &FunctionSummary {
@@ -1247,18 +1350,19 @@ impl ScalarFunctionImpl for Ifnull {
     }
 }
 
-/// `ROUND(x[, d])`: rounds x to d decimal places (default 0). Uses half-away-from-zero.
+/// `ROUND(x[, d])`: rounds x to d decimal places (default 0). Uses MySQL half-away-from-zero rounding.
+/// Supports Float, Decimal, and Integer types.
 #[derive(Debug)]
 pub struct Round {
     summary: FunctionSummary,
 }
 
 impl Round {
-    pub fn new(arg_count: usize) -> Arc<Self> {
-        let arg_types = if arg_count == 1 {
-            vec![LogicalType::Double]
+    pub fn new(arg_type: LogicalType, with_decimals: bool) -> Arc<Self> {
+        let arg_types = if with_decimals {
+            vec![arg_type, LogicalType::Integer]
         } else {
-            vec![LogicalType::Double, LogicalType::Integer]
+            vec![arg_type]
         };
         Arc::new(Self {
             summary: FunctionSummary {
@@ -1282,18 +1386,6 @@ impl ScalarFunctionImpl for Round {
             return Ok(DataValue::Null);
         }
 
-        let x = match x_val.as_ref() {
-            DataValue::Float64(f) => f.0,
-            DataValue::Float32(f) => f.0 as f64,
-            DataValue::Int32(i) => *i as f64,
-            DataValue::Int64(i) => *i as f64,
-            _ => {
-                return Err(DatabaseError::InvalidValue(
-                    "ROUND expects numeric argument".into(),
-                ))
-            }
-        };
-
         let d = if args.len() == 2 {
             let d_val = arena.expression(args[1]).eval(arena, tuple)?;
             if d_val.is_null() {
@@ -1301,6 +1393,7 @@ impl ScalarFunctionImpl for Round {
             }
             match d_val.as_ref() {
                 DataValue::Int32(i) => *i,
+                DataValue::Int64(i) => *i as i32,
                 _ => {
                     return Err(DatabaseError::InvalidValue(
                         "decimals must be integer".into(),
@@ -1311,15 +1404,53 @@ impl ScalarFunctionImpl for Round {
             0
         };
 
-        let multiplier = 10_f64.powi(d);
-        let result = (x * multiplier).round() / multiplier;
-
-        use ordered_float::OrderedFloat;
-        Ok(DataValue::Float64(OrderedFloat(result)))
+        match x_val.as_ref() {
+            DataValue::Int32(i) => {
+                if d >= 0 {
+                    Ok(DataValue::Int32(*i))
+                } else {
+                    let divisor = 10_i32.pow((-d) as u32);
+                    let result = (*i as f64 / divisor as f64).round() as i32 * divisor;
+                    Ok(DataValue::Int32(result))
+                }
+            }
+            DataValue::Int64(i) => {
+                if d >= 0 {
+                    Ok(DataValue::Int64(*i))
+                } else {
+                    let divisor = 10_i64.pow((-d) as u32);
+                    let result = (*i as f64 / divisor as f64).round() as i64 * divisor;
+                    Ok(DataValue::Int64(result))
+                }
+            }
+            DataValue::Decimal(dec) => {
+                use rust_decimal::prelude::*;
+                let rounded = dec.round_dp_with_strategy(
+                    d.max(0) as u32,
+                    RoundingStrategy::MidpointAwayFromZero,
+                );
+                Ok(DataValue::Decimal(rounded))
+            }
+            DataValue::Float32(f) => {
+                let multiplier = 10_f64.powi(d);
+                let result = (f.0 as f64 * multiplier).round() / multiplier;
+                use ordered_float::OrderedFloat;
+                Ok(DataValue::Float64(OrderedFloat(result)))
+            }
+            DataValue::Float64(f) => {
+                let multiplier = 10_f64.powi(d);
+                let result = (f.0 * multiplier).round() / multiplier;
+                use ordered_float::OrderedFloat;
+                Ok(DataValue::Float64(OrderedFloat(result)))
+            }
+            _ => Err(DatabaseError::InvalidValue(
+                "ROUND expects numeric argument".into(),
+            )),
+        }
     }
 
     fn return_type(&self) -> &LogicalType {
-        &LogicalType::Double
+        &self.summary.arg_types[0]
     }
 
     fn summary(&self) -> &FunctionSummary {
