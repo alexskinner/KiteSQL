@@ -62,7 +62,11 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                 .id()
                 .and_then(|id| catalog.get_column_by_id(&id));
             if let Some((index, _)) = column {
-                sources[index] = Some(position);
+                if sources[index].replace(position).is_some() {
+                    return Err(DatabaseError::DuplicateTargetColumn(
+                        arena.column(*target).name().to_string(),
+                    ));
+                }
             }
         }
         Ok((table, sources))

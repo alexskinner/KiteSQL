@@ -150,3 +150,28 @@ select id, a, b, c from t_update_old_row order by id
 
 statement ok
 drop table t_update_old_row
+
+# UPDATE enforces NOT NULL like INSERT does.
+statement ok
+create table t_update_not_null(id int primary key, b int not null, c int)
+
+statement ok
+insert into t_update_not_null values (1, 1, 1), (2, 2, null)
+
+statement error
+update t_update_not_null set b = null where id = 1
+
+statement error
+update t_update_not_null set b = c
+
+statement ok
+update t_update_not_null set c = null where id = 1
+
+query III
+select id, b, c from t_update_not_null order by id
+----
+1 1 NULL
+2 2 NULL
+
+statement ok
+drop table t_update_not_null

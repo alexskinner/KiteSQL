@@ -84,6 +84,7 @@ pub enum DatabaseError {
     DuplicateColumn(String),
     DuplicateIndex(String),
     DuplicateTableName(String),
+    DuplicateTargetColumn(String),
     DuplicatePrimaryKey,
     DuplicateUniqueValue,
     FunctionAlreadyExists(String),
@@ -197,6 +198,9 @@ impl fmt::Display for DatabaseError {
             Self::DefaultNotExist => f.write_str("default does not exist"),
             Self::DuplicateColumn(value) => write!(f, "column: `{value}` already exists"),
             Self::DuplicateIndex(value) => write!(f, "index: `{value}` already exists"),
+            Self::DuplicateTargetColumn(value) => {
+                write!(f, "column: `{value}` specified more than once")
+            }
             Self::DuplicateTableName(value) => {
                 write!(f, "table name: `{value}` specified more than once")
             }
@@ -732,6 +736,10 @@ mod tests {
             (
                 DatabaseError::DuplicateTableName("t".into()),
                 "table name: `t` specified more than once",
+            ),
+            (
+                DatabaseError::DuplicateTargetColumn("a".into()),
+                "column: `a` specified more than once",
             ),
             (
                 DatabaseError::InvalidPlan("join key".into()),

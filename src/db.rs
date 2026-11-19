@@ -4493,5 +4493,69 @@ pub(crate) mod test {
 
         Ok(())
     }
+
+    #[test]
+    fn test_update_rejects_null_in_not_null_column() -> Result<(), DatabaseError> {
+        let mut database = DataBaseBuilder::path(".").build_in_memory()?;
+        database.ddl("create table t_upd_nn(id int primary key, b int not null, c int)")?;
+        database
+            .run("insert into t_upd_nn values (1, 1, 1), (2, 2, null)")?
+            .done()?;
+
+        for sql in [
+            "update t_upd_nn set b = null where id = 1",
+            "update t_upd_nn set b = c where id = 2",
+            "update t_upd_nn set b = c + null",
+        ] {
+            let err = database.run(sql).and_then(|iter| iter.done()).unwrap_err();
+            assert!(
+                matches!(&err, DatabaseError::NotNull { column: Some(c), .. } if c == "b"),
+                "{sql}: {err}"
+            );
+        }
+        // The failed statements changed nothing; a nullable column still takes NULL.
+        database
+            .run("update t_upd_nn set c = null where id = 1")?
+            .done()?;
+        let mut iter = database.run("select id, b, c from t_upd_nn order by id")?;
+        let mut rows = Vec::new();
+        while let Some(row) = iter.next_tuple(|_, row| row.take_values())? {
+            rows.push(row);
+        }
+        iter.done()?;
+        assert_eq!(
+            rows,
+            vec![
+                vec![DataValue::Int32(1), DataValue::Int32(1), DataValue::Null],
+                vec![DataValue::Int32(2), DataValue::Int32(2), DataValue::Null],
+            ]
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn test_insert_rejects_duplicate_target_column() -> Result<(), DatabaseError> {
+        let mut database = DataBaseBuilder::path(".").build_in_memory()?;
+        database.ddl("create table t_ins_dup(id int primary key, a int, b int)")?;
+
+        for sql in [
+            "insert into t_ins_dup (id, a, a) values (1, 1, 2)",
+            "insert into t_ins_dup (id, a, b, b) values (1, 1, 2, 3)",
+            "insert into t_ins_dup (id, a, a) select 1, 2, 3",
+        ] {
+            let err = database.run(sql).and_then(|iter| iter.done()).unwrap_err();
+            assert!(
+                matches!(&err, DatabaseError::DuplicateTargetColumn(c) if c == "a" || c == "b"),
+                "{sql}: {err}"
+            );
+        }
+        let mut iter = database.run("select count(*) from t_ins_dup")?;
+        let row = iter.next_tuple(|_, row| row.take_values())?.unwrap();
+        iter.done()?;
+        assert_eq!(row, vec![DataValue::Int32(0)]);
+
+        Ok(())
+    }
 }
 // GRCOV_EXCL_STOP

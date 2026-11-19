@@ -190,3 +190,24 @@ select id from t_insert_self order by id
 
 statement ok
 drop table t_insert_self
+
+# A column may appear only once in the INSERT column list.
+statement ok
+create table t_insert_dup_target(id int primary key, a int, b int)
+
+statement error
+insert into t_insert_dup_target (id, a, a) values (1, 1, 2)
+
+statement error
+insert into t_insert_dup_target (id, a, b, b) values (1, 1, 2, 3)
+
+statement error
+insert into t_insert_dup_target (id, a, a) select 1, 2, 3
+
+query I
+select count(*) from t_insert_dup_target
+----
+0
+
+statement ok
+drop table t_insert_dup_target
