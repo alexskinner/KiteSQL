@@ -137,3 +137,62 @@ select * from t10
 
 statement ok
 drop table t10
+
+statement ok
+create table t13 (pk int primary key comment 'test comment', v int)
+
+statement ok
+insert into t13 values (50, 120)
+
+query II
+select * from t13
+----
+50 120
+
+statement ok
+drop table t13
+
+statement ok
+create table t14 (pk int comment 'test' primary key, v int)
+
+statement ok
+insert into t14 values (60, 130)
+
+query II
+select * from t14
+----
+60 130
+
+statement ok
+drop table t14
+
+statement ok
+create table t15 (pk int primary key check (pk > 0), v int)
+
+statement ok
+insert into t15 values (70, 140)
+
+query II
+select * from t15
+----
+70 140
+
+statement ok
+drop table t15
+
+statement ok
+create table t16 (pk int check (pk > 0) primary key, v int)
+
+statement ok
+insert into t16 values (80, 150)
+
+query II
+select * from t16
+----
+80 150
+
+statement ok
+drop table t16
+
+statement error
+create table t_invalid (pk int primary key null, v int)

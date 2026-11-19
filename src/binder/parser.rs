@@ -970,13 +970,23 @@ where
         let mut column_desc = ColumnDesc::new(type_spec.logical, None, false, None)?;
         let mut nullable = true;
 
+        let mut primary_key_seen = false;
+
         for option_def in column_def.options {
             match option_def.option {
-                ColumnOption::Null => nullable = true,
+                ColumnOption::Null => {
+                    if primary_key_seen {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "PRIMARY KEY columns cannot be NULL".to_string(),
+                        ));
+                    }
+                    nullable = true;
+                }
                 ColumnOption::NotNull => nullable = false,
                 ColumnOption::PrimaryKey(_) => {
                     column_desc.set_primary(column_index);
                     nullable = false;
+                    primary_key_seen = true;
                 }
                 ColumnOption::Unique(_) => column_desc.set_unique(),
                 ColumnOption::Default(expr) => {
@@ -994,6 +1004,10 @@ where
                         expr.type_cast(Cow::Borrowed(&column_desc.column_datatype), self.arena)?;
                     column_desc.default = Some(expr);
                 }
+                ColumnOption::DialectSpecific(_)
+                | ColumnOption::Comment(_)
+                | ColumnOption::Check(_)
+                | ColumnOption::ForeignKey { .. } => {}
                 option => {
                     return Err(DatabaseError::UnsupportedStmt(format!(
                         "`Column` does not currently support this option: {option:?}"
