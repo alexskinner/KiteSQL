@@ -1502,6 +1502,7 @@ mod tests {
             unique_constraints: Vec::new(),
             index_constraints: Vec::new(),
             display_types: std::collections::BTreeMap::new(),
+            identity: None,
         });
         assert!(referenced_columns(&create_table, &mut arena)?.is_empty());
 
@@ -1682,6 +1683,7 @@ mod tests {
                     unique_constraints: Vec::new(),
                     index_constraints: Vec::new(),
                     display_types: std::collections::BTreeMap::new(),
+                    identity: None,
                 }),
                 "Create users -> [id, name], If Not Exists: true",
             ),
@@ -1777,6 +1779,7 @@ mod tests {
                     table: crate::catalog::table::DmlTable::default(),
                     is_overwrite: true,
                     on_duplicate_key_update: None,
+                    identity: None,
                 }),
                 "Insert users, Is Overwrite: true",
             ),

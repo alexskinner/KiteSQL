@@ -40,7 +40,7 @@ use crate::planner::operator::alter_table::change_column::{
 };
 use crate::planner::{MetaArena, TableArenaCell};
 use crate::storage::table_codec::{
-    index_has_null, Bytes, IndexStatisticsCodecType, TableCodec, BOUND_MAX_TAG,
+    index_has_null, Bytes, IdentitySlot, IndexStatisticsCodecType, TableCodec, BOUND_MAX_TAG,
 };
 use crate::types::index::{Index, IndexId, IndexMeta, IndexMetaRef, IndexType};
 use crate::types::mapped::MappedScope;
@@ -626,6 +626,7 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
 
         // Load display types into updated_table for cache
         updated_table.load_display_types(display_meta.clone());
+        updated_table.set_identity_column(table.identity_column());
 
         self.rewrite_table_metadata(table_codec, plan_arena, &updated_table)
             .await?;
@@ -774,6 +775,9 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         };
 
         let table_id = table_catalog.id();
+        if table_catalog.identity_column() == Some(column_id) {
+            self.remove_identity(table_codec, table_id).await?;
+        }
         self.remove_column_statistics(table_codec, table_id, column_id, plan_arena)
             .await?;
         for index_meta in table_catalog.indexes.iter() {
@@ -1173,6 +1177,8 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
             })
             .await?;
 
+        self.remove_identity(table_codec, meta.id).await?;
+
         // Delete display types metadata if it exists
         table_codec
             .with_display_types(
@@ -1216,7 +1222,105 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                 self.remove_range(Bound::Included(min), Bound::Included(max), pool)
                     .await
             })
+            .await?;
+
+        // Emptying a table restarts its identity counter.
+        table_codec
+            .with_identity(table_id, IdentitySlot::Counter, async |key| {
+                self.remove(key)
+            })
             .await
+    }
+
+    /// Makes `column_name` the identity column of `table`: values omitted or given as NULL on
+    /// INSERT are generated from a per-table counter, which starts at `start` (default 1) and
+    /// moves past every explicit value stored in the column. Only integer columns qualify.
+    async fn set_identity(
+        &mut self,
+        table_codec: &mut TableCodec,
+        plan_arena: &mut (dyn MetaArena + '_),
+        table: &mut TableCatalog,
+        column_name: &str,
+        start: Option<i128>,
+    ) -> Result<(), DatabaseError> {
+        let column_ref = table
+            .get_column_by_name(column_name)
+            .ok_or_else(|| DatabaseError::column_not_found(column_name.to_string()))?;
+        let column = plan_arena.column(column_ref);
+        if !column.datatype().is_integer() {
+            return Err(DatabaseError::invalid_column(format!(
+                "identity column `{column_name}` must have an integer type"
+            )));
+        }
+        let column_id = column.id().ok_or_else(|| {
+            DatabaseError::invalid_column(format!("column {column_name} has no id"))
+        })?;
+        let table_id = table.id();
+        table_codec
+            .with_identity(table_id, IdentitySlot::Column, async |key| {
+                self.set(key, &TableCodec::encode_identity_value(column_id as i128))
+            })
+            .await?;
+        match start {
+            Some(start) => {
+                table_codec
+                    .with_identity(table_id, IdentitySlot::Counter, async |key| {
+                        self.set(key, &TableCodec::encode_identity_value(start))
+                    })
+                    .await?
+            }
+            None => {
+                table_codec
+                    .with_identity(table_id, IdentitySlot::Counter, async |key| {
+                        self.remove(key)
+                    })
+                    .await?
+            }
+        }
+        table.set_identity_column(Some(column_id));
+        Ok(())
+    }
+
+    /// The next value the identity counter of `table_id` hands out (1 if it has none yet).
+    async fn identity_next(
+        &self,
+        table_codec: &mut TableCodec,
+        table_id: TableId,
+    ) -> Result<i128, DatabaseError> {
+        table_codec
+            .with_identity(table_id, IdentitySlot::Counter, async |key| {
+                match self.get_borrowed(key).await? {
+                    Some(bytes) => TableCodec::decode_identity_value(bytes.as_ref()),
+                    None => Ok(1),
+                }
+            })
+            .await
+    }
+
+    async fn set_identity_next(
+        &mut self,
+        table_codec: &mut TableCodec,
+        table_id: TableId,
+        next: i128,
+    ) -> Result<(), DatabaseError> {
+        table_codec
+            .with_identity(table_id, IdentitySlot::Counter, async |key| {
+                self.set(key, &TableCodec::encode_identity_value(next))
+            })
+            .await
+    }
+
+    async fn remove_identity(
+        &mut self,
+        table_codec: &mut TableCodec,
+        table_id: TableId,
+    ) -> Result<(), DatabaseError> {
+        for slot in [IdentitySlot::Column, IdentitySlot::Counter] {
+            table_codec
+                .with_identity(table_id, slot, async |key| self.remove(key))
+                .await?;
+        }
+        Ok(())
     }
 
     #[allow(clippy::too_many_arguments)]
@@ -1334,6 +1438,16 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                 let display_meta = TableCodec::decode_display_types::<Self>(bytes.as_ref(), arena)?;
                 table.load_display_types(display_meta);
             }
+            let identity = table_codec
+                .with_identity(table.id(), IdentitySlot::Column, async |key| {
+                    match self.get_borrowed(key).await? {
+                        Some(bytes) => TableCodec::decode_identity_value(bytes.as_ref())
+                            .map(|id| Some(id as ColumnId)),
+                        None => Ok(None),
+                    }
+                })
+                .await?;
+            table.set_identity_column(identity);
             Ok(Some(table))
         } else {
             Ok(None)

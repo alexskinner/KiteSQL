@@ -56,6 +56,12 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
         crate::diagnostics::StatementPolicy::default()
     }
 
+    /// Whether inserting 0 into an identity column generates the next value, as NULL does.
+    /// The default stores the 0.
+    fn identity_zero_generates(&self) -> bool {
+        false
+    }
+
     /// Result type of `AVG` over an argument of type `arg`; `None` keeps the engine's DOUBLE.
     /// Only DOUBLE or DECIMAL are honoured: an AVG typed DECIMAL(p, s) is summed exactly and
     /// its quotient rounded half away from zero to scale s (unrounded when s is unset).

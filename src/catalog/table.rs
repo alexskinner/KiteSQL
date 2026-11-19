@@ -46,6 +46,9 @@ pub struct TableCatalog {
     /// Runtime-only field: declared column types for introspection (not serialized).
     /// Loaded from separate DisplayTypesMeta when the table is loaded.
     display_types: BTreeMap<ColumnId, Arc<str>>,
+    /// Runtime-only field: the table's identity column, whose omitted or NULL values are
+    /// generated from a per-table counter. Loaded from separate identity metadata.
+    identity: Option<ColumnId>,
 }
 
 /// What a write needs of its table, worked out once when the statement is bound.
@@ -310,6 +313,7 @@ impl TableCatalog {
             primary_key_indices: Default::default(),
             primary_key_type: LogicalType::SqlNull,
             display_types: BTreeMap::new(),
+            identity: None,
         };
         for col_catalog in columns.into_iter() {
             let _ = table_catalog.add_column(col_catalog, arena).unwrap();
@@ -334,6 +338,15 @@ impl TableCatalog {
 
     pub(crate) fn load_display_types(&mut self, meta: DisplayTypesMeta) {
         self.display_types = meta.display_types;
+    }
+
+    /// The identity column, if the table has one.
+    pub fn identity_column(&self) -> Option<ColumnId> {
+        self.identity
+    }
+
+    pub(crate) fn set_identity_column(&mut self, column_id: Option<ColumnId>) {
+        self.identity = column_id;
     }
 
     pub(crate) fn collect_display_types(&self) -> DisplayTypesMeta {
@@ -398,6 +411,7 @@ impl TableCatalog {
             primary_key_indices,
             primary_key_type,
             display_types: BTreeMap::new(),
+            identity: None,
         })
     }
 
@@ -425,6 +439,7 @@ impl TableCatalog {
 
         // Copy display types from source table
         table.display_types = self.display_types.clone();
+        table.identity = self.identity;
 
         Ok(table)
     }

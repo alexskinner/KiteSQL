@@ -24,6 +24,7 @@ use std::collections::HashSet;
 
 impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, A> {
     // TODO: TableConstraint
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn bind_create_table(
         &mut self,
         table_name: TableName,
@@ -32,6 +33,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         unique_constraints: Vec<Vec<String>>,
         index_constraints: Vec<crate::planner::operator::create_table::IndexConstraint>,
         display_types: std::collections::BTreeMap<String, std::sync::Arc<str>>,
+        identity: Option<crate::planner::operator::create_table::IdentitySpec>,
     ) -> Result<LogicalPlan, DatabaseError> {
         let mut names = HashSet::new();
         for column in &columns {
@@ -59,6 +61,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                 unique_constraints,
                 index_constraints,
                 display_types,
+                identity,
             }),
             Childrens::None,
         ))

@@ -455,6 +455,7 @@ async fn execute_create_table<S: Storage, M: Model>(
                 Vec::new(),
                 Vec::new(),
                 std::collections::BTreeMap::new(),
+                None,
             )
         })
         .await
