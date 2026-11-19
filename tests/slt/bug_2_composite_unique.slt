@@ -27,14 +27,21 @@ SELECT * FROM t
 2 1 2
 4 2 1
 
-# Test with NULLs - note: NULL = NULL in unique indexes currently
+# Test with NULLs. In MySQL (and standard SQL) NULL is not equal to anything, so a UNIQUE
+# key that contains a NULL never conflicts: any number of rows may hold (NULL, 1).
+# Non-NULL composite keys stay unique, as tested above.
 statement ok
 INSERT INTO t VALUES (5, NULL, 1)
 
-# According to probe results, NULLs are treated as equal in unique indexes
-# So a second (NULL, 1) should be rejected
-statement error
+# So a second (NULL, 1) is allowed
+statement ok
 INSERT INTO t VALUES (6, NULL, 1)
+
+query I rowsort
+SELECT id FROM t WHERE a IS NULL
+----
+5
+6
 
 statement ok
 DROP TABLE t

@@ -39,7 +39,9 @@ use crate::planner::operator::alter_table::change_column::{
     DefaultChange, DisplayTypeChange, NotNullChange,
 };
 use crate::planner::{MetaArena, TableArenaCell};
-use crate::storage::table_codec::{Bytes, IndexStatisticsCodecType, TableCodec, BOUND_MAX_TAG};
+use crate::storage::table_codec::{
+    index_has_null, Bytes, IndexStatisticsCodecType, TableCodec, BOUND_MAX_TAG,
+};
 use crate::types::index::{Index, IndexId, IndexMeta, IndexMetaRef, IndexType};
 use crate::types::mapped::MappedScope;
 use crate::types::serialize::{BytesPool, TupleValueSerializableImpl};
@@ -2265,10 +2267,23 @@ impl<T: StorageTransaction> IndexImpl<T> for UniqueIndexImpl {
         tuple: &mut Tuple,
         value: &DataValue,
         params: &IndexImplParams<'a, T>,
-        _: &mut Bytes,
-        _: &mut Bytes,
+        encode_min: &mut Bytes,
+        encode_max: &mut Bytes,
     ) -> Result<IndexResult<'a, T>, DatabaseError> {
         let index = Index::new(params.index_meta().id, value.as_slice(), IndexType::Unique);
+        if index_has_null(index.values) {
+            // Keys with a NULL are not unique, so read every entry under the prefix.
+            return eq_to_res_scope(
+                table_codec,
+                tuple,
+                self,
+                value,
+                params,
+                encode_min,
+                encode_max,
+            )
+            .await;
+        }
         let Some(bytes) = table_codec
             .with_index(params.table_id, &index, None, async |key, _| {
                 params.tx.get_borrowed(key).await
@@ -2300,8 +2315,11 @@ impl<T: StorageTransaction> IndexImpl<T> for UniqueIndexImpl {
 
         table_codec
             .with_index(params.table_id, &index, None, async |key, _| {
-                if index.values.len() < params.index_meta().column_ids.len() {
-                    // A partial UNIQUE key bounds a prefix, not one exact index entry.
+                if index.values.len() < params.index_meta().column_ids.len()
+                    || index_has_null(index.values)
+                {
+                    // A partial UNIQUE key, or one with a NULL (whose entries end with the
+                    // tuple id), bounds a prefix, not one exact index entry.
                     encode_bound_key(out, key, is_upper);
                 } else {
                     out.clear();
