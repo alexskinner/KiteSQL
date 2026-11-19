@@ -57,19 +57,19 @@ mod tests {
         let temp_dir = TempDir::new().unwrap();
         let mut db = DataBaseBuilder::path(temp_dir.path()).build_lmdb().unwrap();
 
-        db.ddl("CREATE TABLE _version_psys_accessdenied (record_id INTEGER PRIMARY KEY, id INTEGER, _version_number INTEGER, _version_is_latest_draft VARCHAR(1))")
+        db.ddl("CREATE TABLE _rev_records (record_id INTEGER PRIMARY KEY, id INTEGER, _rev_number INTEGER, _rev_is_latest_draft VARCHAR(1))")
             .unwrap();
-        db.run("INSERT INTO _version_psys_accessdenied VALUES (1, 1, 1, '0'), (2, 1, 2, '0'), (3, 2, 1, '0')")
+        db.run("INSERT INTO _rev_records VALUES (1, 1, 1, '0'), (2, 1, 2, '0'), (3, 2, 1, '0')")
             .unwrap()
             .done()
             .unwrap();
 
         let mut iter = db
             .run(
-                "UPDATE `_version_psys_accessdenied` `latest` \
-                 LEFT JOIN `_version_psys_accessdenied` `older` \
-                 ON `older`.id = `latest`.id AND `older`._version_number > `latest`._version_number \
-                 SET `latest`._version_is_latest_draft = '1' \
+                "UPDATE `_rev_records` `latest` \
+                 LEFT JOIN `_rev_records` `older` \
+                 ON `older`.id = `latest`.id AND `older`._rev_number > `latest`._rev_number \
+                 SET `latest`._rev_is_latest_draft = '1' \
                  WHERE `older`.id IS NULL",
             )
             .unwrap();
@@ -81,7 +81,7 @@ mod tests {
         assert_eq!(count, 2, "Should update exactly 2 rows");
 
         let mut iter = db
-            .run("SELECT * FROM _version_psys_accessdenied ORDER BY record_id")
+            .run("SELECT * FROM _rev_records ORDER BY record_id")
             .unwrap();
         let mut rows = Vec::new();
         while let Some(row) = iter
