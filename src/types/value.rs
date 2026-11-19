@@ -1804,7 +1804,9 @@ impl DataValue {
     #[cfg(feature = "decimal")]
     pub(crate) fn decimal_round_i(option: &Option<u8>, decimal: &mut Decimal) {
         if let Some(scale) = option {
-            let new_decimal = decimal.trunc_with_scale(*scale as u32);
+            let mut new_decimal = decimal.trunc_with_scale(*scale as u32);
+            // DECIMAL(p, s) values carry scale s: `2` becomes `2.000` for DECIMAL(5, 3)
+            new_decimal.rescale(*scale as u32);
             let _ = mem::replace(decimal, new_decimal);
         }
     }
@@ -1812,10 +1814,12 @@ impl DataValue {
     #[cfg(feature = "decimal")]
     pub(crate) fn decimal_round_f(option: &Option<u8>, decimal: &mut Decimal) {
         if let Some(scale) = option {
-            let new_decimal = decimal.round_dp_with_strategy(
+            let mut new_decimal = decimal.round_dp_with_strategy(
                 *scale as u32,
                 rust_decimal::RoundingStrategy::MidpointAwayFromZero,
             );
+            // round first (half away from zero), then pad: `1.2` becomes `1.20` for DECIMAL(3, 2)
+            new_decimal.rescale(*scale as u32);
             let _ = mem::replace(decimal, new_decimal);
         }
     }
