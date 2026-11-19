@@ -94,3 +94,69 @@ drop table t3;
 
 statement ok
 drop table t4;
+
+# Functional/expression key parts are rejected, even when the call's name is a column.
+
+statement error functional/expression key parts are not supported
+create table fk (id int primary key, `upper` int, `lower` int, b varchar(20), UNIQUE KEY ku (upper(b)));
+
+statement error functional/expression key parts are not supported
+create table fk (id int primary key, `upper` int, `lower` int, b varchar(20), UNIQUE KEY (upper(b)));
+
+statement error functional/expression key parts are not supported
+create table fk (id int primary key, `upper` int, `lower` int, b varchar(20), KEY kl (lower(b)));
+
+statement error functional/expression key parts are not supported
+create table fk (id int primary key, b varchar(20), KEY k (b()));
+
+statement error functional/expression key parts are not supported
+create table fk (id int primary key, b varchar(20), KEY k (b(0)));
+
+statement error functional/expression key parts are not supported
+create table fk (id int primary key, b varchar(20), KEY k (b(10,2)));
+
+statement error functional/expression key parts are not supported
+create table fk (id int primary key, b varchar(20), KEY k (b('x')));
+
+statement error functional/expression key parts are not supported
+create table fk (id int primary key, b varchar(20), KEY k (substring(b,1,3)));
+
+statement error functional/expression key parts are not supported
+create table fk (id int primary key, b varchar(20), UNIQUE KEY u (b(10,2)));
+
+statement error functional/expression key parts are not supported
+create table fk (id int primary key, b varchar(20), UNIQUE KEY u (substring(b,1,3)));
+
+# MySQL prefix lengths are accepted; uniqueness applies to the whole value.
+statement ok
+create table kp1 (id int primary key, b varchar(20), KEY (b(10)));
+
+statement ok
+create table kp2 (id int primary key, b varchar(20), UNIQUE KEY ub (b(10)));
+
+statement ok
+create table kp3 (id int primary key, b varchar(20), UNIQUE KEY (b(10)));
+
+statement ok
+insert into kp1 values (1, 'abc'), (2, 'abc');
+
+statement ok
+insert into kp2 values (1, 'abc');
+
+statement error
+insert into kp2 values (2, 'abc');
+
+statement ok
+insert into kp3 values (1, 'abc');
+
+statement error
+insert into kp3 values (2, 'abc');
+
+statement ok
+drop table kp1;
+
+statement ok
+drop table kp2;
+
+statement ok
+drop table kp3;
