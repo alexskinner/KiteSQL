@@ -155,7 +155,6 @@ impl Replace {
                 name: "replace".into(),
                 arg_types: vec![TEXT, TEXT, TEXT],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -210,7 +209,6 @@ impl Length {
                 name: "length".into(),
                 arg_types: vec![arg_type],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: true, // Accept any type, convert to text
             },
         })
     }
@@ -255,7 +253,6 @@ impl Concat {
                 name: "concat".into(),
                 arg_types: vec![TEXT; arg_count],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: true, // Accept any types, convert to text in eval
             },
         })
     }
@@ -305,7 +302,6 @@ impl ConcatWs {
                 name: "concat_ws".into(),
                 arg_types: vec![TEXT; arg_count],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -357,7 +353,6 @@ impl SubstringIndex {
                 name: "substring_index".into(),
                 arg_types: vec![TEXT, TEXT, LogicalType::Integer],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -455,7 +450,6 @@ impl Locate {
                 name: "locate".into(),
                 arg_types,
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -544,7 +538,6 @@ impl Instr {
                 name: "instr".into(),
                 arg_types: vec![TEXT, TEXT],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -603,7 +596,6 @@ impl Position {
                 name: "position".into(),
                 arg_types: vec![TEXT, TEXT],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -661,7 +653,6 @@ impl Left {
                 name: "left".into(),
                 arg_types: vec![TEXT, LogicalType::Integer],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -718,7 +709,6 @@ impl Right {
                 name: "right".into(),
                 arg_types: vec![TEXT, LogicalType::Integer],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -776,7 +766,6 @@ impl Lpad {
                 name: "lpad".into(),
                 arg_types: vec![TEXT, LogicalType::Integer, TEXT],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -850,7 +839,6 @@ impl Rpad {
                 name: "rpad".into(),
                 arg_types: vec![TEXT, LogicalType::Integer, TEXT],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -923,7 +911,6 @@ impl Repeat {
                 name: "repeat".into(),
                 arg_types: vec![TEXT, LogicalType::Integer],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -978,7 +965,6 @@ impl Reverse {
                 name: "reverse".into(),
                 arg_types: vec![TEXT],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -1023,7 +1009,6 @@ impl Ltrim {
                 name: "ltrim".into(),
                 arg_types: vec![TEXT],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -1068,7 +1053,6 @@ impl Rtrim {
                 name: "rtrim".into(),
                 arg_types: vec![TEXT],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -1114,7 +1098,6 @@ impl Hex {
                 name: "hex".into(),
                 arg_types: vec![arg_type],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: true, // Accept any type, handle numerics specially
             },
         })
     }
@@ -1177,7 +1160,6 @@ impl Uuid {
                 name: "uuid".into(),
                 arg_types: vec![],
                 persistence: PersistencePolicy::Transient,
-                accepts_any_args: false,
             },
         })
     }
@@ -1221,7 +1203,6 @@ impl Greatest {
                 name: "greatest".into(),
                 arg_types: vec![arg_type; arg_count],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -1281,7 +1262,6 @@ impl Least {
                 name: "least".into(),
                 arg_types: vec![arg_type; arg_count],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -1340,7 +1320,6 @@ impl Ifnull {
                 name: "ifnull".into(),
                 arg_types: vec![TEXT, TEXT],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }
@@ -1394,7 +1373,6 @@ impl Round {
                 name: "round".into(),
                 arg_types,
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false, // Type-specific matching
             },
         })
     }

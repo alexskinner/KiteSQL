@@ -75,6 +75,12 @@ pub trait ScalarFunctionImpl: Debug + Send + Sync {
     fn return_type(&self) -> &LogicalType;
 
     fn summary(&self) -> &FunctionSummary;
+
+    /// If true, the function accepts any argument types. The resolver will skip type checking
+    /// and let the function implementation handle type conversions. Default is false.
+    fn accepts_any_args(&self) -> bool {
+        false
+    }
 }
 
 impl ScalarFunction {

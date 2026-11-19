@@ -40,7 +40,6 @@ impl Numbers {
                 name: function_name.into(),
                 arg_types: vec![LogicalType::Integer],
                 persistence: crate::expression::function::PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }

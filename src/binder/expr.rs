@@ -686,7 +686,6 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
             name: function_name.into(),
             arg_types: arg_type_refs,
             persistence: crate::expression::function::PersistencePolicy::Durable,
-                accepts_any_args: false,
         };
 
         if let Some(function) = self.context.function_registry.get_table(&summary) {

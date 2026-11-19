@@ -37,7 +37,6 @@ impl CharLength {
                 name: function_name.into(),
                 arg_types,
                 persistence: crate::expression::function::PersistencePolicy::Durable,
-                accepts_any_args: false,
             },
         })
     }

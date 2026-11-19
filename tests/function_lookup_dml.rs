@@ -36,7 +36,6 @@ impl Times10 {
                 name: "times10".into(),
                 arg_types: vec![LogicalType::Integer],
                 persistence: PersistencePolicy::Transient,
-                accepts_any_args: false,
             },
             return_type: LogicalType::Integer,
         })
@@ -155,7 +154,6 @@ impl Exclaim {
                 name: "exclaim".into(),
                 arg_types: vec![s.clone()],
                 persistence: PersistencePolicy::Transient,
-                accepts_any_args: false,
             },
             return_type: s,
         })

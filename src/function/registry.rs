@@ -137,7 +137,6 @@ impl FunctionRegistry {
             name: Arc::from(name),
             arg_types: vec![function.input_type().clone()],
             persistence: crate::expression::function::PersistencePolicy::Transient,
-                accepts_any_args: false,
         };
         if !allow_override && self.aggregate_functions.contains_key(&summary) {
             return Err(DatabaseError::FunctionAlreadyExists(
@@ -226,7 +225,7 @@ impl FunctionRegistry {
             let mut compatible = true;
 
             // If the function accepts any args, skip type checking
-            if summary.accepts_any_args {
+            if function.accepts_any_args() {
                 scored_candidates.push((MatchQuality::ImplicitCast, function.clone()));
                 continue;
             }
@@ -312,7 +311,6 @@ mod tests {
                     name: "add_one".into(),
                     arg_types: vec![LogicalType::Integer],
                     persistence: PersistencePolicy::Transient,
-                accepts_any_args: false,
                 },
                 return_type: LogicalType::Integer,
             })
@@ -359,7 +357,6 @@ mod tests {
                     name: "add_one".into(),
                     arg_types: vec![LogicalType::Bigint],
                     persistence: PersistencePolicy::Transient,
-                accepts_any_args: false,
                 },
                 return_type: LogicalType::Bigint,
             })
@@ -406,7 +403,6 @@ mod tests {
                     name: "abs".into(),
                     arg_types: vec![LogicalType::Integer],
                     persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
                 },
                 return_type: LogicalType::Integer,
             })
@@ -453,7 +449,6 @@ mod tests {
                     name: "double_arg".into(),
                     arg_types: vec![LogicalType::Double],
                     persistence: PersistencePolicy::Transient,
-                accepts_any_args: false,
                 },
                 return_type: LogicalType::Double,
             })
@@ -649,7 +644,6 @@ mod tests {
                     name: "range".into(),
                     arg_types: vec![],
                     persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
                 },
             })
         }
@@ -758,7 +752,6 @@ mod tests {
                     name: "add_one".into(),
                     arg_types: vec![LogicalType::Integer],
                     persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
                 },
                 return_type: LogicalType::Integer,
             }
