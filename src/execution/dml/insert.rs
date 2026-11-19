@@ -252,9 +252,12 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
 
                 // Create combined tuple: [existing values, would-be-inserted values]
                 // This allows VALUES(col) to reference the insert values via the second half
+                // Clone values from tuple before modification
+                let insert_values: Vec<_> = tuple.iter().cloned().collect();
+                let insert_tuple = Tuple::new(tuple.pk().cloned(), insert_values);
                 let combined_tuple_impl = TupleImpl::concat(
                     TupleImpl::from(existing_tuple.clone()),
-                    TupleImpl::from((&**tuple).clone()),
+                    TupleImpl::from(insert_tuple),
                     existing_tuple.pk.clone(),
                 );
 
