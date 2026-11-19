@@ -112,10 +112,25 @@ decimal_binary!(
     decimal_multiply_binary_eval,
     |v1: &rust_decimal::Decimal, v2: &rust_decimal::Decimal| DataValue::Decimal(v1 * v2)
 );
-decimal_binary!(
-    decimal_divide_binary_eval,
-    |v1: &rust_decimal::Decimal, v2: &rust_decimal::Decimal| DataValue::Decimal(v1 / v2)
-);
+pub fn decimal_divide_binary_eval(
+    left: &DataValue,
+    right: &DataValue,
+) -> Result<DataValue, DatabaseError> {
+    Ok(match (left, right) {
+        (DataValue::Decimal(_), DataValue::Decimal(v2)) if v2.is_zero() => {
+            // rust_decimal panics on a zero divisor
+            crate::diagnostics::division_by_zero()?;
+            DataValue::Null
+        }
+        (DataValue::Decimal(v1), DataValue::Decimal(v2)) => {
+            DataValue::Decimal(v1.checked_div(*v2).ok_or(DatabaseError::OverFlow)?)
+        }
+        (DataValue::Decimal(_), DataValue::Null)
+        | (DataValue::Null, DataValue::Decimal(_))
+        | (DataValue::Null, DataValue::Null) => DataValue::Null,
+        _ => unsafe { hint::unreachable_unchecked() },
+    })
+}
 decimal_binary!(
     decimal_gt_binary_eval,
     |v1: &rust_decimal::Decimal, v2: &rust_decimal::Decimal| DataValue::Boolean(v1 > v2)

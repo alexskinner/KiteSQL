@@ -613,7 +613,8 @@ macro_rules! numeric_binary_evaluator_definition {
                 Ok(match (left, right) {
                     ($compute_type(v1), $compute_type(v2)) => {
                         if *v2 == 0 {
-                            return Err($crate::errors::DatabaseError::InvalidValue("division by zero".into()));
+                            $crate::diagnostics::division_by_zero()?;
+                            return Ok($crate::types::value::DataValue::Null);
                         }
                         $compute_type(v1.checked_div(*v2).ok_or($crate::errors::DatabaseError::OverFlow)?)
                     },
@@ -701,7 +702,10 @@ macro_rules! numeric_binary_evaluator_definition {
             ) -> Result<$crate::types::value::DataValue, $crate::errors::DatabaseError> {
                 Ok(match (left, right) {
                     // Integer remainder by zero would panic; report NULL like division.
-                    ($compute_type(_), $compute_type(v2)) if *v2 == 0 => $crate::types::value::DataValue::Null,
+                    ($compute_type(_), $compute_type(v2)) if *v2 == 0 => {
+                        $crate::diagnostics::modulo_by_zero();
+                        $crate::types::value::DataValue::Null
+                    }
                     ($compute_type(v1), $compute_type(v2)) => $compute_type(v1.wrapping_rem(*v2)),
                     ($compute_type(_), $crate::types::value::DataValue::Null)
                     | ($crate::types::value::DataValue::Null, $compute_type(_))

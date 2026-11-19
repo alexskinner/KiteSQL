@@ -49,6 +49,21 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
         self.map_data_type(data_type)
             .map(|result| result.map(ColumnTypeSpec::new))
     }
+
+    /// Evaluation choices for one parsed statement (division by zero, lenient numeric
+    /// strings). The default keeps every such case an error.
+    fn statement_policy(&self, _stmt: &Statement) -> crate::diagnostics::StatementPolicy {
+        crate::diagnostics::StatementPolicy::default()
+    }
+
+    /// Maps a core diagnostic to this dialect's level, code and wording; `None` drops it.
+    /// The default keeps it as raised (code 0).
+    fn map_diagnostic(
+        &self,
+        diagnostic: crate::diagnostics::Diagnostic,
+    ) -> Option<crate::diagnostics::Diagnostic> {
+        Some(diagnostic)
+    }
 }
 
 #[derive(Debug)]
