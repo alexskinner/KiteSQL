@@ -103,3 +103,53 @@ query T
 select position(NULL in NULL)
 ----
 NULL
+
+query T
+select substring('pineapple', -15, 10) = ''
+----
+true
+
+query I
+select char_length(substring('pineapple', -15, 10))
+----
+0
+
+query T
+select substring('test', 0) = ''
+----
+true
+
+query I
+select char_length(substring('test', 0))
+----
+0
+
+query T
+select substring('hello', 10) = ''
+----
+true
+
+query I
+select char_length(substring('hello', 10))
+----
+0
+
+query T
+select substring('test', 2, -1) = ''
+----
+true
+
+query I
+select char_length(substring('test', 2, -1))
+----
+0
+
+query I
+select position('x' in 'İx')
+----
+2
+
+query I
+select position('x' in 'İİİx')
+----
+4

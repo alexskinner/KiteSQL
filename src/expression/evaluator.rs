@@ -260,17 +260,24 @@ impl ScalarExpression {
 
                 match (pattern.utf8(), string.utf8()) {
                     (Some(needle), Some(haystack)) => {
-                        let needle_lower: String =
-                            needle.chars().flat_map(|c| c.to_lowercase()).collect();
-                        let haystack_lower: String =
-                            haystack.chars().flat_map(|c| c.to_lowercase()).collect();
+                        let fold_char = |c: char| -> char {
+                            let mut lower = c.to_lowercase();
+                            match (lower.next(), lower.next()) {
+                                (Some(single), None) => single,
+                                _ => c,
+                            }
+                        };
 
-                        Ok(Cow::Owned(DataValue::Int32(
-                            haystack_lower
-                                .find(&needle_lower)
-                                .map(|pos| haystack_lower[..pos].chars().count() as i32 + 1)
-                                .unwrap_or(0),
-                        )))
+                        let needle_chars: Vec<char> = needle.chars().map(fold_char).collect();
+                        let haystack_chars: Vec<char> = haystack.chars().map(fold_char).collect();
+
+                        let pos = haystack_chars
+                            .windows(needle_chars.len())
+                            .position(|window| window == needle_chars.as_slice())
+                            .map(|idx| idx as i32 + 1)
+                            .unwrap_or(0);
+
+                        Ok(Cow::Owned(DataValue::Int32(pos)))
                     }
                     _ => Ok(Cow::Owned(DataValue::Null)),
                 }
