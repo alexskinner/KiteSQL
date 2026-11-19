@@ -41,7 +41,71 @@ impl ExprVisitor<dyn MetaArena + '_> for AggregateCallCollector<'_> {
     }
 }
 
+/// Rejects a column of the query's own sources that is used outside an aggregate call and is
+/// not a GROUP BY expression. Outer-query columns are constants here and are allowed.
+struct UngroupedColumnValidator<'a> {
+    group_by_exprs: &'a [ExprRef],
+    local_columns: &'a [crate::catalog::ColumnRef],
+}
+
+impl ExprVisitor<dyn MetaArena + '_> for UngroupedColumnValidator<'_> {
+    fn visit(&mut self, expr: ExprRef, arena: &(dyn MetaArena + '_)) -> Result<(), DatabaseError> {
+        let grouped = self.group_by_exprs.iter().any(|group_expr| {
+            group_expr.eq_ignore_colref_pos(expr, arena)
+                || group_expr
+                    .unpack_alias(arena)
+                    .eq_ignore_colref_pos(expr.unpack_alias(arena), arena)
+        });
+        if grouped {
+            return Ok(());
+        }
+        match arena.expression(expr) {
+            ScalarExpression::AggCall { .. } => Ok(()),
+            ScalarExpression::ColumnRef { column, .. } => {
+                let column = *column;
+                if self
+                    .local_columns
+                    .iter()
+                    .any(|local| arena.same_column(*local, column))
+                {
+                    Err(DatabaseError::AggMiss(format!(
+                        "`{}` must appear in the GROUP BY clause or be used in an aggregate function",
+                        expr.output_name(arena)
+                    )))
+                } else {
+                    Ok(())
+                }
+            }
+            ScalarExpression::Empty | ScalarExpression::TableFunction(_) => Ok(()),
+            _ => walk_expr(self, expr, arena),
+        }
+    }
+}
+
 impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, A> {
+    /// An aggregate query without GROUP BY has one group, the whole input, so like a grouped
+    /// query it may only output aggregates and expressions over them. A bare column such as
+    /// `a` in `SELECT a, MAX(c) FROM t` names no single value, and is rejected as the
+    /// GROUP BY check rejects it.
+    pub(crate) fn validate_ungrouped_aggregate_exprs<'e>(
+        &self,
+        exprs: impl IntoIterator<Item = &'e ExprRef>,
+        arena: &PlanArena<'_>,
+    ) -> Result<(), DatabaseError> {
+        let local_columns = self.context.bind_table[self.context.source_scope_start..]
+            .iter()
+            .flat_map(|bound_source| bound_source.source.schema().iter().copied())
+            .collect::<Vec<_>>();
+        let mut validator = UngroupedColumnValidator {
+            group_by_exprs: &self.context.group_by_exprs,
+            local_columns: &local_columns,
+        };
+        for expr in exprs {
+            validator.visit(*expr, arena)?;
+        }
+        Ok(())
+    }
+
     pub fn bind_aggregate(
         &mut self,
         children: LogicalPlan,
@@ -591,6 +655,37 @@ mod tests {
             Err(DatabaseError::AggMiss(_))
         ));
 
+        Ok(())
+    }
+
+    #[test]
+    async fn test_aggregate_without_group_by_rejects_bare_columns() -> Result<(), DatabaseError> {
+        let tables = build_t1_table().await?;
+        let agg_miss = |sql: &str| matches!(tables.plan(sql), Err(DatabaseError::AggMiss(_)));
+
+        // A non-aggregated column anywhere in the output of an ungrouped aggregate query.
+        for sql in [
+            "select c1, max(c2) from t1",
+            "select max(c2), c1 from t1",
+            "select c1 + max(c2) from t1",
+            "select max(c2) from t1 having c1 > 0",
+            "select max(c2) from t1 order by c1",
+            "select sum(c1) over (), max(c2) from t1",
+        ] {
+            assert!(agg_miss(sql), "{sql} should be rejected");
+        }
+
+        // Aggregates, expressions over them, constants and outer columns are fine.
+        for sql in [
+            "select max(c2) + 1, count(*), 123, 'abc' from t1",
+            "select max(c2) as m from t1 order by m",
+            "select max(c2) from t1 having max(c2) > 1",
+            "select c1, (select max(c3) + t1.c1 from t2) from t1",
+            "select max(m) from (select c1 as m from t1) s",
+            "select c1, max(c2) from t1 group by c1",
+        ] {
+            tables.plan(sql)?;
+        }
         Ok(())
     }
 }
