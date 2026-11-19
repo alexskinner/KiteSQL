@@ -1,0 +1,428 @@
+statement ok
+create table test_bool_int(id int primary key, b boolean null, i int null, u uint null, d double null, dec decimal(10,2) null)
+
+statement ok
+insert into test_bool_int values (1, true, 1, 1, 1.0, 1.00)
+
+statement ok
+insert into test_bool_int values (2, false, 0, 0, 0.0, 0.00)
+
+statement ok
+insert into test_bool_int values (3, true, 2, 2, 2.5, 2.50)
+
+statement ok
+insert into test_bool_int values (4, false, -1, 100, -1.5, -1.50)
+
+query IBIIDD rowsort
+select * from test_bool_int where b = 0
+----
+2 false 0 0 0.0 0.00
+4 false -1 100 -1.5 -1.50
+
+query IBIIDD rowsort
+select * from test_bool_int where b = 1
+----
+1 true 1 1 1.0 1.00
+3 true 2 2 2.5 2.50
+
+query IBIIDD rowsort
+select * from test_bool_int where b <> 0
+----
+1 true 1 1 1.0 1.00
+3 true 2 2 2.5 2.50
+
+query IBIIDD rowsort
+select * from test_bool_int where b <> 1
+----
+2 false 0 0 0.0 0.00
+4 false -1 100 -1.5 -1.50
+
+query IBIIDD rowsort
+select * from test_bool_int where 0 = b
+----
+2 false 0 0 0.0 0.00
+4 false -1 100 -1.5 -1.50
+
+query IBIIDD rowsort
+select * from test_bool_int where 1 = b
+----
+1 true 1 1 1.0 1.00
+3 true 2 2 2.5 2.50
+
+query IBIIDD rowsort
+select * from test_bool_int where b in (0, 1)
+----
+1 true 1 1 1.0 1.00
+2 false 0 0 0.0 0.00
+3 true 2 2 2.5 2.50
+4 false -1 100 -1.5 -1.50
+
+query IBIIDD
+select * from test_bool_int where b between 0 and 1 order by id
+----
+1 true 1 1 1.0 1.00
+2 false 0 0 0.0 0.00
+3 true 2 2 2.5 2.50
+4 false -1 100 -1.5 -1.50
+
+query IBIIDD rowsort
+select * from test_bool_int where i = b
+----
+1 true 1 1 1.0 1.00
+2 false 0 0 0.0 0.00
+
+query IBIIDD rowsort
+select * from test_bool_int where b = u
+----
+1 true 1 1 1.0 1.00
+2 false 0 0 0.0 0.00
+
+query IBIIDD rowsort
+select * from test_bool_int where b = d
+----
+1 true 1 1 1.0 1.00
+2 false 0 0 0.0 0.00
+
+query IBIIDD rowsort
+select * from test_bool_int where b = dec
+----
+1 true 1 1 1.0 1.00
+2 false 0 0 0.0 0.00
+
+statement ok
+delete from test_bool_int where b = 0
+
+query IBIIDD rowsort
+select * from test_bool_int
+----
+1 true 1 1 1.0 1.00
+3 true 2 2 2.5 2.50
+
+statement ok
+update test_bool_int set b = false where b = 1
+
+query IBIIDD rowsort
+select * from test_bool_int
+----
+1 false 1 1 1.0 1.00
+3 false 2 2 2.5 2.50
+
+statement ok
+delete from test_bool_int
+
+statement ok
+drop table test_bool_int
+
+statement ok
+create table test_uint_int(id int primary key, ui uint null, si int null)
+
+statement ok
+insert into test_uint_int values (1, 0, 0)
+
+statement ok
+insert into test_uint_int values (2, 1, 1)
+
+statement ok
+insert into test_uint_int values (3, 100, 100)
+
+statement ok
+insert into test_uint_int values (4, 4294967295, -1)
+
+query III rowsort
+select * from test_uint_int where ui = si
+----
+1 0 0
+2 1 1
+3 100 100
+
+query III rowsort
+select * from test_uint_int where ui <> si
+----
+4 4294967295 -1
+
+query III rowsort
+select * from test_uint_int where ui > si
+----
+4 4294967295 -1
+
+query III
+select * from test_uint_int where ui < si
+----
+
+query III rowsort
+select * from test_uint_int where ui >= si
+----
+1 0 0
+2 1 1
+3 100 100
+4 4294967295 -1
+
+query III rowsort
+select * from test_uint_int where ui <= si
+----
+1 0 0
+2 1 1
+3 100 100
+
+query III rowsort
+select * from test_uint_int where si = ui
+----
+1 0 0
+2 1 1
+3 100 100
+
+query III
+select * from test_uint_int where ui in (0, 1, -1)
+----
+1 0 0
+2 1 1
+
+query III rowsort
+select * from test_uint_int where ui between -10 and 200
+----
+1 0 0
+2 1 1
+3 100 100
+
+statement ok
+delete from test_uint_int where ui = -1
+
+query III rowsort
+select * from test_uint_int
+----
+1 0 0
+2 1 1
+3 100 100
+
+statement ok
+update test_uint_int set ui = 999 where si = 100
+
+query III rowsort
+select * from test_uint_int
+----
+1 0 0
+2 1 1
+3 999 100
+
+statement ok
+delete from test_uint_int
+
+statement ok
+drop table test_uint_int
+
+statement ok
+create table test_temporal(id int primary key, d date null, dt datetime null, ts timestamp null)
+
+statement ok
+insert into test_temporal values (1, '2020-01-01', '2020-01-01 10:30:45', '2020-01-01 10:30:45')
+
+statement ok
+insert into test_temporal values (2, '1999-12-31', '1999-12-31 23:59:59', '1999-12-31 23:59:59')
+
+statement ok
+insert into test_temporal values (3, '2026-11-19', '2026-11-19 14:25:30', '2026-11-19 14:25:30')
+
+query ITTT
+select * from test_temporal where d < 20200101
+----
+2 1999-12-31 1999-12-31 23:59:59 1999-12-31 23:59:59
+
+query ITTT rowsort
+select * from test_temporal where d >= 20200101
+----
+1 2020-01-01 2020-01-01 10:30:45 2020-01-01 10:30:45
+3 2026-11-19 2026-11-19 14:25:30 2026-11-19 14:25:30
+
+query ITTT
+select * from test_temporal where d = 20200101
+----
+1 2020-01-01 2020-01-01 10:30:45 2020-01-01 10:30:45
+
+query ITTT
+select * from test_temporal where d <> 20200101 order by id
+----
+2 1999-12-31 1999-12-31 23:59:59 1999-12-31 23:59:59
+3 2026-11-19 2026-11-19 14:25:30 2026-11-19 14:25:30
+
+query ITTT
+select * from test_temporal where dt < 20200101103045
+----
+2 1999-12-31 1999-12-31 23:59:59 1999-12-31 23:59:59
+
+query ITTT rowsort
+select * from test_temporal where dt >= 20200101103045
+----
+1 2020-01-01 2020-01-01 10:30:45 2020-01-01 10:30:45
+3 2026-11-19 2026-11-19 14:25:30 2026-11-19 14:25:30
+
+query ITTT
+select * from test_temporal where dt = 20200101103045
+----
+1 2020-01-01 2020-01-01 10:30:45 2020-01-01 10:30:45
+
+query ITTT
+select * from test_temporal where ts < 20200101103045
+----
+2 1999-12-31 1999-12-31 23:59:59 1999-12-31 23:59:59
+
+query ITTT rowsort
+select * from test_temporal where ts >= 20200101103045
+----
+1 2020-01-01 2020-01-01 10:30:45 2020-01-01 10:30:45
+3 2026-11-19 2026-11-19 14:25:30 2026-11-19 14:25:30
+
+query ITTT
+select * from test_temporal where d in (19991231, 20200101)
+----
+2 1999-12-31 1999-12-31 23:59:59 1999-12-31 23:59:59
+1 2020-01-01 2020-01-01 10:30:45 2020-01-01 10:30:45
+
+query ITTT
+select * from test_temporal where d between 20000101 and 20210101
+----
+1 2020-01-01 2020-01-01 10:30:45 2020-01-01 10:30:45
+
+query ITTT
+select * from test_temporal where dt in (19991231235959, 20200101103045)
+----
+2 1999-12-31 1999-12-31 23:59:59 1999-12-31 23:59:59
+1 2020-01-01 2020-01-01 10:30:45 2020-01-01 10:30:45
+
+query ITTT
+select * from test_temporal where dt between 20000101000000 and 20210101000000
+----
+1 2020-01-01 2020-01-01 10:30:45 2020-01-01 10:30:45
+
+query ITTT
+select * from test_temporal where d = '2020-01-01'
+----
+1 2020-01-01 2020-01-01 10:30:45 2020-01-01 10:30:45
+
+query ITTT
+select * from test_temporal where dt = '2020-01-01 10:30:45'
+----
+1 2020-01-01 2020-01-01 10:30:45 2020-01-01 10:30:45
+
+query ITTT
+select * from test_temporal where d < '2020-01-01'
+----
+2 1999-12-31 1999-12-31 23:59:59 1999-12-31 23:59:59
+
+query ITTT
+select * from test_temporal where dt > '2020-01-01 00:00:00'
+----
+1 2020-01-01 2020-01-01 10:30:45 2020-01-01 10:30:45
+3 2026-11-19 2026-11-19 14:25:30 2026-11-19 14:25:30
+
+statement ok
+delete from test_temporal where d < 20200101
+
+query ITTT rowsort
+select * from test_temporal
+----
+1 2020-01-01 2020-01-01 10:30:45 2020-01-01 10:30:45
+3 2026-11-19 2026-11-19 14:25:30 2026-11-19 14:25:30
+
+statement ok
+update test_temporal set d = '2025-01-01' where dt > 20260101000000
+
+query ITTT rowsort
+select * from test_temporal
+----
+1 2020-01-01 2020-01-01 10:30:45 2020-01-01 10:30:45
+3 2025-01-01 2026-11-19 14:25:30 2026-11-19 14:25:30
+
+statement ok
+delete from test_temporal
+
+statement ok
+drop table test_temporal
+
+statement ok
+create table test_coalesce(id int primary key, b boolean null, v varchar(10) null)
+
+statement ok
+insert into test_coalesce values (1, true, 'hello')
+
+statement ok
+insert into test_coalesce values (2, false, 'world')
+
+statement ok
+insert into test_coalesce values (3, NULL, 'test')
+
+statement ok
+insert into test_coalesce values (4, true, NULL)
+
+query IT rowsort
+select id, coalesce(v, 'default') from test_coalesce
+----
+1 hello
+2 world
+3 test
+4 default
+
+query IT rowsort
+select id, coalesce(b, false) from test_coalesce
+----
+1 true
+2 false
+3 false
+4 true
+
+query T rowsort
+select case when b then 'yes' else v end from test_coalesce
+----
+NULL
+hello
+world
+yes
+
+query T rowsort
+select case b when true then 'yes' when false then 'no' else 'unknown' end from test_coalesce
+----
+no
+unknown
+yes
+yes
+
+statement ok
+delete from test_coalesce
+
+statement ok
+drop table test_coalesce
+
+statement ok
+create table test_union1(id int primary key, b boolean null)
+
+statement ok
+insert into test_union1 values (1, true)
+
+statement ok
+create table test_union2(id int primary key, v varchar(10) null)
+
+statement ok
+insert into test_union2 values (1, 'test')
+
+query T
+select b from test_union1 union select v from test_union2
+----
+test
+true
+
+statement ok
+drop table test_union1
+
+statement ok
+drop table test_union2
+
+statement ok
+create table test_error_types(id int primary key, b boolean null, v varchar(10) null)
+
+statement ok
+insert into test_error_types values (1, true, 'hello')
+
+statement error
+select * from test_error_types where b = v
+
+statement ok
+drop table test_error_types
