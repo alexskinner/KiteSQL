@@ -28,7 +28,6 @@ use crate::db::{
 use crate::errors::{DatabaseError, SqlErrorSpan};
 use crate::expression;
 use crate::expression::agg::AggKind;
-use crate::expression::visitor_mut::ExprVisitorMut;
 use crate::expression::window::WindowFunctionKind;
 use crate::expression::{AliasType, ScalarExpression, TypeCast};
 use crate::iter_ext::Itertools;
@@ -37,7 +36,6 @@ use crate::planner::operator::alter_table::change_column::{
 };
 use crate::planner::operator::join::{JoinCondition, JoinOperator as LJoinOperator, JoinType};
 use crate::planner::operator::mark_apply::MarkApplyQuantifier;
-use crate::planner::operator::project::ProjectOperator;
 use crate::planner::operator::recursive_cte::{RecursiveCteOperator, RecursiveScanOperator};
 use crate::planner::operator::sort::SortField;
 use crate::planner::operator::{CommandType, Operator};
@@ -460,32 +458,6 @@ where
 
 struct BindStatementComplete {
     plan: LogicalPlan,
-}
-
-struct UpdateExprTargetRemapper<'a> {
-    target_schema: &'a [ColumnRef],
-}
-
-impl<A: MetaArena + ?Sized> ExprVisitorMut<A> for UpdateExprTargetRemapper<'_> {
-    fn visit_column_ref(
-        &mut self,
-        column: &mut ColumnRef,
-        position: &mut usize,
-        arena: &mut A,
-    ) -> Result<(), DatabaseError> {
-        let Some(target_position) = self
-            .target_schema
-            .iter()
-            .copied()
-            .position(|target_column| arena.same_column(target_column, *column))
-        else {
-            return Err(DatabaseError::UnsupportedStmt(
-                "joined UPDATE SET expressions can only reference target table columns".to_string(),
-            ));
-        };
-        *position = target_position;
-        Ok(())
-    }
 }
 
 impl<'s, 'a: 'b, 'b, 'arena, T, A> BindStatementStart<'s, 'a, 'b, 'arena, T, A>
@@ -1364,20 +1336,23 @@ where
     fn update(self, update: &sqlparser::ast::Update) -> Result<LogicalPlan, DatabaseError> {
         self.binder.context.allow_default = true;
         let to = &update.table;
-        if let TableFactor::Table { name, .. } = &to.relation {
-            let is_joined_update = !to.joins.is_empty();
+        if let TableFactor::Table { name, alias, .. } = &to.relation {
             let table_name = sql_table_name(name.clone())?;
             let table_id = self.binder.context.table_id(&table_name)?;
             self.binder.with_pk(table_id);
 
             let mut plan = self.binder.bind_table_ref_sql(to, self.arena)?;
-            let (target_source, target_offset) =
+            let target_alias = sql_optional_table_alias(alias.clone());
+            let target_visible_name = target_alias
+                .as_ref()
+                .map(|a| a.name.as_ref())
+                .unwrap_or(table_name.as_ref());
+            let (_target_source, target_offset) =
                 Binder::<'a, 'b, T, A>::resolve_source_columns_in_scope(
                     &self.binder.context,
-                    &table_name,
+                    target_visible_name,
                     self.arena,
                 )?;
-            let target_schema = target_source.schema().to_vec();
 
             if let Some(predicate) = update.selection.as_ref() {
                 plan = self.binder.bind_where(plan, predicate, self.arena)?;
@@ -1394,12 +1369,41 @@ where
                                            name: &ObjectName,
                                            expression: ScalarExpression|
                  -> Result<(), DatabaseError> {
-                    let ident = single_ident_from_object_name(name)?;
+                    let (source_qualifier, column_ident) = if name.0.len() == 1 {
+                        (None, name.0.first().unwrap())
+                    } else if name.0.len() == 2 {
+                        (Some(&name.0[0]), &name.0[1])
+                    } else {
+                        return Err(attach_span_if_absent(
+                            DatabaseError::invalid_column(name.to_string()),
+                            name,
+                        ));
+                    };
+
+                    if let Some(qualifier) = source_qualifier {
+                        let qualifier_str = lower_name_part(qualifier)?;
+                        if qualifier_str.as_ref() != target_visible_name {
+                            return Err(attach_span_if_absent(
+                                DatabaseError::UnsupportedStmt(
+                                    "joined UPDATE SET can only modify target table columns"
+                                        .to_string(),
+                                ),
+                                name,
+                            ));
+                        }
+                    }
+
+                    let ident = match column_ident {
+                        ObjectNamePart::Identifier(ident) => ident.clone(),
+                        part => {
+                            return Err(DatabaseError::invalid_column(part.to_string()));
+                        }
+                    };
 
                     let column = {
                         let expr = binder.bind_column_ref_from_identifiers(
                             slice::from_ref(&ident),
-                            Some(table_name.as_ref()),
+                            Some(target_visible_name),
                             arena,
                         )?;
                         match expr {
@@ -1425,12 +1429,6 @@ where
                     };
                     let datatype = arena.column(column).datatype().clone();
                     expr = expr.type_cast(Cow::Owned(datatype), arena)?;
-                    if is_joined_update {
-                        UpdateExprTargetRemapper {
-                            target_schema: &target_schema,
-                        }
-                        .visit(&mut expr, arena)?;
-                    }
                     value_exprs.push((column, expr));
                     Ok(())
                 };
@@ -1465,22 +1463,6 @@ where
                 }
             }
             self.binder.context.allow_default = false;
-            if is_joined_update {
-                let exprs = target_schema
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .map(|(index, column)| {
-                        self.arena.alloc_expression(ScalarExpression::column_expr(
-                            column,
-                            target_offset + index,
-                        ))
-                    });
-                plan = LogicalPlan::new(
-                    Operator::Project(ProjectOperator::new(exprs)),
-                    Childrens::Only(Box::new(plan)),
-                );
-            }
             let steps = [
                 QueryBindStep::From,
                 QueryBindStep::Where,
@@ -1488,7 +1470,7 @@ where
             ];
             plan = self.binder.bind_scalar_queries(plan, &steps, self.arena)?;
             self.binder
-                .bind_update(&table_name, value_exprs, plan, self.arena)
+                .bind_update(&table_name, value_exprs, plan, target_offset, self.arena)
         } else {
             Err(DatabaseError::UnsupportedStmt(format!(
                 "UPDATE target must be a table: {:?}",
@@ -2171,20 +2153,6 @@ pub(super) fn lower_case_name(name: &ObjectName) -> Result<Cow<'_, str>, Databas
         DatabaseError::invalid_table(name.to_string()),
         name,
     ))
-}
-
-fn single_ident_from_object_name(name: &ObjectName) -> Result<Ident, DatabaseError> {
-    if name.0.len() != 1 {
-        return Err(attach_span_if_absent(
-            DatabaseError::invalid_column(name.to_string()),
-            name,
-        ));
-    }
-    match name.0.first() {
-        Some(ObjectNamePart::Identifier(ident)) => Ok(ident.clone()),
-        Some(part) => Err(DatabaseError::invalid_column(part.to_string())),
-        None => Err(DatabaseError::invalid_column(String::new())),
-    }
 }
 
 fn sql_index_name(name: ObjectName) -> Result<(TableName, String), DatabaseError> {

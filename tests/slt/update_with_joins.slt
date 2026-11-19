@@ -1,0 +1,116 @@
+# Test UPDATE with JOIN support
+
+statement ok
+create table version_table (
+    record_id integer primary key,
+    id integer,
+    version_number integer,
+    is_latest varchar(1)
+);
+
+statement ok
+insert into version_table values (1, 1, 1, '0'), (2, 1, 2, '0'), (3, 2, 1, '0');
+
+# Test basic joined update with self-join anti-join pattern
+statement ok
+update version_table latest 
+left join version_table older 
+on older.id = latest.id and older.version_number > latest.version_number 
+set latest.is_latest = '1' 
+where older.id is null;
+
+query IIII
+select * from version_table order by record_id;
+----
+1 1 1 0
+2 1 2 1
+3 2 1 1
+
+# Test inner join update
+statement ok
+create table products (
+    id integer primary key,
+    name varchar(100),
+    price integer
+);
+
+statement ok
+create table price_updates (
+    product_id integer primary key,
+    new_price integer
+);
+
+statement ok
+insert into products values (1, 'apple', 100), (2, 'banana', 50), (3, 'cherry', 75);
+
+statement ok
+insert into price_updates values (1, 150), (2, 60);
+
+statement ok
+update products p
+inner join price_updates pu on p.id = pu.product_id
+set p.price = pu.new_price;
+
+query III
+select * from products order by id;
+----
+1 apple 150
+2 banana 60
+3 cherry 75
+
+# Test with multiple matches (last match wins currently)
+statement ok
+create table target (
+    id integer primary key,
+    value integer
+);
+
+statement ok
+create table source (
+    source_id integer primary key,
+    target_id integer,
+    new_value integer
+);
+
+statement ok
+insert into target values (1, 10), (2, 20);
+
+statement ok
+insert into source values (1, 1, 99), (2, 2, 88);
+
+statement ok
+update target t
+inner join source s on t.id = s.target_id
+set t.value = s.new_value;
+
+query II
+select * from target order by id;
+----
+1 99
+2 88
+
+# Error case: cannot update columns from joined table
+statement error
+update products p
+inner join price_updates pu on p.id = pu.product_id
+set pu.new_price = p.price;
+
+# Test aliased single-table UPDATE
+statement ok
+create table simple (
+    id integer primary key,
+    x integer,
+    y integer
+);
+
+statement ok
+insert into simple values (1, 10, 20), (2, 30, 40);
+
+statement ok
+update simple s set s.x = s.y + 5 where s.y > 25;
+
+query III
+select * from simple order by id;
+----
+1 10 20
+2 45 40

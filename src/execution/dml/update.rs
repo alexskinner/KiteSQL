@@ -31,6 +31,7 @@ use std::sync::Arc;
 pub struct Update<'a> {
     table: &'a DmlTable,
     value_exprs: &'a [(usize, ExprRef)],
+    target_table_offset: usize,
     input: ExecNode<'a>,
     done: bool,
 }
@@ -39,7 +40,14 @@ impl<'a> WriteExecutor<'a> for Update<'a> {
     type Input = (&'a UpdateOperator, &'a LogicalPlan);
 
     fn into_executor<B: ExecBuilder>(
-        (UpdateOperator { table, value_exprs }, input_plan): Self::Input,
+        (
+            UpdateOperator {
+                table,
+                value_exprs,
+                target_table_offset,
+            },
+            input_plan,
+        ): Self::Input,
         arena: &mut B,
         plan_arena: &(dyn MetaArena + 'a),
     ) -> ExecNode<'a> {
@@ -47,6 +55,7 @@ impl<'a> WriteExecutor<'a> for Update<'a> {
         ExecNode::Update(Box::new(Update {
             table,
             value_exprs,
+            target_table_offset: *target_table_offset,
             input,
             done: false,
         }))
@@ -76,6 +85,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
         let Update {
             table,
             value_exprs,
+            target_table_offset,
             input,
             ..
         } = self;
@@ -89,7 +99,25 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
             None
         };
         while input.next_tuple(arena, plan_arena).await? {
-            let mut tuple = arena.take_tuple();
+            let joined_tuple = arena.take_tuple();
+
+            let is_simple_update =
+                *target_table_offset == 0 && joined_tuple.len() == table.columns.len();
+
+            let (mut tuple, eval_tuple_owned) = if is_simple_update {
+                (joined_tuple, None)
+            } else {
+                let target_values: Vec<_> = (0..table.columns.len())
+                    .map(|i| joined_tuple[*target_table_offset + i].clone())
+                    .collect();
+                let tuple = Tuple {
+                    pk: joined_tuple.pk().cloned(),
+                    values: target_values,
+                }
+                .into();
+                (tuple, Some(joined_tuple))
+            };
+
             let Some(old_pk) = tuple.pk().cloned() else {
                 continue;
             };
@@ -129,11 +157,12 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                 }
             }
 
-            // Every expression reads the old row, so evaluate them all before writing.
+            // Every expression reads the old row (or joined row for joined updates), so evaluate them all before writing.
             for (_, expr) in value_exprs.iter() {
+                let eval_tuple = eval_tuple_owned.as_ref().unwrap_or(&tuple);
                 let value = plan_arena
                     .expression(*expr)
-                    .eval(plan_arena, Some(&tuple))?;
+                    .eval(plan_arena, Some(eval_tuple))?;
                 values.push(value.into_owned());
             }
             for ((position, _), value) in value_exprs.iter().zip(values.drain(..)) {

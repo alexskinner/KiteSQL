@@ -1959,7 +1959,7 @@ where
             return Err(DatabaseError::ColumnsEmpty);
         }
         self.binder
-            .bind_update(table_name, self.value_exprs, plan, self.arena)
+            .bind_update(table_name, self.value_exprs, plan, 0, self.arena)
     }
 }
 

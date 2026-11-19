@@ -752,6 +752,7 @@ pub(crate) mod tests {
             Operator::Update(UpdateOperator {
                 table: crate::catalog::table::DmlTable::default(),
                 value_exprs: vec![(0, expr(15))],
+                target_table_offset: 0,
             }),
             Operator::Delete(DeleteOperator {
                 table_id: 0,
