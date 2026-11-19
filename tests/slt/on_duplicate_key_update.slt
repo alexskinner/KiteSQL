@@ -1,0 +1,281 @@
+# ON DUPLICATE KEY UPDATE tests for MySQL compatibility
+
+statement ok
+DROP TABLE IF EXISTS t
+
+# Test 1: Basic PRIMARY KEY conflict
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, value INT)
+
+statement ok
+INSERT INTO t VALUES (1, 10)
+
+# 2 affected rows on update
+statement ok
+INSERT INTO t VALUES (1, 20) ON DUPLICATE KEY UPDATE value = 20
+
+query II rowsort
+SELECT * FROM t
+----
+1 20
+
+# Test 2: Multiple rows with conflicts
+statement ok
+DROP TABLE IF EXISTS t
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, value INT)
+
+statement ok
+INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
+
+# Insert 3 rows: 1 new (4), 2 conflicts (1,2) - use simple values for now
+statement ok
+INSERT INTO t VALUES (1, 100), (2, 200), (4, 40) ON DUPLICATE KEY UPDATE value = 999
+
+query II rowsort
+SELECT * FROM t
+----
+1 999
+2 999
+3 30
+4 40
+
+# Test 3: PK conflict with string column
+statement ok
+DROP TABLE IF EXISTS t
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, email VARCHAR(50), value INT)
+
+statement ok
+INSERT INTO t VALUES (1, 'test@example.com', 10)
+
+statement ok
+INSERT INTO t VALUES (1, 'updated@example.com', 20) ON DUPLICATE KEY UPDATE value = 30, email = 'updated@example.com'
+
+query I
+SELECT COUNT(*) FROM t
+----
+1
+
+query III rowsort
+SELECT * FROM t
+----
+1 updated@example.com 30
+
+# Test 4: Simple update value
+statement ok
+DROP TABLE IF EXISTS t
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, counter INT)
+
+statement ok
+INSERT INTO t VALUES (1, 0)
+
+statement ok
+INSERT INTO t VALUES (1, 5) ON DUPLICATE KEY UPDATE counter = 100
+
+query II
+SELECT * FROM t
+----
+1 100
+
+# Test 5: Multiple updates on same row
+statement ok
+INSERT INTO t VALUES (1, 10) ON DUPLICATE KEY UPDATE counter = 200
+
+statement ok
+INSERT INTO t VALUES (1, 20) ON DUPLICATE KEY UPDATE counter = 300
+
+query II
+SELECT * FROM t
+----
+1 300
+
+# Test 6: No conflict - should insert normally (affected rows = 1)
+statement ok
+DROP TABLE IF EXISTS t
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, value INT)
+
+statement ok
+INSERT INTO t VALUES (1, 10) ON DUPLICATE KEY UPDATE value = 20
+
+query II
+SELECT * FROM t
+----
+1 10
+
+# Test 7: Multi-column update on conflict
+statement ok
+DROP TABLE IF EXISTS t
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, a INT, b INT, c INT)
+
+statement ok
+INSERT INTO t VALUES (1, 10, 20, 30)
+
+statement ok
+INSERT INTO t VALUES (1, 100, 200, 300) ON DUPLICATE KEY UPDATE a = 111, b = 222, c = 333
+
+query IIII
+SELECT * FROM t
+----
+1 111 222 333
+
+# Test 8: CMS-style system config statement
+statement ok
+DROP TABLE IF EXISTS cms_system_config
+
+statement ok
+CREATE TABLE cms_system_config (id VARCHAR(50) PRIMARY KEY, category VARCHAR(50), setting VARCHAR(50), value VARCHAR(50))
+
+statement ok
+INSERT INTO cms_system_config (id, category, setting, value) VALUES ('test_id', 'test_cat', 'test_setting', 'false') ON DUPLICATE KEY UPDATE value = 'true'
+
+query CCCC
+SELECT * FROM cms_system_config
+----
+test_id test_cat test_setting false
+
+statement ok
+INSERT INTO cms_system_config (id, category, setting, value) VALUES ('test_id', 'test_cat', 'test_setting', 'updated') ON DUPLICATE KEY UPDATE value = 'true'
+
+query CCCC
+SELECT * FROM cms_system_config
+----
+test_id test_cat test_setting true
+
+# Test 9: Cleanup
+statement ok
+DROP TABLE IF EXISTS t
+
+statement ok
+DROP TABLE IF EXISTS cms_system_config
+
+# Test 10: UNIQUE index conflict (single column)
+statement ok
+DROP TABLE IF EXISTS unique_test
+
+statement ok
+CREATE TABLE unique_test (id INT PRIMARY KEY, email VARCHAR(100) UNIQUE, name VARCHAR(50))
+
+statement ok
+INSERT INTO unique_test VALUES (1, 'alice@example.com', 'Alice')
+
+statement ok
+INSERT INTO unique_test VALUES (2, 'alice@example.com', 'Alice Updated') ON DUPLICATE KEY UPDATE name = 'Alice Updated'
+
+query I
+SELECT COUNT(*) FROM unique_test
+----
+1
+
+query IIT
+SELECT * FROM unique_test
+----
+1 alice@example.com Alice Updated
+
+# Test 11: UNIQUE composite index (CMS schema)
+statement ok
+DROP TABLE IF EXISTS config_test
+
+statement ok
+CREATE TABLE config_test (id VARCHAR(50) PRIMARY KEY, category VARCHAR(50), setting VARCHAR(50), value VARCHAR(100), UNIQUE(category, setting))
+
+statement ok
+INSERT INTO config_test VALUES ('uuid-1', 'system', 'debug_mode', 'false')
+
+statement ok
+INSERT INTO config_test VALUES ('uuid-2', 'system', 'debug_mode', 'true') ON DUPLICATE KEY UPDATE value = 'true'
+
+query I
+SELECT COUNT(*) FROM config_test
+----
+1
+
+query CTTT
+SELECT * FROM config_test
+----
+uuid-1 system debug_mode true
+
+# Test 12: Update with no value changes (affected rows = 0)
+statement ok
+DROP TABLE IF EXISTS no_change_test
+
+statement ok
+CREATE TABLE no_change_test (id INT PRIMARY KEY, value INT)
+
+statement ok
+INSERT INTO no_change_test VALUES (1, 10)
+
+statement ok
+INSERT INTO no_change_test VALUES (1, 20) ON DUPLICATE KEY UPDATE value = 10
+
+query II
+SELECT * FROM no_change_test
+----
+1 10
+
+# Cleanup
+statement ok
+DROP TABLE IF EXISTS unique_test
+
+statement ok
+DROP TABLE IF EXISTS config_test
+
+statement ok
+DROP TABLE IF EXISTS no_change_test
+
+# Test 13: VALUES() function - most common ODKU idiom
+statement ok
+DROP TABLE IF EXISTS values_test
+
+# Test 13: VALUES() function - most common ODKU idiom
+statement ok
+DROP TABLE IF EXISTS values_test
+
+statement ok
+CREATE TABLE values_test (id INT PRIMARY KEY, name VARCHAR(50), counter INT)
+
+statement ok
+INSERT INTO values_test VALUES (1, 'Alice', 10)
+
+statement ok
+INSERT INTO values_test VALUES (1, 'Bob', 20) ON DUPLICATE KEY UPDATE name = VALUES(name), counter = VALUES(counter)
+
+query ICI rowsort
+SELECT * FROM values_test
+----
+1 Bob 20
+
+# Test 14: Same-statement multi-row conflict
+statement ok
+DROP TABLE IF EXISTS same_stmt_test
+
+statement ok
+CREATE TABLE same_stmt_test (id INT PRIMARY KEY, v INT)
+
+statement ok
+INSERT INTO same_stmt_test VALUES (1, 10), (1, 20) ON DUPLICATE KEY UPDATE v = VALUES(v)
+
+query I
+SELECT COUNT(*) FROM same_stmt_test
+----
+1
+
+query II
+SELECT * FROM same_stmt_test
+----
+1 20
+
+# Cleanup
+statement ok
+DROP TABLE IF EXISTS values_test
+
+statement ok
+DROP TABLE IF EXISTS same_stmt_test

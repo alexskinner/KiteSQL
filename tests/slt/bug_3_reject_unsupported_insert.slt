@@ -15,10 +15,6 @@ INSERT INTO t VALUES (1, 20) ON CONFLICT (id) DO UPDATE SET value = 20
 statement error
 INSERT INTO t VALUES (1, 30) ON CONFLICT DO NOTHING
 
-# Test ON DUPLICATE KEY UPDATE (MySQL syntax) - should error
-statement error
-INSERT INTO t VALUES (1, 40) ON DUPLICATE KEY UPDATE value = 40
-
 # Test RETURNING (PostgreSQL syntax) - should error
 statement error
 INSERT INTO t VALUES (2, 50) RETURNING *

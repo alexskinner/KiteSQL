@@ -1,0 +1,149 @@
+# ON DUPLICATE KEY UPDATE: SET reading the existing row, primary key moves,
+# affected rows, NULL unique keys, the MySQL 8 row alias and statement atomicity.
+
+statement ok
+CREATE TABLE odku_t (id INT PRIMARY KEY, v INT, c INT)
+
+statement ok
+INSERT INTO odku_t VALUES (1, 10, 0)
+
+# Affected rows: 0 when the row is unchanged, 2 when it changes, 1 for an insert.
+query T
+INSERT INTO odku_t VALUES (1, 10, 0) ON DUPLICATE KEY UPDATE v = VALUES(v)
+----
+0
+
+query T
+INSERT INTO odku_t VALUES (1, 20, 0) ON DUPLICATE KEY UPDATE v = VALUES(v)
+----
+2
+
+query T
+INSERT INTO odku_t VALUES (2, 5, 0) ON DUPLICATE KEY UPDATE v = VALUES(v)
+----
+1
+
+# SET expressions read the existing row.
+query T
+INSERT INTO odku_t VALUES (1, 3, 0) ON DUPLICATE KEY UPDATE v = v + VALUES(v), c = c + 1
+----
+2
+
+query III
+SELECT * FROM odku_t WHERE id = 1
+----
+1 23 1
+
+# A later row of the same statement conflicts with an earlier one.
+query T
+INSERT INTO odku_t VALUES (3, 1, 0), (3, 5, 0) ON DUPLICATE KEY UPDATE v = v + VALUES(v)
+----
+3
+
+query III
+SELECT * FROM odku_t WHERE id = 3
+----
+3 6 0
+
+# The MySQL 8 row alias, case-insensitive, mixed with VALUES().
+statement ok
+INSERT INTO odku_t VALUES (1, 7, 0) AS new ON DUPLICATE KEY UPDATE v = new.v
+
+statement ok
+INSERT INTO odku_t VALUES (1, 8, 0) AS New ON DUPLICATE KEY UPDATE v = NEW.v + values(V)
+
+query III
+SELECT * FROM odku_t WHERE id = 1
+----
+1 16 1
+
+statement error
+INSERT INTO odku_t VALUES (1, 1, 1) AS n (a, b, c) ON DUPLICATE KEY UPDATE v = n.b
+
+# Changing the primary key moves the row.
+query T
+INSERT INTO odku_t VALUES (1, 0, 0) ON DUPLICATE KEY UPDATE id = 50
+----
+2
+
+query III
+SELECT * FROM odku_t ORDER BY id
+----
+2 5 0
+3 6 0
+50 16 1
+
+query III
+SELECT * FROM odku_t WHERE id = 50
+----
+50 16 1
+
+query III
+SELECT * FROM odku_t WHERE id = 1
+----
+
+# Moving onto an existing key fails, and the whole statement is rolled back.
+statement error
+INSERT INTO odku_t VALUES (60, 0, 0), (3, 0, 0) ON DUPLICATE KEY UPDATE id = 50
+
+query III
+SELECT * FROM odku_t ORDER BY id
+----
+2 5 0
+3 6 0
+50 16 1
+
+# A NULL in a UNIQUE key is never a conflict: the row is inserted.
+statement ok
+CREATE TABLE odku_u (id INT PRIMARY KEY, email VARCHAR(50) UNIQUE, n INT)
+
+statement ok
+INSERT INTO odku_u VALUES (1, 'a', 0)
+
+query T
+INSERT INTO odku_u VALUES (2, NULL, 5) ON DUPLICATE KEY UPDATE n = n + 1
+----
+1
+
+query T
+INSERT INTO odku_u VALUES (3, 'a', 0) ON DUPLICATE KEY UPDATE n = n + 1, email = 'c'
+----
+2
+
+query T
+INSERT INTO odku_u VALUES (4, 'a', 0) ON DUPLICATE KEY UPDATE n = 9
+----
+1
+
+query ITI
+SELECT * FROM odku_u ORDER BY id
+----
+1 c 1
+2 NULL 5
+4 a 0
+
+statement ok
+CREATE TABLE odku_cu (id INT PRIMARY KEY, a INT, b INT, UNIQUE KEY k (a, b))
+
+statement ok
+INSERT INTO odku_cu VALUES (1, 1, 1)
+
+query T
+INSERT INTO odku_cu VALUES (2, 1, NULL) ON DUPLICATE KEY UPDATE id = 99
+----
+1
+
+query III
+SELECT * FROM odku_cu ORDER BY id
+----
+1 1 1
+2 1 NULL
+
+statement ok
+DROP TABLE odku_t
+
+statement ok
+DROP TABLE odku_u
+
+statement ok
+DROP TABLE odku_cu

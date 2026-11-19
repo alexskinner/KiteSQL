@@ -579,3 +579,88 @@ fn test_new_transaction_gets_statement_atomicity() -> Result<(), DatabaseError> 
 
     Ok(())
 }
+
+#[test]
+fn test_on_duplicate_key_update_cms_schema() -> Result<(), DatabaseError> {
+    // Test the exact CMS system config use case:
+    // - UUID varchar PRIMARY KEY
+    // - UNIQUE (category, setting)
+    // - Fresh UUID on every insert conflicts on UNIQUE index, not PK
+
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl(
+        "CREATE TABLE cms_system_config (
+            id VARCHAR(50) PRIMARY KEY, 
+            category VARCHAR(50), 
+            setting VARCHAR(50), 
+            value VARCHAR(100), 
+            UNIQUE(category, setting)
+        )",
+    )?;
+
+    let mut session = database.session();
+
+    // First insert
+    session
+        .run(
+            "INSERT INTO cms_system_config (id, category, setting, value) 
+         VALUES ('uuid-001', 'system', 'boot_complete', 'false')",
+        )?
+        .done()?;
+
+    // Verify initial row exists
+    let mut iter = session.run(
+        "SELECT COUNT(*) FROM cms_system_config 
+         WHERE category = 'system' AND setting = 'boot_complete'",
+    )?;
+    let mut count = 0;
+    while iter.next_tuple(|_, _| ())?.is_some() {
+        count += 1;
+    }
+    iter.done()?;
+    assert_eq!(count, 1, "Initial insert should create one row");
+
+    // Second insert with fresh UUID but same (category, setting)
+    // This should conflict on UNIQUE index and update existing row
+    session
+        .run(
+            "INSERT INTO cms_system_config (id, category, setting, value) 
+         VALUES ('uuid-002', 'system', 'boot_complete', 'should_be_ignored') 
+         ON DUPLICATE KEY UPDATE value = 'true'",
+        )?
+        .done()?;
+
+    // Verify only one row exists
+    let mut iter = session.run("SELECT COUNT(*) FROM cms_system_config")?;
+    let mut total = 0;
+    while iter.next_tuple(|_, _| ())?.is_some() {
+        total += 1;
+    }
+    iter.done()?;
+    assert_eq!(total, 1, "Should still have exactly one row after ODKU");
+
+    // Verify value was updated and id is still the original
+    let mut iter = session.run(
+        "SELECT id, value FROM cms_system_config 
+         WHERE category = 'system' AND setting = 'boot_complete'",
+    )?;
+    let mut found = false;
+    while iter.next_tuple(|_, _| ())?.is_some() {
+        found = true;
+    }
+    iter.done()?;
+    assert!(found, "Should find the updated row");
+
+    // Check updated value
+    let mut iter = session.run("SELECT id FROM cms_system_config WHERE value = 'true'")?;
+    let mut id_count = 0;
+    while iter.next_tuple(|_, _| ())?.is_some() {
+        id_count += 1;
+    }
+    iter.done()?;
+    assert_eq!(id_count, 1, "Value should be updated to 'true'");
+
+    Ok(())
+}
