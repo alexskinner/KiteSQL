@@ -346,8 +346,6 @@ impl LogicalType {
             return if right.is_signed_numeric() {
                 let upcasted = LogicalType::Smallint;
                 Ok(Cow::Owned(LogicalType::combine_numeric_types(&upcasted, right)?.into_owned()))
-            } else if right.is_unsigned_numeric() {
-                Ok(Cow::Borrowed(right))
             } else {
                 Ok(Cow::Borrowed(right))
             };
@@ -356,8 +354,6 @@ impl LogicalType {
             return if left.is_signed_numeric() {
                 let upcasted = LogicalType::Smallint;
                 Ok(Cow::Owned(LogicalType::combine_numeric_types(left, &upcasted)?.into_owned()))
-            } else if left.is_unsigned_numeric() {
-                Ok(Cow::Borrowed(left))
             } else {
                 Ok(Cow::Borrowed(left))
             };
