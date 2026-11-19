@@ -1702,14 +1702,14 @@ mod tests {
             ),
             (
                 Operator::DropTable(DropTableOperator {
-                    table_name: "users".into(),
+                    table_names: vec!["users".into()],
                     if_exists: true,
                 }),
                 "Drop Table users, If Exists: true",
             ),
             (
                 Operator::DropView(DropViewOperator {
-                    view_name: "active_users".into(),
+                    view_names: vec!["active_users".into()],
                     if_exists: false,
                 }),
                 "Drop View active_users, If Exists: false",
