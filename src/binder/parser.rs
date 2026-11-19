@@ -941,10 +941,19 @@ where
                         used_index_names.insert(name.clone());
                     }
 
-                    if unique.columns.len() == 1 && index_name.is_none() {
-                        self.bind_constraint(&mut columns, unique.columns, |_, desc| {
+                    if unique.columns.len() == 1 {
+                        self.bind_constraint(&mut columns, unique.columns.clone(), |_, desc| {
                             desc.set_unique()
                         })?;
+                        if let Some(name) = index_name {
+                            index_constraints.push(
+                                crate::planner::operator::create_table::IndexConstraint {
+                                    name: Some(name),
+                                    columns: cols,
+                                    is_unique: true,
+                                },
+                            );
+                        }
                     } else {
                         index_constraints.push(
                             crate::planner::operator::create_table::IndexConstraint {
