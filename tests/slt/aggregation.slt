@@ -211,7 +211,7 @@ statement ok
 create table bare_agg (id int primary key, a int, c decimal(10,2))
 
 statement ok
-insert into bare_agg values (1, 1, 1.50), (2, 2, 2.25)
+insert into bare_agg values (1, 1, 1.25), (2, 2, 2.25)
 
 statement error must appear in the GROUP BY clause or be used in an aggregate function
 select a, max(c) from bare_agg
@@ -250,7 +250,7 @@ select a, (select max(b2.c) + bare_agg.a from bare_agg b2) from bare_agg
 query IR rowsort
 select a, max(c) from bare_agg group by a
 ----
-1 1.5
+1 1.25
 2 2.25
 
 statement ok
