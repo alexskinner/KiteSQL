@@ -2768,6 +2768,61 @@ pub(crate) mod test {
         Ok(())
     }
 
+    #[test]
+    async fn test_group_concat_order_by_separator_distinct() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let mut database = DataBaseBuilder::path(temp_dir.path())
+            .build_in_memory()
+            .await?;
+        database
+            .ddl("create table gc (id int primary key, g int, b varchar(10), n int)")
+            .await?;
+        database
+            .run("insert into gc values (1, 1, 'x', 3), (2, 1, 'y', 1), (3, 1, 'z', 2), (4, 2, 'x', null), (5, 2, null, 5), (6, 2, 'x', 4)")
+            .await?
+            .done()
+            .await?;
+        for (sql, expected) in [
+            ("select group_concat(b separator '|') from gc", vec!["x|y|z|x|x"]),
+            ("select group_concat(b order by b desc) from gc", vec!["z,y,x,x,x"]),
+            ("select group_concat(b order by n separator '') from gc", vec!["yzxxx"]),
+            ("select group_concat(distinct b order by b separator ';') from gc", vec!["x;y;z"]),
+            ("select group_concat(b order by 1 desc) from gc", vec!["z,y,x,x,x"]),
+            (
+                "select g, group_concat(b order by id desc separator '-') from gc group by g order by g",
+                vec!["1|z-y-x", "2|x-x"],
+            ),
+            ("select group_concat(b order by n) from gc where false", vec!["NULL"]),
+        ] {
+            let mut iter = database.run(sql).await?;
+            let mut rows = Vec::new();
+            while let Some(row) = iter
+                .next_tuple(|_, tuple| {
+                    tuple
+                        .iter()
+                        .map(ToString::to_string)
+                        .collect::<Vec<_>>()
+                        .join("|")
+                })
+                .await?
+            {
+                rows.push(row);
+            }
+            iter.done().await?;
+            let expected = expected.into_iter().map(str::to_string).collect::<Vec<_>>();
+            assert_eq!(rows, expected, "{sql}");
+        }
+        for sql in [
+            "select group_concat(b order by 2) from gc",
+            "select group_concat(b limit 1) from gc",
+            "select count(b order by b) from gc",
+            "select group_concat(b separator '|') over () from gc",
+        ] {
+            assert!(database.run(sql).await.is_err(), "{sql} should be rejected");
+        }
+        Ok(())
+    }
+
     /// use [CurrentDate](crate::function::current_date::CurrentDate) on this case
     #[test]
     async fn test_udf() -> Result<(), DatabaseError> {

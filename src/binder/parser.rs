@@ -27,7 +27,7 @@ use crate::db::{
 };
 use crate::errors::{DatabaseError, SqlErrorSpan};
 use crate::expression;
-use crate::expression::agg::AggKind;
+use crate::expression::agg::{AggKind, GroupConcatOptions, GroupConcatOrder};
 use crate::expression::visitor_mut::ExprVisitorMut;
 use crate::expression::window::WindowFunctionKind;
 use crate::expression::{AliasType, ScalarExpression, TypeCast};
@@ -50,12 +50,12 @@ pub(super) use sqlparser::ast::{
     AlterColumnOperation, AlterTableOperation, Assignment, AssignmentTarget, BinaryLength,
     BinaryOperator, ColumnDef, ColumnOption, CreateIndex, CreateView, DataType, DescribeAlias,
     Distinct, DuplicateTreatment, Expr, FromTable, Function, FunctionArg, FunctionArgExpr,
-    FunctionArguments, GroupByExpr, Ident, IndexColumn, IndexOption, IndexType, Join,
-    JoinConstraint, JoinOperator, LimitClause, ObjectName, ObjectNamePart, ObjectType, OrderByExpr,
-    OrderByKind, Query, Select, SelectInto, SelectItem, SelectItemQualifiedWildcardKind, SetExpr,
-    SetOperator, SetQuantifier, Spanned, SqliteOnConflict, TableAlias, TableConstraint,
-    TableFactor, TableObject, TableWithJoins, TypedString, UnaryOperator, Value, ValueWithSpan,
-    WindowType,
+    FunctionArgumentClause, FunctionArguments, GroupByExpr, Ident, IndexColumn, IndexOption,
+    IndexType, Join, JoinConstraint, JoinOperator, LimitClause, ObjectName, ObjectNamePart,
+    ObjectType, OrderByExpr, OrderByKind, Query, Select, SelectInto, SelectItem,
+    SelectItemQualifiedWildcardKind, SetExpr, SetOperator, SetQuantifier, Spanned,
+    SqliteOnConflict, TableAlias, TableConstraint, TableFactor, TableObject, TableWithJoins,
+    TypedString, UnaryOperator, Value, ValueWithSpan, WindowType,
 };
 #[cfg(feature = "copy")]
 pub(super) use sqlparser::ast::{CopyOption, CopySource, CopyTarget};
@@ -2899,12 +2899,13 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
             within_group,
             ..
         } = func;
-        let (func_args, is_distinct) = match args {
+        let (func_args, is_distinct, clauses) = match args {
             FunctionArguments::List(args) => (
                 args.args.as_slice(),
                 matches!(args.duplicate_treatment, Some(DuplicateTreatment::Distinct)),
+                args.clauses.as_slice(),
             ),
-            FunctionArguments::None => (&[][..], false),
+            FunctionArguments::None => (&[][..], false, &[][..]),
             FunctionArguments::Subquery(_) => {
                 return Err(DatabaseError::UnsupportedStmt(
                     "subquery function args are not supported".to_string(),
@@ -2943,6 +2944,25 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
             }
         }
         let function_name = name.to_string().to_lowercase();
+
+        if !clauses.is_empty() {
+            if over.is_some() || function_name != "group_concat" {
+                return Err(attach_span_if_absent(
+                    DatabaseError::UnsupportedStmt(format!(
+                        "`{}` in `{function_name}()` is not supported",
+                        clauses
+                            .iter()
+                            .map(ToString::to_string)
+                            .collect::<Vec<_>>()
+                            .join(" ")
+                    )),
+                    func_span,
+                ));
+            }
+            return self
+                .bind_group_concat(args, is_distinct, clauses, arena)
+                .map_err(|err| attach_span_if_absent(err, func_span));
+        }
 
         if let Some(over) = over {
             if filter.is_some() || null_treatment.is_some() || !within_group.is_empty() {
@@ -2983,6 +3003,82 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
             self.bind_function_call(function_name, args, arena)
         };
         result.map_err(|err| attach_span_if_absent(err, func_span))
+    }
+
+    /// Binds `group_concat(value [ORDER BY key [ASC|DESC], ...] [SEPARATOR 'sep'])`. The keys
+    /// become extra arguments after the value; an integer key `n` names the `n`th argument, as
+    /// in MySQL.
+    fn bind_group_concat(
+        &mut self,
+        mut args: Vec<ExprRef>,
+        is_distinct: bool,
+        clauses: &[FunctionArgumentClause],
+        arena: &mut PlanArena,
+    ) -> Result<ScalarExpression, DatabaseError> {
+        let mut options = GroupConcatOptions {
+            separator: GroupConcatOptions::DEFAULT_SEPARATOR.to_string(),
+            order_by: Vec::new(),
+        };
+        let mut keys = Vec::new();
+        for clause in clauses {
+            match clause {
+                FunctionArgumentClause::Separator(
+                    Value::SingleQuotedString(separator) | Value::DoubleQuotedString(separator),
+                ) => separator.clone_into(&mut options.separator),
+                FunctionArgumentClause::OrderBy(order_by) if keys.is_empty() => {
+                    for OrderByExpr {
+                        expr,
+                        options: order,
+                        ..
+                    } in order_by
+                    {
+                        let key = match expr {
+                            Expr::Value(value) => match &value.value {
+                                Value::Number(position, _) => {
+                                    let position = position
+                                        .parse::<usize>()
+                                        .ok()
+                                        .filter(|position| (1..=args.len()).contains(position))
+                                        .ok_or_else(|| {
+                                            DatabaseError::InvalidValue(format!(
+                                                "group_concat() ORDER BY position {position} is not in 1..={}",
+                                                args.len()
+                                            ))
+                                        })?;
+                                    args[position - 1].clone_expression(arena)?
+                                }
+                                _ => {
+                                    let key = self.bind_expr(expr, arena)?;
+                                    arena.alloc_expression(key)
+                                }
+                            },
+                            _ => {
+                                let key = self.bind_expr(expr, arena)?;
+                                arena.alloc_expression(key)
+                            }
+                        };
+                        keys.push(key);
+                        options.order_by.push(GroupConcatOrder {
+                            asc: order.asc.unwrap_or(true),
+                            nulls_first: order.nulls_first.unwrap_or(false),
+                        });
+                    }
+                }
+                clause => {
+                    return Err(DatabaseError::UnsupportedStmt(format!(
+                        "`{clause}` in `group_concat()` is not supported"
+                    )))
+                }
+            }
+        }
+        if args.len() != 1 {
+            return Err(DatabaseError::MisMatch(
+                "number of group_concat() parameters",
+                "1",
+            ));
+        }
+        args.extend(keys);
+        self.bind_aggregate_function(options.into_kind(), args, is_distinct, arena)
     }
 
     fn bind_window_call(

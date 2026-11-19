@@ -545,6 +545,15 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
                 }
                 LogicalType::Double
             }
+            AggKind::GroupConcatWith(options) => {
+                if args.len() != 1 + options.order_by.len() {
+                    return Err(DatabaseError::MisMatch(
+                        "number of group_concat() parameters",
+                        "1",
+                    ));
+                }
+                LogicalType::Varchar(None, CharLengthUnits::Characters)
+            }
             AggKind::GroupConcat => {
                 if args.len() != 1 {
                     return Err(DatabaseError::MisMatch(
