@@ -551,4 +551,416 @@ mod tests {
 
         Ok(())
     }
+
+    async fn null_unique_rows<S: Storage>(
+        database: &Database<S>,
+        sql: &str,
+    ) -> Result<Vec<String>, DatabaseError> {
+        let mut iter = database.run(sql).await?;
+        let mut rows = Vec::new();
+        while let Some(row) = iter
+            .next_tuple(|_, tuple| {
+                tuple
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("|")
+            })
+            .await?
+        {
+            rows.push(row);
+        }
+        iter.done().await?;
+        Ok(rows)
+    }
+
+    async fn null_unique_exec<S: Storage>(
+        database: &Database<S>,
+        sql: &str,
+    ) -> Result<(), DatabaseError> {
+        database.run(sql).await?.done().await
+    }
+
+    async fn odku_rows<S: Storage>(
+        database: &Database<S>,
+        sql: &str,
+    ) -> Result<Vec<String>, DatabaseError> {
+        let mut iter = database.run(sql).await?;
+        let mut rows = Vec::new();
+        while let Some(row) = iter
+            .next_tuple(|_, tuple| {
+                tuple
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("|")
+            })
+            .await?
+        {
+            rows.push(row);
+        }
+        iter.done().await?;
+        Ok(rows)
+    }
+
+    async fn odku_database(
+    ) -> Result<(TempDir, Database<crate::storage::lmdb::LmdbStorage>), DatabaseError> {
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .ddl("CREATE TABLE t (id INT PRIMARY KEY, v INT, c INT)")
+            .await?;
+        database
+            .run("INSERT INTO t VALUES (1, 10, 0)")
+            .await?
+            .done()
+            .await?;
+        Ok((temp_dir, database))
+    }
+
+    #[test]
+    async fn test_unique_index_allows_many_nulls_on_insert() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .ddl("CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(50) UNIQUE)")
+            .await?;
+        null_unique_exec(&database, "INSERT INTO u VALUES (1, NULL), (2, NULL)").await?;
+        null_unique_exec(&database, "INSERT INTO u VALUES (3, NULL), (4, 'a')").await?;
+        assert_eq!(
+            null_unique_rows(
+                &database,
+                "SELECT id FROM u WHERE email IS NULL ORDER BY id"
+            )
+            .await?,
+            vec!["1", "2", "3"]
+        );
+        assert!(matches!(
+            null_unique_exec(&database, "INSERT INTO u VALUES (5, 'a')").await,
+            Err(DatabaseError::DuplicateUniqueValue)
+        ));
+        null_unique_exec(&database, "DELETE FROM u WHERE id = 2").await?;
+        assert_eq!(
+            null_unique_rows(
+                &database,
+                "SELECT id FROM u WHERE email IS NULL ORDER BY id"
+            )
+            .await?,
+            vec!["1", "3"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    async fn test_unique_index_update_into_null() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .ddl("CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(50) UNIQUE)")
+            .await?;
+        null_unique_exec(
+            &database,
+            "INSERT INTO u VALUES (1, 'a'), (2, 'b'), (3, NULL)",
+        )
+        .await?;
+        null_unique_exec(&database, "UPDATE u SET email = NULL WHERE id < 3").await?;
+        assert_eq!(
+            null_unique_rows(
+                &database,
+                "SELECT id FROM u WHERE email IS NULL ORDER BY id"
+            )
+            .await?,
+            vec!["1", "2", "3"]
+        );
+        // The old values were released, and NULL rows can take values again.
+        null_unique_exec(&database, "INSERT INTO u VALUES (4, 'a')").await?;
+        null_unique_exec(&database, "UPDATE u SET email = 'b' WHERE id = 2").await?;
+        assert!(matches!(
+            null_unique_exec(&database, "UPDATE u SET email = 'b' WHERE id = 1").await,
+            Err(DatabaseError::DuplicateUniqueValue)
+        ));
+        assert_eq!(
+            null_unique_rows(&database, "SELECT * FROM u ORDER BY id").await?,
+            vec!["1|NULL", "2|b", "3|NULL", "4|a"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    async fn test_composite_unique_index_partial_null() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .ddl("CREATE TABLE cu (id INT PRIMARY KEY, a INT, b INT, UNIQUE KEY k (a, b))")
+            .await?;
+        null_unique_exec(
+            &database,
+            "INSERT INTO cu VALUES (1, 1, NULL), (2, 1, NULL), (3, NULL, NULL), (4, 1, 1)",
+        )
+        .await?;
+        null_unique_exec(&database, "INSERT INTO cu VALUES (5, NULL, NULL)").await?;
+        assert!(matches!(
+            null_unique_exec(&database, "INSERT INTO cu VALUES (6, 1, 1)").await,
+            Err(DatabaseError::DuplicateUniqueValue)
+        ));
+        assert_eq!(
+            null_unique_rows(&database, "SELECT id FROM cu WHERE a = 1 ORDER BY id").await?,
+            vec!["1", "2", "4"]
+        );
+        assert_eq!(
+            null_unique_rows(&database, "SELECT id FROM cu WHERE a = 1 AND b = 1").await?,
+            vec!["4"]
+        );
+        null_unique_exec(&database, "UPDATE cu SET b = NULL WHERE id = 4").await?;
+        assert_eq!(
+            null_unique_rows(&database, "SELECT id FROM cu WHERE a = 1 ORDER BY id").await?,
+            vec!["1", "2", "4"]
+        );
+        assert!(
+            null_unique_rows(&database, "SELECT id FROM cu WHERE a = 1 AND b = 1")
+                .await?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    async fn test_unique_index_nulls_survive_reopen() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().unwrap();
+        {
+            let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+            database
+                .ddl("CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(50) UNIQUE)")
+                .await?;
+            null_unique_exec(
+                &database,
+                "INSERT INTO u VALUES (1, NULL), (2, NULL), (3, 'a')",
+            )
+            .await?;
+        }
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .load(crate::db::CatalogKind::Table("u".to_string()))
+            .await?;
+        assert_eq!(
+            null_unique_rows(
+                &database,
+                "SELECT id FROM u WHERE email IS NULL ORDER BY id"
+            )
+            .await?,
+            vec!["1", "2"]
+        );
+        null_unique_exec(&database, "INSERT INTO u VALUES (4, NULL)").await?;
+        null_unique_exec(&database, "DELETE FROM u WHERE id = 1").await?;
+        assert_eq!(
+            null_unique_rows(
+                &database,
+                "SELECT id FROM u WHERE email IS NULL ORDER BY id"
+            )
+            .await?,
+            vec!["2", "4"]
+        );
+        assert!(matches!(
+            null_unique_exec(&database, "INSERT INTO u VALUES (5, 'a')").await,
+            Err(DatabaseError::DuplicateUniqueValue)
+        ));
+        Ok(())
+    }
+    #[test]
+    async fn test_odku_set_reads_existing_row() -> Result<(), DatabaseError> {
+        let (_dir, database) = odku_database().await?;
+        let sql =
+            "INSERT INTO t VALUES (1, 3, 0) ON DUPLICATE KEY UPDATE v = v + VALUES(v), c = c + 1";
+        assert_eq!(odku_rows(&database, sql).await?, vec!["2"]);
+        assert_eq!(
+            odku_rows(&database, "SELECT * FROM t").await?,
+            vec!["1|13|1"]
+        );
+
+        // The second row conflicts with the first row of the same statement.
+        let sql =
+            "INSERT INTO t VALUES (3, 1, 0), (3, 5, 0) ON DUPLICATE KEY UPDATE v = v + VALUES(v)";
+        assert_eq!(odku_rows(&database, sql).await?, vec!["3"]);
+        assert_eq!(
+            odku_rows(&database, "SELECT * FROM t WHERE id = 3").await?,
+            vec!["3|6|0"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    async fn test_odku_primary_key_change_moves_row() -> Result<(), DatabaseError> {
+        let (_dir, database) = odku_database().await?;
+        database
+            .run("INSERT INTO t VALUES (2, 20, 0)")
+            .await?
+            .done()
+            .await?;
+
+        // Inside a transaction the move is undone by ROLLBACK.
+        let mut session = database.session();
+        session.run("BEGIN").await?.done().await?;
+        session
+            .run("INSERT INTO t VALUES (1, 0, 0) ON DUPLICATE KEY UPDATE id = 50")
+            .await?
+            .done()
+            .await?;
+        session.run("ROLLBACK").await?.done().await?;
+        drop(session);
+        assert_eq!(
+            odku_rows(&database, "SELECT * FROM t ORDER BY id").await?,
+            vec!["1|10|0", "2|20|0"]
+        );
+
+        let sql = "INSERT INTO t VALUES (1, 0, 0) ON DUPLICATE KEY UPDATE id = 50";
+        assert_eq!(odku_rows(&database, sql).await?, vec!["2"]);
+        assert_eq!(
+            odku_rows(&database, "SELECT * FROM t ORDER BY id").await?,
+            vec!["2|20|0", "50|10|0"]
+        );
+        assert!(odku_rows(&database, "SELECT * FROM t WHERE id = 1")
+            .await?
+            .is_empty());
+        assert_eq!(
+            odku_rows(&database, "SELECT * FROM t WHERE id = 50").await?,
+            vec!["50|10|0"]
+        );
+
+        // Moving onto a key that exists is a duplicate primary key.
+        let sql = "INSERT INTO t VALUES (2, 0, 0) ON DUPLICATE KEY UPDATE id = 50";
+        assert!(matches!(
+            odku_rows(&database, sql).await,
+            Err(DatabaseError::DuplicatePrimaryKey)
+        ));
+        assert_eq!(
+            odku_rows(&database, "SELECT * FROM t ORDER BY id").await?,
+            vec!["2|20|0", "50|10|0"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    async fn test_odku_affected_rows_without_undo() -> Result<(), DatabaseError> {
+        let (_dir, database) = odku_database().await?;
+        let changed = "INSERT INTO t VALUES (1, 20, 0) ON DUPLICATE KEY UPDATE v = VALUES(v)";
+        assert_eq!(odku_rows(&database, changed).await?, vec!["2"]);
+        assert_eq!(odku_rows(&database, changed).await?, vec!["0"]);
+        let inserted = "INSERT INTO t VALUES (2, 5, 0) ON DUPLICATE KEY UPDATE v = VALUES(v)";
+        assert_eq!(odku_rows(&database, inserted).await?, vec!["1"]);
+        Ok(())
+    }
+
+    #[test]
+    async fn test_odku_null_unique_key_is_not_a_conflict() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .ddl("CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(50) UNIQUE, n INT)")
+            .await?;
+        database
+            .ddl("CREATE TABLE cu (id INT PRIMARY KEY, a INT, b INT, UNIQUE KEY k (a, b))")
+            .await?;
+        database
+            .run("INSERT INTO u VALUES (1, 'a', 0)")
+            .await?
+            .done()
+            .await?;
+        database
+            .run("INSERT INTO cu VALUES (1, 1, 1)")
+            .await?
+            .done()
+            .await?;
+
+        // A NULL key is inserted, not matched against anything.
+        let sql = "INSERT INTO u VALUES (2, NULL, 5) ON DUPLICATE KEY UPDATE n = n + 1";
+        assert_eq!(odku_rows(&database, sql).await?, vec!["1"]);
+        let sql = "INSERT INTO cu VALUES (2, 1, NULL) ON DUPLICATE KEY UPDATE id = 99";
+        assert_eq!(odku_rows(&database, sql).await?, vec!["1"]);
+
+        // A second NULL key must never update the row holding the first one. Whether the
+        // storage layer then accepts the second NULL is a separate, core matter.
+        let sql = "INSERT INTO u VALUES (3, NULL, 7) ON DUPLICATE KEY UPDATE n = n + 1";
+        let updated = matches!(odku_rows(&database, sql).await.as_deref(), Ok([r]) if r == "2");
+        assert!(!updated);
+        assert_eq!(
+            odku_rows(&database, "SELECT * FROM u WHERE id = 2").await?,
+            vec!["2|NULL|5"]
+        );
+        let sql = "INSERT INTO cu VALUES (3, 1, NULL) ON DUPLICATE KEY UPDATE id = 99";
+        let updated = matches!(odku_rows(&database, sql).await.as_deref(), Ok([r]) if r == "2");
+        assert!(!updated);
+        assert!(odku_rows(&database, "SELECT * FROM cu WHERE id = 99")
+            .await?
+            .is_empty());
+        assert_eq!(
+            odku_rows(&database, "SELECT * FROM cu WHERE id = 2").await?,
+            vec!["2|1|NULL"]
+        );
+
+        // Non-NULL keys still conflict.
+        let sql = "INSERT INTO u VALUES (4, 'a', 0) ON DUPLICATE KEY UPDATE n = 9";
+        assert_eq!(odku_rows(&database, sql).await?, vec!["2"]);
+        assert_eq!(
+            odku_rows(&database, "SELECT * FROM u WHERE email = 'a'").await?,
+            vec!["1|a|9"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    async fn test_odku_row_alias() -> Result<(), DatabaseError> {
+        let (_dir, database) = odku_database().await?;
+        let sql = "INSERT INTO t VALUES (1, 7, 0) AS new ON DUPLICATE KEY UPDATE v = new.v";
+        assert_eq!(odku_rows(&database, sql).await?, vec!["2"]);
+        let sql = "INSERT INTO t VALUES (1, 8, 0) AS New ON DUPLICATE KEY UPDATE v = NEW.v + v";
+        assert_eq!(odku_rows(&database, sql).await?, vec!["2"]);
+        assert_eq!(
+            odku_rows(&database, "SELECT * FROM t").await?,
+            vec!["1|15|0"]
+        );
+
+        let sql = "INSERT INTO t VALUES (1, 1, 1) AS n (a, b, c) ON DUPLICATE KEY UPDATE v = n.b";
+        assert!(matches!(
+            odku_rows(&database, sql).await,
+            Err(DatabaseError::UnsupportedStmt(_))
+        ));
+        Ok(())
+    }
+
+    #[test]
+    async fn test_odku_statement_is_atomic() -> Result<(), DatabaseError> {
+        let (_dir, database) = odku_database().await?;
+        database
+            .run("INSERT INTO t VALUES (3, 30, 0)")
+            .await?
+            .done()
+            .await?;
+        // Row 1 inserts 60; row 2 then fails to move 1 onto the existing key 3.
+        let sql = "INSERT INTO t VALUES (60, 0, 0), (1, 0, 0) ON DUPLICATE KEY UPDATE id = 3";
+        assert!(odku_rows(&database, sql).await.is_err());
+        assert_eq!(
+            odku_rows(&database, "SELECT * FROM t ORDER BY id").await?,
+            vec!["1|10|0", "3|30|0"]
+        );
+
+        let mut session = database.session();
+        session.run("BEGIN").await?.done().await?;
+        session
+            .run("INSERT INTO t VALUES (4, 0, 0)")
+            .await?
+            .done()
+            .await?;
+        let result = match session.run(sql).await {
+            Ok(iter) => iter.done().await,
+            Err(err) => Err(err),
+        };
+        assert!(result.is_err());
+        session.run("COMMIT").await?.done().await?;
+        drop(session);
+        assert_eq!(
+            odku_rows(&database, "SELECT * FROM t ORDER BY id").await?,
+            vec!["1|10|0", "3|30|0", "4|0|0"]
+        );
+        Ok(())
+    }
 }

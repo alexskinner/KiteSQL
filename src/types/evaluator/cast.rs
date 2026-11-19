@@ -770,6 +770,9 @@ pub fn cast_create(
         (LogicalType::Date, LogicalType::DateTime) => {
             cast_ref!(from, to)
         }
+        (LogicalType::Date | LogicalType::DateTime, LogicalType::Bigint | LogicalType::Double) => {
+            cast_ref!(from, to)
+        }
         (LogicalType::DateTime, LogicalType::Char(_, _)) => {
             cast_string_ref!(from, to, Some(char_params(to).0), char_params(to).1)
         }
@@ -1130,6 +1133,10 @@ impl CastEvaluatorRef {
             #[cfg(feature = "time")]
             (CAST_DATE, CAST_DATETIME) => run!(date32_to_datetime_cast_eval),
             #[cfg(feature = "time")]
+            (CAST_DATE, CAST_BIGINT) => run!(date32_to_bigint_cast_eval),
+            #[cfg(feature = "time")]
+            (CAST_DATE, CAST_DOUBLE) => run!(date32_to_double_cast_eval),
+            #[cfg(feature = "time")]
             (CAST_DATETIME, CAST_CHAR) => {
                 let (len, unit) = string_param(params);
                 let len = len.expect("char cast must have fixed length");
@@ -1142,6 +1149,10 @@ impl CastEvaluatorRef {
             }
             #[cfg(feature = "time")]
             (CAST_DATETIME, CAST_DATE) => run!(date64_to_date_cast_eval),
+            #[cfg(feature = "time")]
+            (CAST_DATETIME, CAST_BIGINT) => run!(date64_to_bigint_cast_eval),
+            #[cfg(feature = "time")]
+            (CAST_DATETIME, CAST_DOUBLE) => run!(date64_to_double_cast_eval),
             #[cfg(feature = "time")]
             (CAST_DATETIME, CAST_TIME) => run!(date64_to_time_cast_eval {
                 precision: precision_param(params)
@@ -1456,7 +1467,7 @@ mod test {
             (
                 LogicalType::Char(4, CharLengthUnits::Characters),
                 DataValue::Utf8 {
-                    value: "true".into(),
+                    value: "1".into(),
                     ty: Utf8Type::Fixed(4),
                     unit: CharLengthUnits::Characters,
                 },
@@ -1464,7 +1475,7 @@ mod test {
             (
                 LogicalType::Varchar(Some(4), CharLengthUnits::Characters),
                 DataValue::Utf8 {
-                    value: "true".into(),
+                    value: "1".into(),
                     ty: Utf8Type::Variable(Some(4)),
                     unit: CharLengthUnits::Characters,
                 },

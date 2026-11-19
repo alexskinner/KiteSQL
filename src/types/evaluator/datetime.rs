@@ -61,6 +61,30 @@ crate::define_cast_evaluator!(
         )
     }
 );
+fn date64_number(value: i64) -> Option<i64> {
+    let dt = DateTime::from_timestamp(value, 0)?.naive_utc();
+    Some(
+        dt.year() as i64 * 10_000_000_000
+            + dt.month() as i64 * 100_000_000
+            + dt.day() as i64 * 1_000_000
+            + dt.hour() as i64 * 10_000
+            + dt.minute() as i64 * 100
+            + dt.second() as i64,
+    )
+}
+// MySQL's numeric form of a DATETIME: YYYYMMDDhhmmss.
+crate::define_cast_evaluator!(date64_to_bigint_cast_eval, DataValue::Date64(value) => {
+        let number = date64_number(value)
+            .ok_or_else(|| cast_fail(LogicalType::DateTime, LogicalType::Bigint))?;
+        Ok(DataValue::Int64(number))
+    }
+);
+crate::define_cast_evaluator!(date64_to_double_cast_eval, DataValue::Date64(value) => {
+        let number = date64_number(value)
+            .ok_or_else(|| cast_fail(LogicalType::DateTime, LogicalType::Double))?;
+        Ok(DataValue::Float64(ordered_float::OrderedFloat(number as f64)))
+    }
+);
 crate::define_cast_evaluator!(date64_to_date_cast_eval, DataValue::Date64(value) => {
         let value = DateTime::from_timestamp(value, 0)
             .ok_or_else(|| cast_fail(LogicalType::DateTime, LogicalType::Date))?

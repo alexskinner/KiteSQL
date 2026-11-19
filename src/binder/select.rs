@@ -561,6 +561,20 @@ where
         if !self.binder.context.agg_calls.is_empty()
             || !self.binder.context.group_by_exprs.is_empty()
         {
+            if self.binder.context.group_by_exprs.is_empty() {
+                let exprs = self
+                    .select_list
+                    .iter()
+                    .chain(having_orderby.0.iter())
+                    .chain(
+                        having_orderby
+                            .1
+                            .iter()
+                            .flat_map(|fields| fields.iter().map(|field| &field.expr)),
+                    );
+                self.binder
+                    .validate_ungrouped_aggregate_exprs(exprs, self.arena)?;
+            }
             if self
                 .binder
                 .context
@@ -810,7 +824,16 @@ where
                         .ok_or_else(|| DatabaseError::column_not_found(name.to_string()))?,
                 );
             }
-            plan = binder.bind_insert_query(table_name, plan, &targets, false, arena)?;
+            plan = binder.bind_insert_query(
+                crate::binder::insert::InsertQueryParams {
+                    table_name,
+                    input_plan: plan,
+                    targets: &targets,
+                    is_overwrite: false,
+                    on_duplicate_key_update: None,
+                },
+                arena,
+            )?;
         }
 
         Ok(BindPlanComplete { plan })

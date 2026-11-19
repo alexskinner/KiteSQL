@@ -204,3 +204,54 @@ select count(*), count(distinct '*'), count(distinct v) from avg_distinct_test;
 
 statement ok
 drop table avg_distinct_test;
+
+# An aggregate query without GROUP BY is one group: a bare column next to an aggregate
+# names no single value and is rejected, as the GROUP BY check rejects it.
+statement ok
+create table bare_agg (id int primary key, a int, c decimal(10,2))
+
+statement ok
+insert into bare_agg values (1, 1, 1.25), (2, 2, 2.25)
+
+statement error must appear in the GROUP BY clause or be used in an aggregate function
+select a, max(c) from bare_agg
+
+statement error must appear in the GROUP BY clause or be used in an aggregate function
+select max(c), a from bare_agg
+
+statement error must appear in the GROUP BY clause or be used in an aggregate function
+select a + max(c) from bare_agg
+
+statement error must appear in the GROUP BY clause or be used in an aggregate function
+select count(*), id, 123 from bare_agg where false
+
+statement error must appear in the GROUP BY clause or be used in an aggregate function
+select max(c) from bare_agg having a > 0
+
+statement error must appear in the GROUP BY clause or be used in an aggregate function
+select max(c) from bare_agg order by a
+
+query RIIT
+select max(c) + 1, count(*), 123, 'abc' from bare_agg
+----
+3.25 2 123 abc
+
+query R
+select max(c) from bare_agg having max(c) > 2
+----
+2.25
+
+query IR rowsort
+select a, (select max(b2.c) + bare_agg.a from bare_agg b2) from bare_agg
+----
+1 3.25
+2 4.25
+
+query IR rowsort
+select a, max(c) from bare_agg group by a
+----
+1 1.25
+2 2.25
+
+statement ok
+drop table bare_agg
