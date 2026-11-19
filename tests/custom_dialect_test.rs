@@ -82,6 +82,11 @@ impl SqlDialect for ToyDialect {
         }
     }
 
+    /// AVG of an INT is a DECIMAL with two decimals in this dialect.
+    fn avg_return_type(&self, arg: &LogicalType) -> Option<LogicalType> {
+        matches!(arg, LogicalType::Integer).then_some(LogicalType::Decimal(None, Some(2)))
+    }
+
     fn rewrite(&self, statement: &mut Statement) -> Result<(), DatabaseError> {
         // Rewrite table names that are exactly "customtable" to "rewritten_table"
         match statement {
@@ -222,5 +227,51 @@ fn test_generic_dialect_unchanged() -> Result<(), Box<dyn std::error::Error>> {
 
     result.done()?;
 
+    Ok(())
+}
+
+#[test]
+#[cfg(feature = "parser")]
+fn test_custom_dialect_avg_return_type() -> Result<(), Box<dyn std::error::Error>> {
+    use kite_sql::storage::lmdb::LmdbStorage;
+    use kite_sql::types::value::DataValue;
+
+    let avg = |database: &kite_sql::db::Database<LmdbStorage>,
+               sql: &str|
+     -> Result<(LogicalType, DataValue), DatabaseError> {
+        let mut result = database.run(sql)?;
+        let ty = result.schema(|schema| schema.get(0).unwrap().datatype().clone());
+        let row = result.next_tuple(|_, row| row[0].clone())?.unwrap();
+        result.done()?;
+        Ok((ty, row))
+    };
+    let setup = "CREATE TABLE a (id INT PRIMARY KEY, n INT, f DOUBLE)";
+    let rows = "INSERT INTO a VALUES (1, 1, 1.0), (2, 2, 2.0), (3, 4, 4.0), (4, NULL, NULL)";
+
+    // The dialect types AVG(INT) DECIMAL(_, 2): exact, rounded half away from zero.
+    let temp_dir = tempfile::tempdir()?;
+    let mut toy = DataBaseBuilder::path(".")
+        .register_dialect(Arc::new(ToyDialect::new()))
+        .default_dialect("toy")?
+        .build_with_storage(LmdbStorage::new(temp_dir.path())?)?;
+    toy.ddl(setup)?;
+    toy.run(rows)?.done()?;
+    let (ty, value) = avg(&toy, "SELECT AVG(n) FROM a")?;
+    assert_eq!(ty, LogicalType::Decimal(None, Some(2)));
+    assert_eq!(value.to_string(), "2.33");
+    // Arguments the dialect leaves alone keep DOUBLE.
+    let (ty, value) = avg(&toy, "SELECT AVG(f) FROM a")?;
+    assert_eq!(ty, LogicalType::Double);
+    assert!(matches!(value, DataValue::Float64(_)));
+
+    // The generic dialect keeps AVG DOUBLE.
+    let temp_dir = tempfile::tempdir()?;
+    let mut generic =
+        DataBaseBuilder::path(".").build_with_storage(LmdbStorage::new(temp_dir.path())?)?;
+    generic.ddl(setup)?;
+    generic.run(rows)?.done()?;
+    let (ty, value) = avg(&generic, "SELECT AVG(n) FROM a")?;
+    assert_eq!(ty, LogicalType::Double);
+    assert!(matches!(value, DataValue::Float64(_)));
     Ok(())
 }
