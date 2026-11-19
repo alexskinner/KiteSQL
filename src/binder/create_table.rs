@@ -62,6 +62,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                 index_constraints,
                 display_types,
                 identity,
+                binary_text_columns: Vec::new(),
             }),
             Childrens::None,
         ))

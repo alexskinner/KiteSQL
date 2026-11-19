@@ -57,6 +57,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CreateTable<'a> {
             index_constraints,
             display_types,
             identity,
+            binary_text_columns,
         } = self.op;
 
         let (transaction, table_codec) = arena.transaction_codec_mut();
@@ -81,6 +82,16 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CreateTable<'a> {
                         &mut table,
                         &identity.column,
                         identity.start.map(i128::from),
+                    )
+                    .await?;
+            }
+            if !binary_text_columns.is_empty() {
+                transaction
+                    .set_binary_text_columns(
+                        table_codec,
+                        plan_arena,
+                        &mut table,
+                        binary_text_columns,
                     )
                     .await?;
             }

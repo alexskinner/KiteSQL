@@ -2041,6 +2041,7 @@ dependencies = [
 name = "kite_sql_mysql"
 version = "0.7.0"
 dependencies = [
+ "icu_normalizer",
  "kite_sql",
  "ordered-float",
  "rust_decimal",

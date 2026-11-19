@@ -163,6 +163,7 @@ impl<S: Storage> State<S> {
             }
         }
         crate::diagnostics::begin_statement(policy);
+        crate::types::collation::begin_statement(dialect.text_collation());
         Ok(stmts)
     }
 
@@ -908,6 +909,17 @@ where
         let mut columns = Vec::with_capacity(create.columns.len());
         let mut display_types = std::collections::BTreeMap::new();
         let mut identity: Option<crate::planner::operator::create_table::IdentitySpec> = None;
+        let binary_text_columns = create
+            .columns
+            .iter()
+            .filter(|column| {
+                column.options.iter().any(|option| {
+                    matches!(&option.option, ColumnOption::Collation(name)
+                        if self.binder.context.dialect.is_binary_collation(&name.to_string()))
+                })
+            })
+            .map(|column| column.name.value.clone())
+            .collect::<Vec<_>>();
         for (i, column) in create.columns.into_iter().enumerate() {
             let (col, display, column_identity) = self.bind_column(column, Some(i))?;
             if let Some(display_name) = display {
@@ -1036,7 +1048,7 @@ where
             }
         }
 
-        self.binder.bind_create_table(
+        let mut plan = self.binder.bind_create_table(
             table_name,
             columns,
             create.if_not_exists,
@@ -1044,7 +1056,11 @@ where
             index_constraints,
             display_types,
             identity,
-        )
+        )?;
+        if let Operator::CreateTable(op) = &mut plan.operator {
+            op.binary_text_columns = binary_text_columns;
+        }
+        Ok(plan)
     }
 
     /// Binds a column definition: the column, its declared display type, and, for an identity
@@ -3110,11 +3126,14 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                 let expr = self
                     .bind_expr(expr, arena)
                     .map(|expr| arena.alloc_expression(expr))?;
+                let mut operands = std::iter::once(expr).chain(args).collect::<Vec<_>>();
+                Self::binary_text_operands(&mut operands, arena)?;
+                let expr = operands.remove(0);
                 Ok(ScalarExpression::In {
                     negated: *negated,
                     evaluator: None,
                     expr,
-                    args,
+                    args: operands,
                 })
             }
             Expr::Cast {
@@ -3163,6 +3182,9 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                 let right_expr = self
                     .bind_expr(high, arena)
                     .map(|expr| arena.alloc_expression(expr))?;
+                let mut operands = [expr, left_expr, right_expr];
+                Self::binary_text_operands(&mut operands, arena)?;
+                let [expr, left_expr, right_expr] = operands;
                 Ok(ScalarExpression::Between {
                     negated: *negated,
                     left_evaluator: None,

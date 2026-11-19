@@ -419,6 +419,17 @@ pub(crate) fn is_index_covers(
 
 fn covering_idx(column: ColumnRef, index_meta: &IndexMeta, arena: &PlanArena) -> Option<usize> {
     let id = arena.column(column).id()?;
+    // Keys of a table created under a text collation hold the collation key, not the text.
+    if matches!(
+        arena.column(column).datatype(),
+        LogicalType::Char(..) | LogicalType::Varchar(..)
+    ) && arena
+        .table(index_meta.table_id)
+        .and_then(|table| table.text_collation())
+        .is_some_and(|meta| meta.folds_keys())
+    {
+        return None;
+    }
     if let Some(idx) = index_meta
         .column_ids
         .iter()

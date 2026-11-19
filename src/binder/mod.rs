@@ -499,8 +499,37 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
     }
 
     pub fn table(&self, table_name: &str) -> Result<Option<&'a TableCatalog>, DatabaseError> {
-        self.transaction
-            .table(self.names, self.table_cache, table_name)
+        let table = self
+            .transaction
+            .table(self.names, self.table_cache, table_name)?;
+        if let Some(table) = table {
+            Self::check_text_collation(table)?;
+        }
+        Ok(table)
+    }
+
+    /// A table keeps the text collation it was created under: a table created byte-wise keeps
+    /// byte-wise keys under a collation, and a table created under a collation needs it.
+    fn check_text_collation(table: &TableCatalog) -> Result<(), DatabaseError> {
+        use crate::types::collation;
+        match (collation::active(), table.text_collation()) {
+            (Some(active), Some(meta)) if *meta.name == *active.name() => {
+                if !meta.folds_keys() {
+                    collation::mark_raw_keys(table.id());
+                }
+                Ok(())
+            }
+            (Some(_), None) => {
+                collation::mark_raw_keys(table.id());
+                Ok(())
+            }
+            (None, None) => Ok(()),
+            (_, Some(meta)) => Err(DatabaseError::InvalidValue(format!(
+                "table `{}` was created under text collation `{}`, which this dialect does not use",
+                table.name(),
+                meta.name
+            ))),
+        }
     }
 
     pub(crate) fn table_id(&self, table_name: &str) -> Result<TableId, DatabaseError> {

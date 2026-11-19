@@ -98,6 +98,20 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
         None
     }
 
+    /// The collation text compares by in this dialect's statements (see
+    /// [`crate::types::collation`]); `None` (the default) compares byte-wise. Tables created
+    /// while it is active store its keys in their primary key and indexes and are marked with
+    /// its name, so a database keeps one collation for its life.
+    fn text_collation(&self) -> Option<crate::types::collation::TextCollation> {
+        None
+    }
+
+    /// Whether a column declared `COLLATE name` keeps byte-wise comparisons under
+    /// [`Self::text_collation`] (a binary or case-sensitive collation). The default: none.
+    fn is_binary_collation(&self, _name: &str) -> bool {
+        false
+    }
+
     /// Maps a core diagnostic to this dialect's level, code and wording; `None` drops it.
     /// The default keeps it as raised (code 0).
     fn map_diagnostic(

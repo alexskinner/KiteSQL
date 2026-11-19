@@ -807,6 +807,7 @@ pub(crate) mod tests {
                 index_constraints: Vec::new(),
                 display_types: std::collections::BTreeMap::new(),
                 identity: None,
+                binary_text_columns: Vec::new(),
             }),
             Operator::CreateIndex(CreateIndexOperator {
                 table_id: 0,

@@ -351,6 +351,17 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
             .load_table(table_codec, plan_arena, table_name)
             .await?
             .ok_or(DatabaseError::TableNotFound)?;
+        if let Some(meta) = table.text_collation() {
+            if meta.folds_keys()
+                && matches!(ty, IndexType::Unique)
+                && column_ids.iter().any(|id| meta.binary_columns.contains(id))
+            {
+                return Err(DatabaseError::UnsupportedStmt(format!(
+                    "a unique index over a byte-wise text column of `{table_name}`, whose keys \
+                     hold its collation's keys: declare it when the table is created"
+                )));
+            }
+        }
         let index_meta = table.add_index_meta(index_name, column_ids, ty, plan_arena)?;
         let index_meta = plan_arena.index(index_meta);
         let index_id = index_meta.id;
@@ -1011,7 +1022,66 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                 .await?;
         }
 
+        // A table created under a text collation stores its keys; record which one.
+        if let Some(collation) = crate::types::collation::active() {
+            let meta = crate::catalog::TextCollationMeta {
+                name: collation.name().into(),
+                raw_keys: false,
+                binary_columns: Default::default(),
+            };
+            self.write_text_collation(table_codec, table_catalog.id(), &meta)
+                .await?;
+            table_catalog.set_text_collation(Some(meta));
+        }
+
         Ok(Some(table_catalog))
+    }
+
+    /// Records `column_names` of a table created under a text collation as byte-wise text
+    /// columns (declared with a binary collation).
+    async fn set_binary_text_columns(
+        &mut self,
+        table_codec: &mut TableCodec,
+        plan_arena: &(dyn MetaArena + '_),
+        table: &mut TableCatalog,
+        column_names: &[String],
+    ) -> Result<(), DatabaseError> {
+        let Some(mut meta) = table.text_collation().cloned() else {
+            return Ok(());
+        };
+        for name in column_names {
+            if let Some(column_id) = table
+                .get_column_by_name(name)
+                .and_then(|column| plan_arena.column(column).id())
+            {
+                meta.binary_columns.insert(column_id);
+            }
+        }
+        // A unique key over a byte-wise column must stay unique by bytes.
+        meta.raw_keys = table.indexes().any(|index| {
+            let index = plan_arena.index(*index);
+            matches!(index.ty, IndexType::PrimaryKey { .. } | IndexType::Unique)
+                && index
+                    .column_ids
+                    .iter()
+                    .any(|id| meta.binary_columns.contains(id))
+        });
+        self.write_text_collation(table_codec, table.id(), &meta)
+            .await?;
+        table.set_text_collation(Some(meta));
+        Ok(())
+    }
+
+    async fn write_text_collation(
+        &mut self,
+        table_codec: &mut TableCodec,
+        table_id: TableId,
+        meta: &crate::catalog::TextCollationMeta,
+    ) -> Result<(), DatabaseError> {
+        let bytes = meta.encode();
+        table_codec
+            .with_text_collation(table_id, async |key| self.set(key, &bytes))
+            .await
     }
 
     /// The table or view registered under `table_name`.
@@ -1187,6 +1257,9 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                 plan_arena,
                 async |key, _| self.remove(key),
             )
+            .await?;
+        table_codec
+            .with_text_collation(meta.id, async |key| self.remove(key))
             .await?;
 
         table_codec
@@ -1447,7 +1520,18 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                     }
                 })
                 .await?;
+            let text_collation = table_codec
+                .with_text_collation(table.id(), async |key| {
+                    match self.get_borrowed(key).await? {
+                        Some(bytes) => {
+                            crate::catalog::TextCollationMeta::decode(bytes.as_ref()).map(Some)
+                        }
+                        None => Ok(None),
+                    }
+                })
+                .await?;
             table.set_identity_column(identity);
+            table.set_text_collation(text_collation);
             Ok(Some(table))
         } else {
             Ok(None)

@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use crate::errors::DatabaseError;
+use crate::types::collation::{text_cmp, text_eq};
 use crate::types::evaluator::cast::{to_char, to_varbinary, to_varchar};
 use crate::types::evaluator::DataValue;
 use crate::types::value::{Utf8Str, Utf8Type};
@@ -53,13 +54,13 @@ macro_rules! utf8_binary {
 }
 
 utf8_binary!(utf8_gt_binary_eval, |v1: &Utf8Str, v2: &Utf8Str| {
-    DataValue::Boolean(v1 > v2)
+    DataValue::Boolean(text_cmp(v1, v2).is_gt())
 });
 utf8_binary!(utf8_gt_eq_binary_eval, |v1: &Utf8Str, v2: &Utf8Str| {
-    DataValue::Boolean(v1 >= v2)
+    DataValue::Boolean(text_cmp(v1, v2).is_ge())
 });
 utf8_binary!(utf8_lt_binary_eval, |v1: &Utf8Str, v2: &Utf8Str| {
-    DataValue::Boolean(v1 < v2)
+    DataValue::Boolean(text_cmp(v1, v2).is_lt())
 });
 
 /// `$ty::from_str(value)`, falling back to the statement policy's lenient numeric conversion
@@ -263,13 +264,13 @@ crate::define_cast_evaluator!(utf8_to_decimal_cast_eval, DataValue::Utf8 { value
     )))
 });
 utf8_binary!(utf8_lt_eq_binary_eval, |v1: &Utf8Str, v2: &Utf8Str| {
-    DataValue::Boolean(v1 <= v2)
+    DataValue::Boolean(text_cmp(v1, v2).is_le())
 });
 utf8_binary!(utf8_eq_binary_eval, |v1: &Utf8Str, v2: &Utf8Str| {
-    DataValue::Boolean(v1 == v2)
+    DataValue::Boolean(text_eq(v1, v2))
 });
 utf8_binary!(utf8_not_eq_binary_eval, |v1: &Utf8Str, v2: &Utf8Str| {
-    DataValue::Boolean(v1 != v2)
+    DataValue::Boolean(!text_eq(v1, v2))
 });
 pub fn utf8_string_concat_binary_eval(
     left: DataValue,
