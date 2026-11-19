@@ -361,7 +361,8 @@ mod test {
             kite_sql.analyze("t1").await?;
 
             let table_name = "t1".to_string();
-            let catalog = kite_sql.state.catalog();
+            let catalog_ref = kite_sql.state.catalog();
+            let catalog = catalog_ref.view();
             let arena_borrow = catalog.arena.borrow();
             let table_id = arena_borrow
                 .names
@@ -406,7 +407,9 @@ mod test {
                 .await?;
             kite_sql.analyze("t1").await?;
 
-            let catalog = kite_sql.state.catalog();
+            let catalog_ref = kite_sql.state.catalog();
+
+            let catalog = catalog_ref.view();
             let arena_borrow = catalog.arena.borrow();
             let table_id = arena_borrow
                 .names
@@ -461,7 +464,8 @@ mod test {
         kite_sql.analyze("t1").await?;
 
         let table_name = "t1".to_string();
-        let catalog = kite_sql.state.catalog();
+        let catalog_ref = kite_sql.state.catalog();
+        let catalog = catalog_ref.view();
         let arena_borrow = catalog.arena.borrow();
         let table_id = arena_borrow
             .names
@@ -515,7 +519,8 @@ mod test {
         reopened
             .load(CatalogKind::Table(table_name.clone()))
             .await?;
-        let loader = StatisticMetaLoader::new(reopened.state.meta_cache());
+        let loader_catalog = reopened.state.catalog();
+        let loader = StatisticMetaLoader::new(loader_catalog.meta());
         for index in 0..=2 {
             let meta = loader.load(table_id, index)?.unwrap();
             assert_eq!(meta.index_id(), index);
@@ -550,7 +555,8 @@ mod test {
             101
         );
         reopened.ddl("drop index t1.b_index").await?;
-        let loader = StatisticMetaLoader::new(reopened.state.meta_cache());
+        let loader_catalog = reopened.state.catalog();
+        let loader = StatisticMetaLoader::new(loader_catalog.meta());
         assert!(loader.load(table_id, 1)?.is_none());
         assert_eq!(
             loader
@@ -565,7 +571,7 @@ mod test {
                 &mut TableCodec::default(),
                 0,
                 1,
-                reopened.state.table_arena().borrow_mut()
+                reopened.state.catalog().arena().borrow_mut()
             )
             .await?
             .is_none());
@@ -574,7 +580,7 @@ mod test {
                 &mut TableCodec::default(),
                 0,
                 b_id,
-                reopened.state.table_arena().borrow_mut()
+                reopened.state.catalog().arena().borrow_mut()
             )
             .await?
             .unwrap()
@@ -589,7 +595,7 @@ mod test {
                 &mut TableCodec::default(),
                 0,
                 c_id,
-                reopened.state.table_arena().borrow_mut()
+                reopened.state.catalog().arena().borrow_mut()
             )
             .await?
             .is_none());
@@ -598,7 +604,7 @@ mod test {
                 &mut TableCodec::default(),
                 0,
                 a_id,
-                reopened.state.table_arena().borrow_mut()
+                reopened.state.catalog().arena().borrow_mut()
             )
             .await?
             .is_some());
@@ -622,7 +628,7 @@ mod test {
             0,
             2,
             None,
-            reopened.state.table_arena().borrow(),
+            reopened.state.catalog().arena().borrow(),
             |key, _| tx.remove(key),
         )?;
         tx.commit().await?;
@@ -633,8 +639,8 @@ mod test {
             matches!(reopened.load(CatalogKind::Table(table_name)).await,
             Err(DatabaseError::InvalidValue(message)) if message == "statistics meta is incomplete")
         );
-        assert!(reopened.state.meta_cache().indexes.is_empty());
-        assert!(reopened.state.meta_cache().columns.is_empty());
+        assert!(reopened.state.catalog().meta().indexes.is_empty());
+        assert!(reopened.state.catalog().meta().columns.is_empty());
         Ok(())
     }
 
@@ -656,7 +662,9 @@ mod test {
         }
         kite_sql.analyze("t1").await?;
 
-        let catalog = kite_sql.state.catalog();
+        let catalog_ref = kite_sql.state.catalog();
+
+        let catalog = catalog_ref.view();
         let arena_borrow = catalog.arena.borrow();
         let table_id = arena_borrow
             .names
@@ -694,7 +702,9 @@ mod test {
             transaction.remove(&key)?;
         }
 
-        let loader = StatisticMetaLoader::new(kite_sql.state.meta_cache());
+        let loader_catalog = kite_sql.state.catalog();
+
+        let loader = StatisticMetaLoader::new(loader_catalog.meta());
         assert!(loader.load(table_id, 1)?.is_some());
         assert_eq!(
             loader
@@ -720,7 +730,9 @@ mod test {
         create_table(&mut kite_sql, "create table t1 (a int primary key, b int)").await?;
         create_index(&mut kite_sql, "create index b_index on t1 (b)").await?;
 
-        let catalog = kite_sql.state.catalog();
+        let catalog_ref = kite_sql.state.catalog();
+
+        let catalog = catalog_ref.view();
         let arena_borrow = catalog.arena.borrow();
         let table_id = arena_borrow
             .names
@@ -732,7 +744,8 @@ mod test {
 
         assert!(!kite_sql
             .state
-            .meta_cache()
+            .catalog()
+            .meta()
             .indexes
             .contains_key(&(table_id, 1)));
 
@@ -793,7 +806,8 @@ mod test {
                 Ok(keys)
             })
             .await?;
-        let catalog = kite_sql.state.catalog();
+        let catalog_ref = kite_sql.state.catalog();
+        let catalog = catalog_ref.view();
         let arena_borrow = catalog.arena.borrow();
         let table_id = arena_borrow
             .names
@@ -812,8 +826,8 @@ mod test {
         assert_eq!(keys, expected_keys);
         drop(transaction);
         kite_sql.ddl("drop table t1").await?;
-        assert!(kite_sql.state.meta_cache().columns.is_empty());
-        assert!(kite_sql.state.meta_cache().indexes.is_empty());
+        assert!(kite_sql.state.catalog().meta().columns.is_empty());
+        assert!(kite_sql.state.catalog().meta().indexes.is_empty());
         let transaction = kite_sql.storage.transaction()?;
         table_codec
             .with_statistics_bound(0, async |min, max, pool| {
