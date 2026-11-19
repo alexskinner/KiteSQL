@@ -96,13 +96,20 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
             return Err(DatabaseError::not_null());
         }
         let mut affected_rows = 0;
+        let mut row = 0;
 
         while input.next_tuple(arena, plan_arena).await? {
             tuple.clear();
+            row += 1;
             arena.result_mut().drain_values(|value| tuple.push(value));
             for (i, column) in table.columns.iter().enumerate() {
                 let column = plan_arena.column(*column);
-                let value = mem::replace(&mut tuple[i], DataValue::Null).cast(column.datatype())?;
+                let value = crate::diagnostics::store_cast(
+                    mem::replace(&mut tuple[i], DataValue::Null),
+                    column.datatype(),
+                    column.name(),
+                    row,
+                )?;
                 value.check_len(column.datatype())?;
                 if value.is_null() && !column.nullable() {
                     return Err(DatabaseError::not_null_column(column.name().to_string()));

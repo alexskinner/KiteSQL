@@ -62,39 +62,64 @@ utf8_binary!(utf8_lt_binary_eval, |v1: &Utf8Str, v2: &Utf8Str| {
     DataValue::Boolean(v1 < v2)
 });
 
+/// `$ty::from_str(value)`, falling back to the statement policy's lenient numeric conversion
+/// (leading numeric part, with a warning) when the string is malformed.
+macro_rules! utf8_to_number {
+    ($value:expr, $ty:ty, $target:expr) => {
+        utf8_to_number!($value, $ty, $target, <$ty>::from_str)
+    };
+    ($value:expr, $ty:ty, $target:expr, $parse:expr) => {
+        match $parse(&$value) {
+            Ok(v) => v,
+            Err(err) => match crate::diagnostics::numeric_prefix(&$value, $target) {
+                Some((number, warn)) => {
+                    let v: $ty = $parse(&number).map_err(|_| err)?;
+                    if warn {
+                        crate::diagnostics::push(crate::diagnostics::Diagnostic::truncated_number(
+                            &$value, $target,
+                        ));
+                    }
+                    v
+                }
+                None => return Err(err.into()),
+            },
+        }
+    };
+}
+
 crate::define_cast_evaluator!(utf8_to_boolean_cast_eval, DataValue::Utf8 { value, .. } => {
         Ok(DataValue::Boolean(parse_bool_str(&value)?))
     }
 );
 crate::define_cast_evaluator!(utf8_to_tinyint_cast_eval, DataValue::Utf8 { value, .. } => {
-    Ok(DataValue::Int8(i8::from_str(&value)?))
+    Ok(DataValue::Int8(utf8_to_number!(value, i8, crate::diagnostics::NumericTarget::Integer)))
 });
 crate::define_cast_evaluator!(utf8_to_utinyint_cast_eval, DataValue::Utf8 { value, .. } => {
-    Ok(DataValue::UInt8(u8::from_str(&value)?))
+    Ok(DataValue::UInt8(utf8_to_number!(value, u8, crate::diagnostics::NumericTarget::Integer)))
 });
 crate::define_cast_evaluator!(utf8_to_smallint_cast_eval, DataValue::Utf8 { value, .. } => {
-    Ok(DataValue::Int16(i16::from_str(&value)?))
+    Ok(DataValue::Int16(utf8_to_number!(value, i16, crate::diagnostics::NumericTarget::Integer)))
 });
 crate::define_cast_evaluator!(utf8_to_usmallint_cast_eval, DataValue::Utf8 { value, .. } => {
-    Ok(DataValue::UInt16(u16::from_str(&value)?))
+    Ok(DataValue::UInt16(utf8_to_number!(value, u16, crate::diagnostics::NumericTarget::Integer)))
 });
 crate::define_cast_evaluator!(utf8_to_integer_cast_eval, DataValue::Utf8 { value, .. } => {
-    Ok(DataValue::Int32(i32::from_str(&value)?))
+    Ok(DataValue::Int32(utf8_to_number!(value, i32, crate::diagnostics::NumericTarget::Integer)))
 });
 crate::define_cast_evaluator!(utf8_to_uinteger_cast_eval, DataValue::Utf8 { value, .. } => {
-    Ok(DataValue::UInt32(u32::from_str(&value)?))
+    Ok(DataValue::UInt32(utf8_to_number!(value, u32, crate::diagnostics::NumericTarget::Integer)))
 });
 crate::define_cast_evaluator!(utf8_to_bigint_cast_eval, DataValue::Utf8 { value, .. } => {
-    Ok(DataValue::Int64(i64::from_str(&value)?))
+    Ok(DataValue::Int64(utf8_to_number!(value, i64, crate::diagnostics::NumericTarget::Integer)))
 });
 crate::define_cast_evaluator!(utf8_to_ubigint_cast_eval, DataValue::Utf8 { value, .. } => {
-    Ok(DataValue::UInt64(u64::from_str(&value)?))
+    Ok(DataValue::UInt64(utf8_to_number!(value, u64, crate::diagnostics::NumericTarget::Integer)))
 });
 crate::define_cast_evaluator!(utf8_to_float_cast_eval, DataValue::Utf8 { value, .. } => {
-    Ok(DataValue::Float32(OrderedFloat(f32::from_str(&value)?)))
+    Ok(DataValue::Float32(OrderedFloat(utf8_to_number!(value, f32, crate::diagnostics::NumericTarget::Double))))
 });
 crate::define_cast_evaluator!(utf8_to_double_cast_eval, DataValue::Utf8 { value, .. } => {
-    Ok(DataValue::Float64(OrderedFloat(f64::from_str(&value)?)))
+    Ok(DataValue::Float64(OrderedFloat(utf8_to_number!(value, f64, crate::diagnostics::NumericTarget::Double))))
 });
 crate::define_cast_evaluator!(
     utf8_to_char_cast_eval {
@@ -217,9 +242,25 @@ mod chrono_cast {
 
 #[cfg(feature = "time")]
 pub use chrono_cast::*;
+/// DECIMAL text, plain or in scientific notation ("12e-3").
+#[cfg(feature = "decimal")]
+fn decimal_from_text(s: &str) -> Result<Decimal, rust_decimal::Error> {
+    Decimal::from_str(s).or_else(|err| {
+        if s.contains(['e', 'E']) {
+            Decimal::from_scientific(s)
+        } else {
+            Err(err)
+        }
+    })
+}
 #[cfg(feature = "decimal")]
 crate::define_cast_evaluator!(utf8_to_decimal_cast_eval, DataValue::Utf8 { value, .. } => {
-    Ok(DataValue::Decimal(Decimal::from_str(&value)?))
+    Ok(DataValue::Decimal(utf8_to_number!(
+        value,
+        Decimal,
+        crate::diagnostics::NumericTarget::Decimal,
+        decimal_from_text
+    )))
 });
 utf8_binary!(utf8_lt_eq_binary_eval, |v1: &Utf8Str, v2: &Utf8Str| {
     DataValue::Boolean(v1 <= v2)

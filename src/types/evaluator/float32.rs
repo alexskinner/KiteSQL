@@ -71,6 +71,9 @@ float32_binary!(
 float32_binary!(
     float32_divide_binary_eval,
     |v1: &ordered_float::OrderedFloat<f32>, v2: &ordered_float::OrderedFloat<f32>| {
+        if v2.0 == 0.0 && crate::diagnostics::float_division_by_zero() {
+            return DataValue::Null;
+        }
         DataValue::Float64(ordered_float::OrderedFloat(v1.0 as f64 / v2.0 as f64))
     }
 );

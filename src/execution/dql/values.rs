@@ -76,15 +76,20 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Values<'a> {
         let output = arena.output_tuple_mut();
         output.pk = None;
         output.values.clear();
+        let row = self.op.row_count - self.remaining_rows;
         for (i, expr) in self.rows.by_ref().take(width).enumerate() {
-            let ty = plan_arena.column(self.op.schema_ref[i]).datatype();
-            output.values.push(
-                plan_arena
-                    .expression(*expr)
-                    .eval::<[DataValue]>(plan_arena, None)?
-                    .into_owned()
-                    .cast(ty)?,
-            );
+            let column = plan_arena.column(self.op.schema_ref[i]);
+            let value = plan_arena
+                .expression(*expr)
+                .eval::<[DataValue]>(plan_arena, None)?
+                .into_owned();
+            // VALUES rows are cast to the target columns here (INSERT ... VALUES)
+            output.values.push(crate::diagnostics::store_cast(
+                value,
+                column.datatype(),
+                column.name(),
+                row,
+            )?);
         }
 
         arena.resume();
