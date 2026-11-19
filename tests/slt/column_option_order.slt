@@ -247,3 +247,54 @@ create table t_dup_default (pk int default 1 default 2, v int)
 
 statement error
 create table t_dup_pk (pk int primary key primary key, v int)
+
+statement ok
+create table t20 (pk varchar(50) primary key collate utf8mb4_bin, v int)
+
+statement ok
+insert into t20 values ('test', 190)
+
+query TI
+select * from t20
+----
+test 190
+
+statement ok
+drop table t20
+
+statement ok
+create table t21 (pk varchar(50) collate utf8mb4_bin primary key, v int)
+
+statement ok
+insert into t21 values ('test2', 200)
+
+query TI
+select * from t21
+----
+test2 200
+
+statement ok
+drop table t21
+
+statement ok
+create table t22 (pk int primary key invisible, v int)
+
+statement ok
+insert into t22 values (90, 210)
+
+query II
+select * from t22
+----
+90 210
+
+statement ok
+drop table t22
+
+statement error
+create table t_generated (pk int primary key, v int as (pk * 2))
+
+statement error
+create table t_null_not_null (pk int null not null, v int)
+
+statement error
+create table t_null_null (pk int null null, v int)

@@ -972,16 +972,40 @@ where
 
         let mut primary_key_seen = false;
         let mut explicit_null = false;
+        let mut explicit_not_null = false;
         let mut default_count = 0;
         let mut primary_key_count = 0;
 
         for option_def in column_def.options {
             match option_def.option {
                 ColumnOption::Null => {
+                    if explicit_null {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Multiple NULL options for a single column".to_string(),
+                        ));
+                    }
+                    if explicit_not_null {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Conflicting NULL and NOT NULL options".to_string(),
+                        ));
+                    }
                     nullable = true;
                     explicit_null = true;
                 }
-                ColumnOption::NotNull => nullable = false,
+                ColumnOption::NotNull => {
+                    if explicit_not_null {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Multiple NOT NULL options for a single column".to_string(),
+                        ));
+                    }
+                    if explicit_null {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Conflicting NULL and NOT NULL options".to_string(),
+                        ));
+                    }
+                    nullable = false;
+                    explicit_not_null = true;
+                }
                 ColumnOption::PrimaryKey(_) => {
                     column_desc.set_primary(column_index);
                     nullable = false;
@@ -1015,13 +1039,19 @@ where
                         expr.type_cast(Cow::Borrowed(&column_desc.column_datatype), self.arena)?;
                     column_desc.default = Some(expr);
                 }
+                ColumnOption::Generated { .. } => {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "generated columns are not supported".to_string(),
+                    ))
+                }
                 ColumnOption::DialectSpecific(_)
                 | ColumnOption::Comment(_)
                 | ColumnOption::Check(_)
                 | ColumnOption::ForeignKey { .. }
                 | ColumnOption::CharacterSet(_)
                 | ColumnOption::OnUpdate(_)
-                | ColumnOption::Generated { .. } => {}
+                | ColumnOption::Collation(_)
+                | ColumnOption::Invisible => {}
                 option => {
                     return Err(DatabaseError::UnsupportedStmt(format!(
                         "`Column` does not currently support this option: {option:?}"
