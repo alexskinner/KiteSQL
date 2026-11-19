@@ -9,11 +9,6 @@ select substring('pineapple' from -5 for 10 )
 apple
 
 query T
-select substring('pineapple', -15, 10 )
-----
-apple
-
-query T
 select substring('pineapple' for 4 )
 ----
 pine
@@ -83,3 +78,28 @@ query I
 select position('🔥' in 'hello🔥world')
 ----
 6
+
+query I
+select position('L' in 'héllo')
+----
+3
+
+query I
+select position('É' in 'héllo')
+----
+2
+
+query T
+select position(NULL in 'test')
+----
+NULL
+
+query T
+select position('test' in NULL)
+----
+NULL
+
+query T
+select position(NULL in NULL)
+----
+NULL
