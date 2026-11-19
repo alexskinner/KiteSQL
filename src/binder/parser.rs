@@ -905,7 +905,7 @@ where
             }
             columns.push(col);
         }
-        let mut unique_constraints = Vec::new();
+        let unique_constraints = Vec::new();
         let mut index_constraints = Vec::new();
         let mut used_index_names = std::collections::HashSet::new();
 

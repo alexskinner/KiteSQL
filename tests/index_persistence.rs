@@ -100,22 +100,66 @@ fn test_prefix_lengths_accepted() -> Result<(), DatabaseError> {
 
 #[test]
 fn test_named_single_column_unique() -> Result<(), DatabaseError> {
+    use kite_sql::db::{ConsumeMut, TransactionIter};
+    use kite_sql::planner::PlanArena;
+
+    struct Consume;
+    impl<S: kite_sql::storage::Storage> ConsumeMut<S> for Consume {
+        type Output = ();
+        fn consume<'a>(
+            self,
+            _iter: &mut TransactionIter<'a, 'a, S::TransactionType<'a>, PlanArena<'a>>,
+        ) -> Result<Self::Output, DatabaseError> {
+            Ok(())
+        }
+    }
+
     let temp_dir = TempDir::new().unwrap();
     let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
 
-    database.ddl("CREATE TABLE t (id INT PRIMARY KEY, val INT, UNIQUE KEY uk_val (val))")?;
-
-    database.run("INSERT INTO t VALUES (1, 100)")?.done()?;
+    database.run_mut(
+        "CREATE TABLE t (id INT PRIMARY KEY, val INT, UNIQUE KEY uk_val (val))",
+        Consume,
+    )?;
+    database.run_mut("INSERT INTO t VALUES (1, 100)", Consume)?;
 
     {
-        let result = database.run("INSERT INTO t VALUES (2, 100)");
+        let result = database.run_mut("INSERT INTO t VALUES (2, 100)", Consume);
         assert!(
             result.is_err(),
-            "Named single-column UNIQUE KEY should be enforced in same session"
+            "Named single-column UNIQUE KEY should be enforced with run_mut"
         );
     }
 
-    database.ddl("DROP INDEX t.uk_val")?;
+    database.run_mut("DROP INDEX t.uk_val", Consume)?;
+
+    Ok(())
+}
+
+#[test]
+fn test_named_single_column_unique_persist() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path();
+
+    {
+        let mut database = DataBaseBuilder::path(db_path).build_lmdb()?;
+        database.ddl("CREATE TABLE t (id INT PRIMARY KEY, val INT, UNIQUE KEY uk_val (val))")?;
+        database.run("INSERT INTO t VALUES (1, 100)")?.done()?;
+    }
+
+    {
+        let mut database = DataBaseBuilder::path(db_path).build_lmdb()?;
+
+        {
+            let result = database.run("INSERT INTO t VALUES (2, 100)");
+            assert!(
+                result.is_err(),
+                "Named single-column UNIQUE KEY should be enforced after reopen"
+            );
+        }
+
+        database.ddl("DROP INDEX t.uk_val")?;
+    }
 
     Ok(())
 }
