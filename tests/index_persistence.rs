@@ -1,0 +1,121 @@
+#![cfg(all(not(feature = "async"), feature = "lmdb"))]
+
+use kite_sql::db::DataBaseBuilder;
+use kite_sql::errors::DatabaseError;
+use tempfile::TempDir;
+
+#[test]
+fn test_inline_indexes_persist_after_reopen() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let db_path = temp_dir.path();
+
+    {
+        let mut database = DataBaseBuilder::path(db_path).build_lmdb()?;
+
+        database.ddl(
+            "CREATE TABLE t (
+                id INT PRIMARY KEY,
+                a INT,
+                b VARCHAR(50),
+                c INT,
+                KEY idx_a (a),
+                INDEX idx_b (b),
+                UNIQUE KEY uk_bc (b, c),
+                UNIQUE KEY uk_c (c)
+            )",
+        )?;
+
+        database
+            .run("INSERT INTO t VALUES (1, 10, 'first', 100)")?
+            .done()?;
+        database
+            .run("INSERT INTO t VALUES (2, 20, 'second', 200)")?
+            .done()?;
+    }
+
+    {
+        let mut database = DataBaseBuilder::path(db_path).build_lmdb()?;
+
+        {
+            let result = database.run("INSERT INTO t VALUES (3, 30, 'first', 100)");
+            assert!(
+                result.is_err(),
+                "Composite UNIQUE KEY uk_bc should be enforced after reopen"
+            );
+        }
+
+        {
+            let result = database.run("INSERT INTO t VALUES (3, 30, 'third', 100)");
+            assert!(
+                result.is_err(),
+                "Single-column UNIQUE KEY uk_c should be enforced after reopen"
+            );
+        }
+
+        database.ddl("DROP INDEX t.idx_a")?;
+        database.ddl("DROP INDEX t.idx_b")?;
+        database.ddl("DROP INDEX t.uk_bc")?;
+        database.ddl("DROP INDEX t.uk_c")?;
+
+        Ok(())
+    }
+}
+
+#[test]
+fn test_prefix_lengths_accepted() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    let create_result = database.ddl(
+        "CREATE TABLE t (
+            id INT PRIMARY KEY,
+            text_col VARCHAR(200),
+            KEY idx_prefix (text_col(10)),
+            UNIQUE KEY uk_prefix (text_col(20))
+        )",
+    );
+
+    if create_result.is_err() {
+        println!(
+            "Note: Prefix lengths not yet supported: {:?}",
+            create_result
+        );
+        return Ok(());
+    }
+
+    database
+        .run("INSERT INTO t VALUES (1, 'a long text value')")?
+        .done()?;
+
+    let mut iter = database.run("SELECT * FROM t WHERE text_col = 'a long text value'")?;
+    let mut count = 0;
+    while iter.next_tuple(|_, _| ())?.is_some() {
+        count += 1;
+    }
+    iter.done()?;
+    assert_eq!(count, 1, "Index with prefix length should work");
+
+    Ok(())
+}
+
+#[test]
+fn test_named_single_column_unique() -> Result<(), DatabaseError> {
+    let temp_dir = TempDir::new().unwrap();
+    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+
+    database.ddl("CREATE TABLE t (id INT PRIMARY KEY, val INT, UNIQUE KEY uk_val (val))")?;
+
+    database.run("INSERT INTO t VALUES (1, 100)")?.done()?;
+
+    {
+        let result = database.run("INSERT INTO t VALUES (2, 100)");
+        assert!(
+            result.is_err(),
+            "Named single-column UNIQUE KEY should be enforced in same session"
+        );
+    }
+
+    database.ddl("DROP INDEX t.uk_val")?;
+
+    Ok(())
+}

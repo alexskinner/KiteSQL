@@ -917,33 +917,35 @@ where
                     })?;
                 }
                 TableConstraint::Unique(unique) => {
-                    if unique.columns.len() > 1 {
-                        let column_names: Result<Vec<String>, DatabaseError> = unique
-                            .columns
-                            .iter()
-                            .map(|index_col| {
-                                if let Expr::Identifier(ident) = &index_col.column.expr {
-                                    Ok(lower_ident(ident).into_owned())
-                                } else {
-                                    Err(DatabaseError::UnsupportedStmt(
-                                        "only identifier columns are supported in UNIQUE"
-                                            .to_string(),
-                                    ))
-                                }
-                            })
-                            .collect();
-                        let cols = column_names?;
+                    let column_names: Result<Vec<String>, DatabaseError> = unique
+                        .columns
+                        .iter()
+                        .map(|index_col| {
+                            if let Expr::Identifier(ident) = &index_col.column.expr {
+                                Ok(lower_ident(ident).into_owned())
+                            } else {
+                                Err(DatabaseError::UnsupportedStmt(
+                                    "only identifier columns are supported in UNIQUE".to_string(),
+                                ))
+                            }
+                        })
+                        .collect();
+                    let cols = column_names?;
 
-                        let index_name = unique
-                            .name
-                            .as_ref()
-                            .or(unique.index_name.as_ref())
-                            .map(|ident| lower_ident(ident).into_owned());
-                        if let Some(ref name) = index_name {
-                            used_index_names.insert(name.clone());
-                        }
+                    let index_name = unique
+                        .name
+                        .as_ref()
+                        .or(unique.index_name.as_ref())
+                        .map(|ident| lower_ident(ident).into_owned());
+                    if let Some(ref name) = index_name {
+                        used_index_names.insert(name.clone());
+                    }
 
-                        unique_constraints.push(cols.clone());
+                    if unique.columns.len() == 1 && index_name.is_none() {
+                        self.bind_constraint(&mut columns, unique.columns, |_, desc| {
+                            desc.set_unique()
+                        })?;
+                    } else {
                         index_constraints.push(
                             crate::planner::operator::create_table::IndexConstraint {
                                 name: index_name,
@@ -951,10 +953,6 @@ where
                                 is_unique: true,
                             },
                         );
-                    } else {
-                        self.bind_constraint(&mut columns, unique.columns, |_, desc| {
-                            desc.set_unique()
-                        })?;
                     }
                 }
                 TableConstraint::Index(index) => {

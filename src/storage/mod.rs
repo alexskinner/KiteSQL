@@ -914,7 +914,20 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
 
             let index_name = format!("uk_{}", column_names.join("_"));
 
-            table_catalog.add_index_meta(index_name, column_ids, IndexType::Unique, plan_arena)?;
+            let meta_ref = table_catalog.add_index_meta(
+                index_name,
+                column_ids,
+                IndexType::Unique,
+                plan_arena,
+            )?;
+            let meta = plan_arena.index(meta_ref);
+            table_codec.with_index_meta(
+                table_id,
+                meta.id,
+                Some(meta),
+                plan_arena,
+                |key, value| self.set(key, value),
+            )?;
         }
 
         for index_def in index_constraints {
@@ -949,7 +962,16 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                 IndexType::Composite
             };
 
-            table_catalog.add_index_meta(index_name, column_ids, index_type, plan_arena)?;
+            let meta_ref =
+                table_catalog.add_index_meta(index_name, column_ids, index_type, plan_arena)?;
+            let meta = plan_arena.index(meta_ref);
+            table_codec.with_index_meta(
+                table_id,
+                meta.id,
+                Some(meta),
+                plan_arena,
+                |key, value| self.set(key, value),
+            )?;
         }
 
         for column in table_catalog
