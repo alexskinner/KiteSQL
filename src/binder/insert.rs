@@ -58,6 +58,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         rows: Vec<ExprRef>,
         row_count: usize,
         is_overwrite: bool,
+        on_duplicate_key_update: Option<Vec<(usize, ExprRef)>>,
         arena: &mut PlanArena<'_>,
     ) -> Result<LogicalPlan, DatabaseError> {
         let (table, sources) = self.insert_table(table_name, &targets, arena)?;
@@ -76,6 +77,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
             Operator::Insert(InsertOperator {
                 table,
                 is_overwrite,
+                on_duplicate_key_update,
             }),
             Childrens::Only(Box::new(values_plan)),
         ))
@@ -87,6 +89,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         mut input_plan: LogicalPlan,
         targets: &[ColumnRef],
         is_overwrite: bool,
+        on_duplicate_key_update: Option<Vec<(usize, ExprRef)>>,
         arena: &mut PlanArena<'_>,
     ) -> Result<LogicalPlan, DatabaseError> {
         let (table, sources) = self.insert_table(table_name, targets, arena)?;
@@ -107,6 +110,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
             Operator::Insert(InsertOperator {
                 table,
                 is_overwrite,
+                on_duplicate_key_update,
             }),
             Childrens::Only(Box::new(input_plan)),
         ))

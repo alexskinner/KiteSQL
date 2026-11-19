@@ -1203,14 +1203,9 @@ where
             on,
             returning,
             assignments,
+            insert_alias,
             ..
         } = insert;
-
-        if on.is_some() {
-            return Err(DatabaseError::UnsupportedStmt(
-                "INSERT ... ON CONFLICT / ON DUPLICATE KEY UPDATE is not supported".to_string(),
-            ));
-        }
 
         if returning.is_some() {
             return Err(DatabaseError::UnsupportedStmt(
@@ -1234,14 +1229,39 @@ where
                 ))
             }
         };
-        let table_name = sql_table_name(table_name)?;
+        let table_name_for_bind = sql_table_name(table_name.clone())?;
         let source = source.as_ref().ok_or_else(|| {
             DatabaseError::UnsupportedStmt("insert without source is not supported".to_string())
         })?;
+
+        let on_duplicate_key_update = match on.as_ref() {
+            Some(sqlparser::ast::OnInsert::DuplicateKeyUpdate(assignments)) => {
+                Some((assignments.as_slice(), insert_alias.as_ref()))
+            }
+            Some(sqlparser::ast::OnInsert::OnConflict(_)) | Some(&_) => {
+                return Err(DatabaseError::UnsupportedStmt(
+                    "INSERT ... ON CONFLICT (PostgreSQL syntax) is not yet supported".to_string(),
+                ));
+            }
+            None => None,
+        };
+
         if let SetExpr::Values(values) = source.body.as_ref() {
-            self.insert_values(table_name, columns, &values.rows, is_overwrite)
+            self.insert_values(
+                table_name_for_bind,
+                columns,
+                &values.rows,
+                is_overwrite,
+                on_duplicate_key_update,
+            )
         } else {
-            self.insert_query(table_name, columns, source, is_overwrite)
+            self.insert_query(
+                table_name_for_bind,
+                columns,
+                source,
+                is_overwrite,
+                on_duplicate_key_update,
+            )
         }
     }
 
@@ -1251,6 +1271,7 @@ where
         idents: &[Ident],
         expr_rows: &[Vec<Expr>],
         is_overwrite: bool,
+        on_duplicate_key_update: Option<(&[Assignment], Option<&sqlparser::ast::InsertAliases>)>,
     ) -> Result<LogicalPlan, DatabaseError> {
         self.binder.context.allow_default = true;
         let source = self
@@ -1308,14 +1329,88 @@ where
         }
         self.binder.context.allow_default = false;
 
+        let on_duplicate_update_exprs =
+            if let Some((assignments, _insert_alias)) = on_duplicate_key_update {
+                Some(self.bind_on_duplicate_assignments(assignments, &table_name)?)
+            } else {
+                None
+            };
+
         self.binder.bind_insert_values(
             &table_name,
             schema_ref,
             rows,
             expr_rows.len(),
             is_overwrite,
+            on_duplicate_update_exprs,
             self.arena,
         )
+    }
+
+    fn bind_on_duplicate_assignments(
+        &mut self,
+        assignments: &[Assignment],
+        table_name: &str,
+    ) -> Result<Vec<(usize, ExprRef)>, DatabaseError> {
+        let table_name_ref: TableName = table_name.into();
+        let source = self
+            .binder
+            .context
+            .source_and_bind(&table_name_ref, None, None, false, self.arena)?
+            .ok_or(DatabaseError::TableNotFound)?;
+
+        let mut update_exprs = Vec::with_capacity(assignments.len());
+        for assignment in assignments {
+            let target_ident = match &assignment.target {
+                AssignmentTarget::ColumnName(object_name) => {
+                    if object_name.0.len() != 1 {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "qualified column names in ON DUPLICATE KEY UPDATE".to_string(),
+                        ));
+                    }
+                    match &object_name.0[0] {
+                        ObjectNamePart::Identifier(ident) => ident,
+                        ObjectNamePart::Function(_) => {
+                            return Err(DatabaseError::UnsupportedStmt(
+                                "function in column name in ON DUPLICATE KEY UPDATE".to_string(),
+                            ));
+                        }
+                    }
+                }
+                AssignmentTarget::Tuple(_) => {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "tuple assignment in ON DUPLICATE KEY UPDATE".to_string(),
+                    ));
+                }
+            };
+
+            let col_expr = self.binder.bind_column_ref_from_identifiers(
+                slice::from_ref(target_ident),
+                Some(table_name),
+                self.arena,
+            )?;
+
+            let column_index = match col_expr {
+                ScalarExpression::ColumnRef { column, .. } => {
+                    let column_id = self.arena.column(column).id();
+                    source
+                        .schema()
+                        .iter()
+                        .position(|&col| self.arena.column(col).id() == column_id)
+                        .ok_or_else(|| DatabaseError::column_not_found(target_ident.to_string()))?
+                }
+                _ => {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "non-column target in ON DUPLICATE KEY UPDATE".to_string(),
+                    ))
+                }
+            };
+
+            let value_expr = self.binder.bind_expr(&assignment.value, self.arena)?;
+            let value_ref = self.arena.alloc_expression(value_expr);
+            update_exprs.push((column_index, value_ref));
+        }
+        Ok(update_exprs)
     }
 
     fn insert_query(
@@ -1324,6 +1419,7 @@ where
         idents: &[Ident],
         query: &Query,
         is_overwrite: bool,
+        on_duplicate_key_update: Option<(&[Assignment], Option<&sqlparser::ast::InsertAliases>)>,
     ) -> Result<LogicalPlan, DatabaseError> {
         let mut input_plan = self.binder.bind_query(query, self.arena)?;
         let input_len = input_plan.output_schema(self.arena).len();
@@ -1357,8 +1453,21 @@ where
             Cow::Owned(targets)
         };
 
-        self.binder
-            .bind_insert_query(&table_name, input_plan, &targets, is_overwrite, self.arena)
+        let on_duplicate_update_exprs =
+            if let Some((assignments, _insert_alias)) = on_duplicate_key_update {
+                Some(self.bind_on_duplicate_assignments(assignments, &table_name)?)
+            } else {
+                None
+            };
+
+        self.binder.bind_insert_query(
+            &table_name,
+            input_plan,
+            &targets,
+            is_overwrite,
+            on_duplicate_update_exprs,
+            self.arena,
+        )
     }
 
     fn update(self, update: &sqlparser::ast::Update) -> Result<LogicalPlan, DatabaseError> {

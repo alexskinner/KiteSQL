@@ -1,0 +1,158 @@
+# ON DUPLICATE KEY UPDATE tests for MySQL compatibility
+
+statement ok
+DROP TABLE IF EXISTS t
+
+# Test 1: Basic PRIMARY KEY conflict
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, value INT)
+
+statement ok
+INSERT INTO t VALUES (1, 10)
+
+# 2 affected rows on update
+statement ok
+INSERT INTO t VALUES (1, 20) ON DUPLICATE KEY UPDATE value = 20
+
+query II rowsort
+SELECT * FROM t
+----
+1 20
+
+# Test 2: Multiple rows with conflicts
+statement ok
+DROP TABLE IF EXISTS t
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, value INT)
+
+statement ok
+INSERT INTO t VALUES (1, 10), (2, 20), (3, 30)
+
+# Insert 3 rows: 1 new (4), 2 conflicts (1,2) - use simple values for now
+statement ok
+INSERT INTO t VALUES (1, 100), (2, 200), (4, 40) ON DUPLICATE KEY UPDATE value = 999
+
+query II rowsort
+SELECT * FROM t
+----
+1 999
+2 999
+3 30
+4 40
+
+# Test 3: PK conflict with string column
+statement ok
+DROP TABLE IF EXISTS t
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, email VARCHAR(50), value INT)
+
+statement ok
+INSERT INTO t VALUES (1, 'test@example.com', 10)
+
+statement ok
+INSERT INTO t VALUES (1, 'updated@example.com', 20) ON DUPLICATE KEY UPDATE value = 30, email = 'updated@example.com'
+
+query I
+SELECT COUNT(*) FROM t
+----
+1
+
+query III rowsort
+SELECT * FROM t
+----
+1 updated@example.com 30
+
+# Test 4: Simple update value
+statement ok
+DROP TABLE IF EXISTS t
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, counter INT)
+
+statement ok
+INSERT INTO t VALUES (1, 0)
+
+statement ok
+INSERT INTO t VALUES (1, 5) ON DUPLICATE KEY UPDATE counter = 100
+
+query II
+SELECT * FROM t
+----
+1 100
+
+# Test 5: Multiple updates on same row
+statement ok
+INSERT INTO t VALUES (1, 10) ON DUPLICATE KEY UPDATE counter = 200
+
+statement ok
+INSERT INTO t VALUES (1, 20) ON DUPLICATE KEY UPDATE counter = 300
+
+query II
+SELECT * FROM t
+----
+1 300
+
+# Test 6: No conflict - should insert normally (affected rows = 1)
+statement ok
+DROP TABLE IF EXISTS t
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, value INT)
+
+statement ok
+INSERT INTO t VALUES (1, 10) ON DUPLICATE KEY UPDATE value = 20
+
+query II
+SELECT * FROM t
+----
+1 10
+
+# Test 7: Multi-column update on conflict
+statement ok
+DROP TABLE IF EXISTS t
+
+statement ok
+CREATE TABLE t (id INT PRIMARY KEY, a INT, b INT, c INT)
+
+statement ok
+INSERT INTO t VALUES (1, 10, 20, 30)
+
+statement ok
+INSERT INTO t VALUES (1, 100, 200, 300) ON DUPLICATE KEY UPDATE a = 111, b = 222, c = 333
+
+query IIII
+SELECT * FROM t
+----
+1 111 222 333
+
+# Test 8: Preside-style system config statement
+statement ok
+DROP TABLE IF EXISTS psys_system_config
+
+statement ok
+CREATE TABLE psys_system_config (id VARCHAR(50) PRIMARY KEY, category VARCHAR(50), setting VARCHAR(50), value VARCHAR(50))
+
+statement ok
+INSERT INTO psys_system_config (id, category, setting, value) VALUES ('test_id', 'test_cat', 'test_setting', 'false') ON DUPLICATE KEY UPDATE value = 'true'
+
+query CCCC
+SELECT * FROM psys_system_config
+----
+test_id test_cat test_setting false
+
+statement ok
+INSERT INTO psys_system_config (id, category, setting, value) VALUES ('test_id', 'test_cat', 'test_setting', 'updated') ON DUPLICATE KEY UPDATE value = 'true'
+
+query CCCC
+SELECT * FROM psys_system_config
+----
+test_id test_cat test_setting true
+
+# Test 9: Cleanup
+statement ok
+DROP TABLE IF EXISTS t
+
+statement ok
+DROP TABLE IF EXISTS psys_system_config

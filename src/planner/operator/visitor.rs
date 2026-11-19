@@ -748,6 +748,7 @@ pub(crate) mod tests {
             Operator::Insert(InsertOperator {
                 table: crate::catalog::table::DmlTable::default(),
                 is_overwrite: false,
+                on_duplicate_key_update: None,
             }),
             Operator::Update(UpdateOperator {
                 table: crate::catalog::table::DmlTable::default(),
