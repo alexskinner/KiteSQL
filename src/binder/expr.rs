@@ -673,7 +673,7 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
             .map(|arg| arg.return_type(arena).into_owned())
             .collect();
 
-        match self
+        let scalar_err = match self
             .context
             .function_registry
             .resolve_scalar(function_name.as_str(), &arg_type_refs)
@@ -684,18 +684,12 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
                     inner: ArcScalarFunctionImpl(function),
                 }));
             }
-            Err(DatabaseError::AmbiguousFunction { .. }) => {
-                // Propagate ambiguous function error
-                return Err(self
-                    .context
-                    .function_registry
-                    .resolve_scalar(function_name.as_str(), &arg_type_refs)
-                    .unwrap_err());
-            }
-            Err(_) => {
-                // Continue to check for table functions
-            }
-        }
+            // Propagate ambiguous function error
+            Err(err @ DatabaseError::AmbiguousFunction { .. }) => return Err(err),
+            // Continue to check for table functions; keep the error, which names the
+            // argument types when a scalar of this name exists with another signature.
+            Err(err) => err,
+        };
 
         let summary = FunctionSummary {
             name: function_name.into(),
@@ -715,7 +709,7 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
             }));
         }
 
-        Err(DatabaseError::function_not_found(summary.name.to_string()))
+        Err(scalar_err)
     }
 
     pub(crate) fn return_type(

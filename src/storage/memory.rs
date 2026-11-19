@@ -307,6 +307,7 @@ mod wasm_tests {
             source_columns,
             false,
             Vec::new(),
+            Vec::new(),
             std::collections::BTreeMap::new(),
         )? {
             let table = table.transplant_to_table_arena(&plan_arena)?;
@@ -390,7 +391,8 @@ mod wasm_tests {
 
         let transaction = kite_sql.storage.transaction()?;
         let table_name: TableName = "t1".to_string().into();
-        let catalog = kite_sql.state.catalog();
+        let catalog_ref = kite_sql.state.catalog();
+        let catalog = catalog_ref.view();
         let arena_borrow = catalog.arena.borrow();
         let table = transaction
             .table(&arena_borrow.names, &arena_borrow.tables, &table_name)?
@@ -508,6 +510,7 @@ mod native_tests {
             source_columns,
             false,
             Vec::new(),
+            Vec::new(),
             std::collections::BTreeMap::new(),
         )? {
             let table = table.transplant_to_table_arena(&plan_arena)?;
@@ -591,7 +594,8 @@ mod native_tests {
 
         let transaction = kite_sql.storage.transaction()?;
         let table_name: TableName = "t1".to_string();
-        let catalog = kite_sql.state.catalog();
+        let catalog_ref = kite_sql.state.catalog();
+        let catalog = catalog_ref.view();
         let arena_borrow = catalog.arena.borrow();
         let table = transaction
             .table(&arena_borrow.names, &arena_borrow.tables, &table_name)?

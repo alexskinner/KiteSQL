@@ -21,6 +21,7 @@ use kite_sql_serde_macros::ReferenceSerialization;
 pub struct UpdateOperator {
     pub(crate) table: DmlTable,
     pub value_exprs: Vec<(usize, ExprRef)>,
+    pub(crate) target_table_offset: usize,
 }
 
 impl Explain for UpdateOperator {

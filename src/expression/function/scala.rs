@@ -75,6 +75,24 @@ pub trait ScalarFunctionImpl: Debug + Send + Sync {
     fn return_type(&self) -> &LogicalType;
 
     fn summary(&self) -> &FunctionSummary;
+
+    /// If true, the function accepts any argument types. The resolver will skip type checking
+    /// and let the function implementation handle type conversions. Default is false.
+    fn accepts_any_args(&self) -> bool {
+        false
+    }
+
+    /// Whether a function that [`accepts_any_args`](Self::accepts_any_args) accepts `n` arguments.
+    /// Defaults to the arity of its declared summary; variadic functions override it.
+    fn accepts_arity(&self, n: usize) -> bool {
+        self.summary().arg_types.len() == n
+    }
+
+    /// Result type for the given argument types. Only consulted for functions that
+    /// [`accept_any_args`](Self::accepts_any_args); defaults to [`return_type`](Self::return_type).
+    fn return_type_for(&self, _arg_types: &[LogicalType]) -> LogicalType {
+        self.return_type().clone()
+    }
 }
 
 impl ScalarFunction {

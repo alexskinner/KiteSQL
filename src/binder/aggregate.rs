@@ -13,6 +13,7 @@
 // limitations under the License.
 
 use super::{Binder, QueryBindStep};
+use crate::catalog::ColumnRef;
 use crate::errors::DatabaseError;
 use crate::expression::visitor::{walk_expr, ExprVisitor};
 use crate::expression::visitor_mut::{walk_mut_expr, ExprVisitorMut};
@@ -38,6 +39,42 @@ impl ExprVisitor<dyn MetaArena + '_> for AggregateCallCollector<'_> {
             _ => walk_expr(self, expr, arena)?,
         }
         Ok(())
+    }
+}
+
+/// Collects the column references of `expr`, outside aggregate calls, that belong to a source
+/// whose whole primary key is grouped and are not yet GROUP BY expressions.
+struct FunctionalColumnCollector<'a> {
+    functional_columns: &'a [ColumnRef],
+    group_by_exprs: &'a [ExprRef],
+    dependent_exprs: Vec<ExprRef>,
+}
+
+impl ExprVisitor<dyn MetaArena + '_> for FunctionalColumnCollector<'_> {
+    fn visit(&mut self, expr: ExprRef, arena: &(dyn MetaArena + '_)) -> Result<(), DatabaseError> {
+        match arena.expression(expr) {
+            ScalarExpression::AggCall { .. } => Ok(()),
+            ScalarExpression::ColumnRef { column, .. } => {
+                let column = *column;
+                let is_functional = self
+                    .functional_columns
+                    .iter()
+                    .any(|functional| arena.same_column(*functional, column));
+                let is_new = |exprs: &[ExprRef]| {
+                    !exprs.iter().any(|group_expr| {
+                        group_expr
+                            .unpack_alias(arena)
+                            .eq_ignore_colref_pos(expr, arena)
+                    })
+                };
+                if is_functional && is_new(self.group_by_exprs) && is_new(&self.dependent_exprs) {
+                    self.dependent_exprs.push(expr);
+                }
+                Ok(())
+            }
+            ScalarExpression::Empty | ScalarExpression::TableFunction(_) => unreachable!(),
+            _ => walk_expr(self, expr, arena),
+        }
     }
 }
 
@@ -75,10 +112,102 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         mut group_by_exprs: Vec<ExprRef>,
         arena: &mut PlanArena<'_>,
     ) -> Result<(), DatabaseError> {
+        self.context.functional_columns =
+            self.functionally_determined_columns(select_list, &group_by_exprs, arena);
         self.validate_groupby_illegal_column(select_list, &group_by_exprs, arena)?;
 
         for expr in group_by_exprs.iter_mut() {
             self.visit_group_by_expr(select_list, *expr, arena)?;
+        }
+        for expr in select_list.iter() {
+            self.append_functional_group_by_exprs(*expr, arena)?;
+        }
+        Ok(())
+    }
+
+    /// The columns functionally dependent on the GROUP BY list (SQL:2003 feature T301): every
+    /// column of a stored table source, per alias, whose primary-key columns are all grouped.
+    fn functionally_determined_columns(
+        &self,
+        select_list: &[ExprRef],
+        group_by_exprs: &[ExprRef],
+        arena: &PlanArena<'_>,
+    ) -> Vec<ColumnRef> {
+        let grouped_columns = group_by_exprs
+            .iter()
+            .filter_map(|expr| {
+                let expr = match arena.expression(*expr) {
+                    ScalarExpression::Alias { alias, .. } => select_list
+                        .iter()
+                        .find(|item| {
+                            matches!(
+                                arena.expression(**item),
+                                ScalarExpression::Alias { alias: inner, .. } if inner == alias
+                            )
+                        })
+                        .copied()
+                        .unwrap_or(*expr),
+                    _ => *expr,
+                };
+                match arena.expression(expr.unpack_alias(arena)) {
+                    ScalarExpression::ColumnRef { column, .. } => Some(*column),
+                    _ => None,
+                }
+            })
+            .collect::<Vec<_>>();
+        let mut functional_columns = Vec::new();
+        for bound_source in &self.context.bind_table[self.context.source_scope_start..] {
+            if bound_source.primary_key.is_empty() {
+                continue;
+            }
+            let key_grouped = bound_source.primary_key.iter().all(|key| {
+                grouped_columns
+                    .iter()
+                    .any(|grouped| arena.same_column(*key, *grouped))
+            });
+            if key_grouped {
+                functional_columns.extend_from_slice(bound_source.source.schema());
+            }
+        }
+        functional_columns
+    }
+
+    /// Whether every column `expr` references is functionally dependent on the GROUP BY list.
+    fn is_functionally_dependent(
+        &self,
+        expr: ExprRef,
+        arena: &PlanArena<'_>,
+    ) -> Result<bool, DatabaseError> {
+        let functional_columns = &self.context.functional_columns;
+        if functional_columns.is_empty() {
+            return Ok(false);
+        }
+        Ok(!expr.any_referenced_column(arena, |arena, column| {
+            !functional_columns
+                .iter()
+                .any(|functional| arena.same_column(*functional, *column))
+        })?)
+    }
+
+    /// Appends the functionally dependent columns `expr` references to the GROUP BY list. They
+    /// do not change the groups, and let the aggregate output them like any grouped column.
+    fn append_functional_group_by_exprs(
+        &mut self,
+        expr: ExprRef,
+        arena: &mut PlanArena<'_>,
+    ) -> Result<(), DatabaseError> {
+        if self.context.functional_columns.is_empty() {
+            return Ok(());
+        }
+        let mut collector = FunctionalColumnCollector {
+            functional_columns: &self.context.functional_columns,
+            group_by_exprs: &self.context.group_by_exprs,
+            dependent_exprs: Vec::new(),
+        };
+        collector.visit(expr, arena)?;
+        for dependent_expr in collector.dependent_exprs {
+            let group_expr = dependent_expr.clone_expression(arena)?;
+            self.context.group_by_exprs.push(group_expr);
         }
         Ok(())
     }
@@ -96,6 +225,8 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
     {
         if let Some(having) = having.as_mut() {
             self.collect_aggregate_calls(*having, arena)?;
+            self.append_functional_group_by_exprs(*having, arena)?;
+            self.validate_having_orderby(*having, arena)?;
         }
         let mut return_orderby = None;
         if let Some(orderby) = orderby {
@@ -103,6 +234,8 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
             for orderby in orderby {
                 let field = bind_sort_field(self, orderby, arena)?;
                 self.collect_aggregate_calls(field.expr, arena)?;
+                self.append_functional_group_by_exprs(field.expr, arena)?;
+                self.validate_having_orderby(field.expr, arena)?;
                 fields.push(field);
             }
             return_orderby = Some(fields);
@@ -203,6 +336,9 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                 .iter()
                 .position(|group_expr| expr.eq_ignore_colref_pos(*group_expr, arena))
             else {
+                if self.is_functionally_dependent(*expr, arena)? {
+                    continue;
+                }
                 return Err(DatabaseError::AggMiss(format!(
                     "`{}` must appear in the GROUP BY clause or be used in an aggregate function",
                     expr.output_name(arena)
@@ -342,6 +478,8 @@ impl ExprVisitor<dyn MetaArena + '_> for HavingOrderByValidator<'_> {
                 }
             }
             ScalarExpression::Empty | ScalarExpression::TableFunction(_) => unreachable!(),
+            // A grouped expression, e.g. `ORDER BY id + 1` under `GROUP BY id + 1`.
+            _ if contains(self.group_by_exprs) => Ok(()),
             _ => walk_expr(self, expr, arena),
         }
     }
@@ -422,13 +560,16 @@ mod tests {
     use crate::binder::test::build_t1_table;
     use crate::binder::{Binder, BinderContext};
     use crate::catalog::{ColumnCatalog, ColumnDesc, ColumnRef};
+    use crate::db::DataBaseBuilder;
     use crate::errors::DatabaseError;
     use crate::expression::agg::AggKind;
     use crate::expression::visitor_mut::ExprVisitorMut;
     use crate::expression::{AliasType, BinaryOperator, ScalarExpression};
-    use crate::planner::{ExprRef, PlanArena};
+    use crate::planner::operator::Operator;
+    use crate::planner::{ExprRef, LogicalPlan, PlanArena};
     use crate::storage::Storage;
     use crate::types::LogicalType;
+    use tempfile::TempDir;
 
     fn test_column(arena: &mut PlanArena, name: &str, ty: LogicalType) -> ColumnRef {
         arena.alloc_column(ColumnCatalog::new(
@@ -520,6 +661,143 @@ mod tests {
         let output_column = group_output.output_column_ref(&mut arena);
         let expected = arena.alloc_expression(ScalarExpression::column_expr(output_column, 0));
         assert!(target.eq_ignore_colref_pos(expected, &arena));
+
+        Ok(())
+    }
+
+    fn aggregate_group_by_len(plan: &LogicalPlan) -> Option<usize> {
+        if let Operator::Aggregate(aggregate) = &plan.operator {
+            return Some(aggregate.groupby_exprs.len());
+        }
+        plan.childrens.iter().find_map(aggregate_group_by_len)
+    }
+
+    #[test]
+    async fn test_functional_dependency_on_primary_key() -> Result<(), DatabaseError> {
+        let tables = build_t1_table().await?;
+
+        // `c2` is appended to the GROUP BY list because it depends on the key `c1`.
+        let plan = tables.plan("select c1, c2 from t1 group by c1")?;
+        assert_eq!(aggregate_group_by_len(&plan), Some(2));
+        let plan = tables.plan("select c1, count(*) from t1 group by c1 having c2 > 1")?;
+        assert_eq!(aggregate_group_by_len(&plan), Some(2));
+        let plan = tables.plan("select c1 from t1 group by c1 order by c2 + 1")?;
+        assert_eq!(aggregate_group_by_len(&plan), Some(2));
+        // Repeated references append the column once.
+        let plan = tables.plan("select c1, c2, c2 + 1 from t1 group by c1 order by c2")?;
+        assert_eq!(aggregate_group_by_len(&plan), Some(2));
+        let plan = tables.plan("select t.c1, t.c2 from t1 t group by t.c1 order by t.c2")?;
+        assert_eq!(aggregate_group_by_len(&plan), Some(2));
+        let plan = tables.plan("select c1 as k, c2 from t1 group by k")?;
+        assert_eq!(aggregate_group_by_len(&plan), Some(2));
+
+        // A grouped expression stays usable as a whole in ORDER BY and HAVING.
+        tables.plan(
+            "select c2 + 1, count(*) from t1 group by c2 + 1 having c2 + 1 > 1 order by c2 + 1",
+        )?;
+
+        // Grouping a non-key column determines nothing else.
+        assert!(matches!(
+            tables.plan("select c2, c1 from t1 group by c2"),
+            Err(DatabaseError::AggMiss(_))
+        ));
+        assert!(matches!(
+            tables.plan("select c2 from t1 group by c2 order by c1"),
+            Err(DatabaseError::AggMiss(_))
+        ));
+        assert!(matches!(
+            tables.plan("select c2, count(*) from t1 group by c2 having c1 > 1"),
+            Err(DatabaseError::AggMiss(_))
+        ));
+        // An expression over the key is not the key.
+        assert!(matches!(
+            tables.plan("select c1 + 1 as k, c2 from t1 group by k"),
+            Err(DatabaseError::AggMiss(_))
+        ));
+        // A key only determines its own source.
+        assert!(matches!(
+            tables.plan("select c1, c4 from t1 join t2 on c1 = c3 group by c1"),
+            Err(DatabaseError::AggMiss(_))
+        ));
+        let plan =
+            tables.plan("select c1, c2, c3, c4 from t1 join t2 on c1 = c3 group by c1, c3")?;
+        assert_eq!(aggregate_group_by_len(&plan), Some(4));
+        // Derived tables carry no key.
+        assert!(matches!(
+            tables.plan("select d.c1, d.c2 from (select c1, c2 from t1) d group by d.c1"),
+            Err(DatabaseError::AggMiss(_))
+        ));
+
+        Ok(())
+    }
+
+    #[test]
+    async fn test_functional_dependency_per_alias_in_self_join() -> Result<(), DatabaseError> {
+        let tables = build_t1_table().await?;
+
+        let plan = tables.plan(
+            "select p.c1, p.c2, count(c.c1) from t1 p left join t1 c on c.c2 = p.c1 \
+             group by p.c1 order by p.c2",
+        )?;
+        assert_eq!(aggregate_group_by_len(&plan), Some(2));
+        for sql in [
+            "select p.c1, c.c2 from t1 p left join t1 c on c.c2 = p.c1 group by p.c1",
+            "select p.c1, count(*) from t1 p left join t1 c on c.c2 = p.c1 group by p.c1 \
+             order by c.c2",
+            "select p.c1, count(*) from t1 p left join t1 c on c.c2 = p.c1 group by p.c1 \
+             having c.c2 > 1",
+        ] {
+            assert!(
+                matches!(tables.plan(sql), Err(DatabaseError::AggMiss(_))),
+                "{sql}"
+            );
+        }
+        let plan = tables.plan(
+            "select p.c1, c.c1, p.c2, c.c2 from t1 p join t1 c on c.c2 = p.c1 \
+             group by p.c1, c.c1",
+        )?;
+        assert_eq!(aggregate_group_by_len(&plan), Some(4));
+
+        Ok(())
+    }
+
+    #[test]
+    async fn test_functional_dependency_on_composite_key() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        let mut database = DataBaseBuilder::path(temp_dir.path())
+            .build_in_memory()
+            .await?;
+        database
+            .ddl("create table fd_pair (a int, b int, v varchar, primary key (a, b))")
+            .await?;
+        database
+            .run("insert into fd_pair values (1, 1, 'x'), (1, 2, 'y'), (2, 1, 'z')")
+            .await?
+            .done()
+            .await?;
+
+        let mut iter = database
+            .run("select k.b, k.a, k.v from fd_pair k group by k.b, k.a having k.v <> 'y' order by k.v desc")
+            .await?;
+        let mut rows = Vec::new();
+        while let Some(row) = iter
+            .next_tuple(|_, tuple| {
+                (0..tuple.len())
+                    .map(|i| tuple.get(i).map(ToString::to_string).unwrap_or_default())
+                    .collect::<Vec<_>>()
+                    .join(" ")
+            })
+            .await?
+        {
+            rows.push(row);
+        }
+        iter.done().await?;
+        assert_eq!(rows, vec!["1 2 z".to_string(), "1 1 x".to_string()]);
+
+        assert!(matches!(
+            database.run("select a, v from fd_pair group by a").await,
+            Err(DatabaseError::AggMiss(_))
+        ));
 
         Ok(())
     }
