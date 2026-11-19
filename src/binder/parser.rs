@@ -1331,7 +1331,7 @@ where
 
         let on_duplicate_update_exprs =
             if let Some((assignments, insert_alias)) = on_duplicate_key_update {
-                let row_alias = insert_alias.as_ref().map(|a| a.row_alias.to_string());
+                let row_alias = insert_alias.map(odku_row_alias).transpose()?;
                 Some(self.bind_on_duplicate_assignments(
                     assignments,
                     &table_name,
@@ -1388,7 +1388,26 @@ where
             row_alias: row_alias.map(|s| s.to_string()),
         };
         self.binder.context.set_odku_context(Some(odku_context));
+        let result = self.bind_on_duplicate_assignment_exprs(
+            assignments,
+            table_name,
+            &original_schema,
+            &excluded_columns,
+        );
+        self.binder.context.set_odku_context(None);
+        result
+    }
 
+    /// Binds the SET list of ON DUPLICATE KEY UPDATE. Each value is evaluated against the
+    /// existing row (positions `0..n`) followed by the row the statement tried to insert
+    /// (positions `n..2n`, read through `VALUES(col)` or the MySQL 8 row alias).
+    fn bind_on_duplicate_assignment_exprs(
+        &mut self,
+        assignments: &[Assignment],
+        table_name: &str,
+        original_columns: &[ColumnRef],
+        excluded_columns: &[ColumnRef],
+    ) -> Result<Vec<(usize, ExprRef)>, DatabaseError> {
         let mut update_exprs = Vec::with_capacity(assignments.len());
         for assignment in assignments {
             let target_ident = match &assignment.target {
@@ -1421,14 +1440,10 @@ where
             )?;
 
             let column_index = match col_expr {
-                ScalarExpression::ColumnRef { column, .. } => {
-                    let column_id = self.arena.column(column).id();
-                    source
-                        .schema()
-                        .iter()
-                        .position(|&col| self.arena.column(col).id() == column_id)
-                        .ok_or_else(|| DatabaseError::column_not_found(target_ident.to_string()))?
-                }
+                ScalarExpression::ColumnRef { column, .. } => original_columns
+                    .iter()
+                    .position(|&col| self.arena.same_column(col, column))
+                    .ok_or_else(|| DatabaseError::column_not_found(target_ident.to_string()))?,
                 _ => {
                     return Err(DatabaseError::UnsupportedStmt(
                         "non-column target in ON DUPLICATE KEY UPDATE".to_string(),
@@ -1437,12 +1452,14 @@ where
             };
 
             let value_expr = self.binder.bind_expr(&assignment.value, self.arena)?;
-            let value_ref = self.arena.alloc_expression(value_expr);
+            let mut value_ref = self.arena.alloc_expression(value_expr);
+            OdkuPositionBinder {
+                original_columns,
+                excluded_columns,
+            }
+            .visit(&mut value_ref, self.arena)?;
             update_exprs.push((column_index, value_ref));
         }
-
-        // Clear odku context after binding
-        self.binder.context.set_odku_context(None);
 
         Ok(update_exprs)
     }
@@ -1489,7 +1506,7 @@ where
 
         let on_duplicate_update_exprs =
             if let Some((assignments, insert_alias)) = on_duplicate_key_update {
-                let row_alias = insert_alias.as_ref().map(|a| a.row_alias.to_string());
+                let row_alias = insert_alias.map(odku_row_alias).transpose()?;
                 Some(self.bind_on_duplicate_assignments(
                     assignments,
                     &table_name,
@@ -1921,6 +1938,61 @@ where
             .map(|SelectInto { name, .. }| lower_case_name(name))
             .transpose()?;
         self.insert_into(table_name.as_deref())
+    }
+}
+
+/// The MySQL 8 row alias of `INSERT ... AS alias ON DUPLICATE KEY UPDATE`, lowercased.
+fn odku_row_alias(alias: &sqlparser::ast::InsertAliases) -> Result<String, DatabaseError> {
+    if alias
+        .col_aliases
+        .as_ref()
+        .is_some_and(|columns| !columns.is_empty())
+    {
+        return Err(DatabaseError::UnsupportedStmt(
+            "column aliases on the INSERT row alias are not supported".to_string(),
+        ));
+    }
+    match alias.row_alias.0.as_slice() {
+        [ObjectNamePart::Identifier(ident)] => Ok(lower_ident(ident).into_owned()),
+        _ => Err(DatabaseError::UnsupportedStmt(format!(
+            "INSERT row alias `{}`",
+            alias.row_alias
+        ))),
+    }
+}
+
+/// Points each column of an ON DUPLICATE KEY UPDATE value at its slot in the evaluated row:
+/// the existing row's column `i` at `i`, the inserted row's column `i` at `n + i`.
+struct OdkuPositionBinder<'c> {
+    original_columns: &'c [ColumnRef],
+    excluded_columns: &'c [ColumnRef],
+}
+
+impl<A: MetaArena + ?Sized> ExprVisitorMut<A> for OdkuPositionBinder<'_> {
+    fn visit_column_ref(
+        &mut self,
+        column: &mut ColumnRef,
+        position: &mut usize,
+        arena: &mut A,
+    ) -> Result<(), DatabaseError> {
+        if let Some(i) = self.excluded_columns.iter().position(|c| c == column) {
+            *position = self.original_columns.len() + i;
+            return Ok(());
+        }
+        match self
+            .original_columns
+            .iter()
+            .position(|c| arena.same_column(*c, *column))
+        {
+            Some(i) => {
+                *position = i;
+                Ok(())
+            }
+            None => Err(DatabaseError::UnsupportedStmt(format!(
+                "ON DUPLICATE KEY UPDATE can only read the target table, not `{}`",
+                arena.column(*column).name()
+            ))),
+        }
     }
 }
 
@@ -3006,6 +3078,20 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
         bind_table_name: Option<&str>,
         arena: &mut PlanArena,
     ) -> Result<ScalarExpression, DatabaseError> {
+        if let (Some(odku_ctx), [row_alias, column]) = (self.context.odku_context(), idents) {
+            if odku_ctx.row_alias.as_deref() == Some(lower_ident(row_alias).as_ref()) {
+                let column_name = lower_ident(column);
+                let position = odku_ctx
+                    .original_columns
+                    .iter()
+                    .position(|&col_ref| arena.column(col_ref).name() == column_name)
+                    .ok_or_else(|| DatabaseError::column_not_found(column_name.to_string()))?;
+                return Ok(ScalarExpression::column_expr(
+                    odku_ctx.excluded_columns[position],
+                    odku_ctx.original_columns.len() + position,
+                ));
+            }
+        }
         let full_name = match idents {
             [column] => (None, lower_ident(column)),
             [table, column] => (Some(lower_ident(table)), lower_ident(column)),
@@ -3077,12 +3163,14 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
 
                         if let FunctionArgExpr::Expr(Expr::Identifier(col_ident)) = arg_expr {
                             // Find column position in original schema
-                            let col_name = &col_ident.value;
+                            let col_name = lower_ident(col_ident);
                             let position = odku_ctx
                                 .original_columns
                                 .iter()
                                 .position(|&col_ref| arena.column(col_ref).name() == col_name)
-                                .ok_or_else(|| DatabaseError::column_not_found(col_name.clone()))?;
+                                .ok_or_else(|| {
+                                    DatabaseError::column_not_found(col_name.to_string())
+                                })?;
 
                             // Return reference to excluded column (original_len + position)
                             let excluded_col = odku_ctx.excluded_columns[position];

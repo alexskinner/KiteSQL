@@ -502,6 +502,17 @@ impl<'a, V: ExprVisitor<A>, A: MetaArena + ?Sized> OperatorVisitor<'a>
         Ok(())
     }
 
+    fn visit_insert(
+        &mut self,
+        op: &'a InsertOperator,
+        _children: &mut ChildrenVisit<'a>,
+    ) -> Result<(), DatabaseError> {
+        for (_, expr) in op.on_duplicate_key_update.iter().flatten() {
+            ExprVisitor::visit(self.visitor, *expr, self.arena)?;
+        }
+        Ok(())
+    }
+
     fn visit_update(
         &mut self,
         op: &'a UpdateOperator,
