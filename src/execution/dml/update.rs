@@ -137,6 +137,12 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                 values.push(value.into_owned());
             }
             for ((position, _), value) in value_exprs.iter().zip(values.drain(..)) {
+                if value.is_null() {
+                    let column = plan_arena.column(table.columns[*position]);
+                    if !column.nullable() {
+                        return Err(DatabaseError::not_null_column(column.name().to_string()));
+                    }
+                }
                 tuple[*position] = value;
             }
 
