@@ -234,38 +234,41 @@ pub fn utf8_string_concat_binary_eval(
         _ => unsafe { hint::unreachable_unchecked() },
     })
 }
-pub fn utf8_like_binary_eval(
-    escape_char: Option<char>,
-    left: &DataValue,
-    right: &DataValue,
-) -> Result<DataValue, DatabaseError> {
-    Ok(match (left, right) {
-        (DataValue::Utf8 { value, .. }, DataValue::Utf8 { value: pattern, .. }) => {
-            DataValue::Boolean(string_like(value, pattern, escape_char))
+macro_rules! utf8_like_eval {
+    ($name:ident, $negated:expr, $fold:expr) => {
+        pub fn $name(
+            escape_char: Option<char>,
+            left: &DataValue,
+            right: &DataValue,
+        ) -> Result<DataValue, DatabaseError> {
+            Ok(match (left, right) {
+                (DataValue::Utf8 { value, .. }, DataValue::Utf8 { value: pattern, .. }) => {
+                    DataValue::Boolean(string_like(value, pattern, escape_char, $fold) != $negated)
+                }
+                (DataValue::Utf8 { .. }, DataValue::Null)
+                | (DataValue::Null, DataValue::Utf8 { .. })
+                | (DataValue::Null, DataValue::Null) => DataValue::Null,
+                _ => unsafe { hint::unreachable_unchecked() },
+            })
         }
-        (DataValue::Utf8 { .. }, DataValue::Null)
-        | (DataValue::Null, DataValue::Utf8 { .. })
-        | (DataValue::Null, DataValue::Null) => DataValue::Null,
-        _ => unsafe { hint::unreachable_unchecked() },
-    })
+    };
 }
-pub fn utf8_not_like_binary_eval(
-    escape_char: Option<char>,
-    left: &DataValue,
-    right: &DataValue,
-) -> Result<DataValue, DatabaseError> {
-    Ok(match (left, right) {
-        (DataValue::Utf8 { value, .. }, DataValue::Utf8 { value: pattern, .. }) => {
-            DataValue::Boolean(!string_like(value, pattern, escape_char))
-        }
-        (DataValue::Utf8 { .. }, DataValue::Null)
-        | (DataValue::Null, DataValue::Utf8 { .. })
-        | (DataValue::Null, DataValue::Null) => DataValue::Null,
-        _ => unsafe { hint::unreachable_unchecked() },
-    })
+utf8_like_eval!(utf8_like_binary_eval, false, false);
+utf8_like_eval!(utf8_not_like_binary_eval, true, false);
+utf8_like_eval!(utf8_ilike_binary_eval, false, true);
+utf8_like_eval!(utf8_not_ilike_binary_eval, true, true);
+
+/// Simple one-to-one lower-case folding (characters whose lower case is several characters are
+/// compared as they are).
+fn fold_like_char(ch: char) -> char {
+    let mut lower = ch.to_lowercase();
+    match (lower.next(), lower.next()) {
+        (Some(single), None) => single,
+        _ => ch,
+    }
 }
 
-fn string_like(value: &str, pattern: &str, escape_char: Option<char>) -> bool {
+fn string_like(value: &str, pattern: &str, escape_char: Option<char>, fold: bool) -> bool {
     let mut value_idx = 0;
     let mut pattern_idx = 0;
     let mut last_many = None;
@@ -274,7 +277,9 @@ fn string_like(value: &str, pattern: &str, escape_char: Option<char>) -> bool {
         match next_like_pattern_token(pattern, pattern_idx, escape_char) {
             Some((LikePatternToken::Literal(pattern_ch), next_pattern_idx)) => {
                 if let Some((value_ch, next_value_idx)) = next_char_at(value, value_idx) {
-                    if value_ch == pattern_ch {
+                    if value_ch == pattern_ch
+                        || (fold && fold_like_char(value_ch) == fold_like_char(pattern_ch))
+                    {
                         value_idx = next_value_idx;
                         pattern_idx = next_pattern_idx;
                         continue;
@@ -511,11 +516,42 @@ mod test {
 
         for (value, pattern, escape_char, expected) in cases {
             assert_eq!(
-                string_like(value, pattern, escape_char),
+                string_like(value, pattern, escape_char, false),
                 expected,
                 "value={value:?}, pattern={pattern:?}, escape_char={escape_char:?}"
             );
         }
+    }
+
+    #[test]
+    fn test_string_ilike_folds_case() {
+        let cases = [
+            ("ABC", "abc", None, true),
+            ("abc", "A%", None, true),
+            ("фЫва", "%ФЫВ%", None, true),
+            ("Hello", "h_LLO", None, true),
+            ("A_b", "a\\_B", Some('\\'), true),
+            ("AxB", "a\\_b", Some('\\'), false),
+            ("abc", "abd", None, false),
+        ];
+        for (value, pattern, escape_char, expected) in cases {
+            assert_eq!(
+                string_like(value, pattern, escape_char, true),
+                expected,
+                "value={value:?}, pattern={pattern:?}"
+            );
+            if expected {
+                assert!(!string_like(value, pattern, escape_char, false) || value == pattern);
+            }
+        }
+        assert_eq!(
+            utf8_ilike_binary_eval(None, &utf8("ABC"), &utf8("a%")).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            utf8_not_ilike_binary_eval(None, &utf8("ABC"), &utf8("a%")).unwrap(),
+            DataValue::Boolean(false)
+        );
     }
 
     #[test]

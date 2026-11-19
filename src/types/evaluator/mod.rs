@@ -54,6 +54,7 @@ use std::borrow::Cow;
 pub enum BinaryEvaluatorParams {
     Unit,
     Like { escape_char: Option<char> },
+    ILike { escape_char: Option<char> },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]

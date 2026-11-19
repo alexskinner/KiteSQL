@@ -2462,6 +2462,7 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
         arena: &mut PlanArena,
     ) -> Result<ScalarExpression, DatabaseError> {
         let expr_span = expr.span();
+        let is_ilike = matches!(expr, Expr::ILike { .. });
         match expr {
             Expr::Identifier(ident) => {
                 self.bind_column_ref_from_identifiers(slice::from_ref(ident), None, arena)
@@ -2530,7 +2531,15 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                 pattern,
                 escape_char,
                 any: _,
+            }
+            | Expr::ILike {
+                negated,
+                expr,
+                pattern,
+                escape_char,
+                any: _,
             } => {
+                let case_insensitive = is_ilike;
                 let left_expr = self
                     .bind_expr(expr, arena)
                     .map(|expr| arena.alloc_expression(expr))?;
@@ -2538,10 +2547,11 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                     .bind_expr(pattern, arena)
                     .map(|expr| arena.alloc_expression(expr))?;
                 let escape_char = Self::parse_like_escape_char(escape_char)?;
-                let op = if *negated {
-                    expression::BinaryOperator::NotLike(escape_char)
-                } else {
-                    expression::BinaryOperator::Like(escape_char)
+                let op = match (*negated, case_insensitive) {
+                    (true, false) => expression::BinaryOperator::NotLike(escape_char),
+                    (false, false) => expression::BinaryOperator::Like(escape_char),
+                    (true, true) => expression::BinaryOperator::NotILike(escape_char),
+                    (false, true) => expression::BinaryOperator::ILike(escape_char),
                 };
                 Ok(ScalarExpression::Binary {
                     op,
