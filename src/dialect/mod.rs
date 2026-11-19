@@ -56,6 +56,12 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
         crate::diagnostics::StatementPolicy::default()
     }
 
+    /// Whether inserting 0 into an identity column generates the next value, as NULL does.
+    /// The default stores the 0.
+    fn identity_zero_generates(&self) -> bool {
+        false
+    }
+
     /// Maps a core diagnostic to this dialect's level, code and wording; `None` drops it.
     /// The default keeps it as raised (code 0).
     fn map_diagnostic(
