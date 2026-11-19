@@ -887,7 +887,10 @@ where
             }
             columns.push(col);
         }
-        let mut unique_constraints = Vec::new();
+        let unique_constraints = Vec::new();
+        let mut index_constraints = Vec::new();
+        let mut used_index_names = std::collections::HashSet::new();
+
         for constraint in create.constraints {
             match constraint {
                 TableConstraint::PrimaryKey(primary) => {
@@ -896,29 +899,81 @@ where
                     })?;
                 }
                 TableConstraint::Unique(unique) => {
-                    if unique.columns.len() > 1 {
-                        // Composite unique constraint - collect it for later index creation
-                        let column_names: Result<Vec<String>, DatabaseError> = unique
-                            .columns
-                            .iter()
-                            .map(|index_col| {
-                                if let Expr::Identifier(ident) = &index_col.column.expr {
-                                    Ok(lower_ident(ident).into_owned())
-                                } else {
-                                    Err(DatabaseError::UnsupportedStmt(
-                                        "only identifier columns are supported in UNIQUE"
-                                            .to_string(),
-                                    ))
-                                }
-                            })
-                            .collect();
-                        unique_constraints.push(column_names?);
-                    } else {
-                        // Single-column unique - mark the column as unique
+                    let column_names: Result<Vec<String>, DatabaseError> = unique
+                        .columns
+                        .iter()
+                        .map(|index_col| index_key_part_column(&index_col.column.expr, &columns))
+                        .collect();
+                    let cols = column_names?;
+
+                    let index_name = unique
+                        .name
+                        .as_ref()
+                        .or(unique.index_name.as_ref())
+                        .map(|ident| lower_ident(ident).into_owned());
+                    if let Some(ref name) = index_name {
+                        used_index_names.insert(name.clone());
+                    }
+
+                    if unique.columns.len() == 1 && index_name.is_none() {
                         self.bind_constraint(&mut columns, unique.columns, |_, desc| {
                             desc.set_unique()
                         })?;
+                    } else {
+                        index_constraints.push(
+                            crate::planner::operator::create_table::IndexConstraint {
+                                name: index_name,
+                                columns: cols,
+                                is_unique: true,
+                            },
+                        );
                     }
+                }
+                TableConstraint::Index(index) => {
+                    let column_names: Result<Vec<String>, DatabaseError> = index
+                        .columns
+                        .iter()
+                        .map(|index_col| index_key_part_column(&index_col.column.expr, &columns))
+                        .collect();
+                    let cols = column_names?;
+                    let index_name = index
+                        .name
+                        .as_ref()
+                        .map(|ident| lower_ident(ident).into_owned());
+                    if let Some(ref name) = index_name {
+                        used_index_names.insert(name.clone());
+                    }
+
+                    index_constraints.push(
+                        crate::planner::operator::create_table::IndexConstraint {
+                            name: index_name,
+                            columns: cols,
+                            is_unique: false,
+                        },
+                    );
+                }
+                TableConstraint::FulltextOrSpatial(index) => {
+                    let column_names: Result<Vec<String>, DatabaseError> = index
+                        .columns
+                        .iter()
+                        .map(|index_col| index_key_part_column(&index_col.column.expr, &columns))
+                        .collect();
+                    let cols = column_names?;
+                    let index_name = index
+                        .opt_index_name
+                        .as_ref()
+                        .map(|ident| lower_ident(ident).into_owned());
+                    if let Some(ref name) = index_name {
+                        used_index_names.insert(name.clone());
+                    }
+
+                    index_constraints.push(
+                        crate::planner::operator::create_table::IndexConstraint {
+                            name: index_name,
+                            columns: cols,
+                            is_unique: false,
+                        },
+                    );
                 }
                 constraint => {
                     return Err(DatabaseError::UnsupportedStmt(format!(
@@ -928,11 +983,26 @@ where
             }
         }
 
+        for index in &mut index_constraints {
+            if index.name.is_none() && !index.columns.is_empty() {
+                let base_name = &index.columns[0];
+                let mut name = base_name.clone();
+                let mut suffix = 2;
+                while used_index_names.contains(&name) {
+                    name = format!("{}_{}", base_name, suffix);
+                    suffix += 1;
+                }
+                used_index_names.insert(name.clone());
+                index.name = Some(name);
+            }
+        }
+
         self.binder.bind_create_table(
             table_name,
             columns,
             create.if_not_exists,
             unique_constraints,
+            index_constraints,
             display_types,
         )
     }
@@ -998,16 +1068,11 @@ where
         fn_constraint: F,
     ) -> Result<(), DatabaseError> {
         for (i, index_column) in exprs.into_iter().enumerate() {
-            let Expr::Identifier(ident) = index_column.column.expr else {
-                return Err(DatabaseError::UnsupportedStmt(
-                    "only identifier columns are supported in `PRIMARY KEY/UNIQUE`".to_string(),
-                ));
-            };
-            let column_name = lower_ident(&ident);
+            let column_name = index_key_part_column(&index_column.column.expr, &*table_columns)?;
 
             if let Some(column) = table_columns
                 .iter_mut()
-                .find(|column| column.name() == column_name.as_ref())
+                .find(|column| column.name() == column_name)
             {
                 fn_constraint(i, column.desc_mut())
             }
@@ -1777,6 +1842,54 @@ where
             .map(|SelectInto { name, .. }| lower_case_name(name))
             .transpose()?;
         self.insert_into(table_name.as_deref())
+    }
+}
+
+/// The column a CREATE TABLE key part names: `col`, or MySQL's prefix form `col(n)` with a
+/// positive integer length `n`, which parses as a call. Every other function or expression is a
+/// functional key part and is rejected, including a call whose name happens to match a column,
+/// such as `upper(b)` in a table with a column `upper`.
+fn index_key_part_column(expr: &Expr, columns: &[ColumnCatalog]) -> Result<String, DatabaseError> {
+    let unsupported = || {
+        DatabaseError::UnsupportedStmt(
+            "functional/expression key parts are not supported".to_string(),
+        )
+    };
+    match expr {
+        Expr::Identifier(ident) => Ok(lower_ident(ident).into_owned()),
+        Expr::Function(func) => {
+            let [ObjectNamePart::Identifier(ident)] = func.name.0.as_slice() else {
+                return Err(unsupported());
+            };
+            let FunctionArguments::List(list) = &func.args else {
+                return Err(unsupported());
+            };
+            let is_prefix_length = match list.args.as_slice() {
+                [FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(value)))] => {
+                    matches!(&value.value, Value::Number(length, false)
+                        if length.parse::<u32>().is_ok_and(|length| length > 0))
+                }
+                _ => false,
+            };
+            let column = lower_ident(ident).into_owned();
+            let is_plain_call = !func.uses_odbc_syntax
+                && matches!(func.parameters, FunctionArguments::None)
+                && list.duplicate_treatment.is_none()
+                && list.clauses.is_empty()
+                && func.filter.is_none()
+                && func.null_treatment.is_none()
+                && func.over.is_none()
+                && func.within_group.is_empty();
+            if is_prefix_length
+                && is_plain_call
+                && columns.iter().any(|candidate| candidate.name() == column)
+            {
+                Ok(column)
+            } else {
+                Err(unsupported())
+            }
+        }
+        _ => Err(unsupported()),
     }
 }
 
@@ -4088,6 +4201,58 @@ mod tests {
         assert!(copy_ext_source(CopyTarget::Stdout, vec![]).is_err());
         assert!(copy_file_format(vec![CopyOption::Null("NULL".to_string())]).is_err());
 
+        Ok(())
+    }
+
+    #[test]
+    async fn test_create_table_rejects_functional_key_parts() -> Result<(), DatabaseError> {
+        let tables = build_t1_table().await?;
+        for key in [
+            "UNIQUE KEY ku (upper(b))",
+            "UNIQUE KEY (upper(b))",
+            "KEY kl (lower(b))",
+            "KEY (lower(b))",
+            "KEY k (b())",
+            "KEY k (b(0))",
+            "KEY k (b(10,2))",
+            "KEY k (b('x'))",
+            "KEY k (b(1.5))",
+            "KEY k (substring(b,1,3))",
+            "UNIQUE KEY u (b())",
+            "UNIQUE KEY u (b(0))",
+            "UNIQUE KEY u (b(10,2))",
+            "UNIQUE KEY u (b('x'))",
+            "UNIQUE KEY u (substring(b,1,3))",
+            "FULLTEXT KEY f (lower(b))",
+            "PRIMARY KEY (upper(b))",
+        ] {
+            let sql =
+                format!("create table fk (id int, `upper` int, `lower` int, b varchar(20), {key})");
+            match tables.plan(&sql) {
+                Err(DatabaseError::UnsupportedStmt(message)) => assert_eq!(
+                    message, "functional/expression key parts are not supported",
+                    "{sql}"
+                ),
+                other => panic!("{sql}: expected UnsupportedStmt, got {other:?}"),
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    async fn test_create_table_accepts_prefix_key_parts() -> Result<(), DatabaseError> {
+        let tables = build_t1_table().await?;
+        for key in [
+            "KEY (b(10))",
+            "KEY kb (b(10))",
+            "UNIQUE KEY ub (b(10))",
+            "UNIQUE KEY (b(10))",
+            "UNIQUE KEY ubc (b(10), c)",
+            "FULLTEXT KEY f (b(10))",
+        ] {
+            let sql = format!("create table pk (id int primary key, b varchar(20), c int, {key})");
+            tables.plan(&sql)?;
+        }
         Ok(())
     }
 }

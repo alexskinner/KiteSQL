@@ -791,6 +791,7 @@ pub(crate) mod tests {
                 columns: vec![column],
                 if_not_exists: false,
                 unique_constraints: Vec::new(),
+                index_constraints: Vec::new(),
                 display_types: std::collections::BTreeMap::new(),
             }),
             Operator::CreateIndex(CreateIndexOperator {

@@ -453,6 +453,7 @@ async fn execute_create_table<S: Storage, M: Model>(
                 columns,
                 if_not_exists,
                 Vec::new(),
+                Vec::new(),
                 std::collections::BTreeMap::new(),
             )
         })
