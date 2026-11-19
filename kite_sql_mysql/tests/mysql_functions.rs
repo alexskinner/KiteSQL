@@ -136,15 +136,15 @@ fn replace_on_bounded_columns_in_dml() -> Result<(), DatabaseError> {
 }
 
 #[test]
-fn preside_link_backfill_statement() -> Result<(), DatabaseError> {
+fn cms_link_backfill_statement() -> Result<(), DatabaseError> {
     let dir = TempDir::new().unwrap();
     let mut db = database(&dir)?;
     db.ddl(
-        "create table `psys_email_template_send_log_activity` ( `id` varchar(35) not null primary key, \
+        "create table `cms_send_log_activity` ( `id` varchar(35) not null primary key, \
          `link` varchar(2000) null, `extra_data` longtext null )",
     )?;
     db.run(
-        "insert into `psys_email_template_send_log_activity` values \
+        "insert into `cms_send_log_activity` values \
          ('a', null, '{\"link\":\"https://example.com/x?y=1\"}'), \
          ('b', 'keep', '{}'), \
          ('c', 'keep', null), \
@@ -153,7 +153,7 @@ fn preside_link_backfill_statement() -> Result<(), DatabaseError> {
     .done()?;
 
     db.run(
-        "update `psys_email_template_send_log_activity`
+        "update `cms_send_log_activity`
            set `link` = Replace( Replace( `extra_data`, '{\"link\":\"', '' ), '\"}', '' )
            where `extra_data` is not null
            and `extra_data` != '{}'",
@@ -163,7 +163,7 @@ fn preside_link_backfill_statement() -> Result<(), DatabaseError> {
     assert_eq!(
         rows(
             &db,
-            "select id, link from psys_email_template_send_log_activity order by id"
+            "select id, link from cms_send_log_activity order by id"
         )?,
         vec![
             vec![text("a"), text("https://example.com/x?y=1")],
