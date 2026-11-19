@@ -17,6 +17,8 @@
 use kite_sql::db::DataBaseBuilder;
 use kite_sql::dialect::SqlDialect;
 use kite_sql::errors::DatabaseError;
+use kite_sql::expression::BinaryOperator;
+use kite_sql::types::value::DataValue;
 use kite_sql::types::{CharLengthUnits, LogicalType};
 use sqlparser::ast::{DataType, Ident, ObjectName, Statement};
 use sqlparser::dialect::{Dialect as SqlParserDialect, GenericDialect};
@@ -85,6 +87,37 @@ impl SqlDialect for ToyDialect {
     /// AVG of an INT is a DECIMAL with two decimals in this dialect.
     fn avg_return_type(&self, arg: &LogicalType) -> Option<LogicalType> {
         matches!(arg, LogicalType::Integer).then_some(LogicalType::Decimal(None, Some(2)))
+    }
+
+    /// Numbers with a decimal point are exact DECIMALs in this dialect.
+    #[cfg(feature = "decimal")]
+    fn number_literal(
+        &self,
+        text: &str,
+    ) -> Option<Result<(DataValue, LogicalType), DatabaseError>> {
+        if !text.contains('.') || text.contains(['e', 'E']) {
+            return None;
+        }
+        let value: rust_decimal::Decimal = text.parse().ok()?;
+        Some(Ok((
+            DataValue::Decimal(value),
+            LogicalType::Decimal(None, Some(value.scale() as u8)),
+        )))
+    }
+
+    /// `/` and `*` on INT or DECIMAL operands give a DECIMAL with two decimals in this dialect.
+    fn arithmetic_return_type(
+        &self,
+        op: &BinaryOperator,
+        left: &LogicalType,
+        right: &LogicalType,
+    ) -> Option<LogicalType> {
+        let exact =
+            |ty: &LogicalType| matches!(ty, LogicalType::Integer | LogicalType::Decimal(..));
+        (matches!(op, BinaryOperator::Divide | BinaryOperator::Multiply)
+            && exact(left)
+            && exact(right))
+        .then_some(LogicalType::Decimal(None, Some(2)))
     }
 
     fn rewrite(&self, statement: &mut Statement) -> Result<(), DatabaseError> {
@@ -234,7 +267,6 @@ fn test_generic_dialect_unchanged() -> Result<(), Box<dyn std::error::Error>> {
 #[cfg(feature = "parser")]
 fn test_custom_dialect_avg_return_type() -> Result<(), Box<dyn std::error::Error>> {
     use kite_sql::storage::lmdb::LmdbStorage;
-    use kite_sql::types::value::DataValue;
 
     let avg = |database: &kite_sql::db::Database<LmdbStorage>,
                sql: &str|
@@ -273,5 +305,62 @@ fn test_custom_dialect_avg_return_type() -> Result<(), Box<dyn std::error::Error
     let (ty, value) = avg(&generic, "SELECT AVG(n) FROM a")?;
     assert_eq!(ty, LogicalType::Double);
     assert!(matches!(value, DataValue::Float64(_)));
+    Ok(())
+}
+
+#[test]
+#[cfg(all(feature = "parser", feature = "decimal"))]
+fn test_custom_dialect_number_literal_and_arithmetic_type() -> Result<(), Box<dyn std::error::Error>>
+{
+    use kite_sql::storage::lmdb::LmdbStorage;
+
+    let first = |database: &kite_sql::db::Database<LmdbStorage>,
+                 sql: &str|
+     -> Result<(LogicalType, DataValue), DatabaseError> {
+        let mut result = database.run(sql)?;
+        let ty = result.schema(|schema| schema.get(0).unwrap().datatype().clone());
+        let row = result.next_tuple(|_, row| row[0].clone())?.unwrap();
+        result.done()?;
+        Ok((ty, row))
+    };
+    let setup = "CREATE TABLE a (id INT PRIMARY KEY, n INT)";
+    let rows = "INSERT INTO a VALUES (1, 7), (2, 1)";
+
+    let temp_dir = tempfile::tempdir()?;
+    let mut toy = DataBaseBuilder::path(".")
+        .register_dialect(Arc::new(ToyDialect::new()))
+        .default_dialect("toy")?
+        .build_with_storage(LmdbStorage::new(temp_dir.path())?)?;
+    toy.ddl(setup)?;
+    toy.run(rows)?.done()?;
+    // Decimal literals are exact, also negated.
+    let (ty, value) = first(&toy, "SELECT 0.1 + 0.2")?;
+    assert!(matches!(ty, LogicalType::Decimal(..)));
+    assert_eq!(value.to_string(), "0.3");
+    let (_, value) = first(&toy, "SELECT -1.50")?;
+    assert_eq!(value.to_string(), "-1.50");
+    // INT / INT is computed in DECIMAL and rounded half away from zero to the dialect scale.
+    let (ty, value) = first(&toy, "SELECT n / 3 FROM a WHERE id = 1")?;
+    assert_eq!(ty, LogicalType::Decimal(None, Some(2)));
+    assert_eq!(value.to_string(), "2.33");
+    let (_, value) = first(&toy, "SELECT 2 / 3")?;
+    assert_eq!(value.to_string(), "0.67");
+    // Chained arithmetic rounds once, at the end.
+    let (_, value) = first(&toy, "SELECT n / 3 * 3 FROM a WHERE id = 2")?;
+    assert_eq!(value.to_string(), "1.00");
+    // Literals with an exponent keep the engine's DOUBLE.
+    let (ty, _) = first(&toy, "SELECT 1e2")?;
+    assert_eq!(ty, LogicalType::Double);
+
+    // The generic dialect keeps DOUBLE literals and its own integer division.
+    let temp_dir = tempfile::tempdir()?;
+    let mut generic =
+        DataBaseBuilder::path(".").build_with_storage(LmdbStorage::new(temp_dir.path())?)?;
+    generic.ddl(setup)?;
+    generic.run(rows)?.done()?;
+    let (ty, _) = first(&generic, "SELECT 0.1 + 0.2")?;
+    assert_eq!(ty, LogicalType::Double);
+    let (ty, _) = first(&generic, "SELECT n / 3 FROM a WHERE id = 1")?;
+    assert!(!matches!(ty, LogicalType::Decimal(..)));
     Ok(())
 }

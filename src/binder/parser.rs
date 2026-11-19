@@ -2944,6 +2944,29 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
         }
     }
 
+    /// A numeric literal, read by the dialect when it has its own rule (see
+    /// `SqlDialect::number_literal`) and otherwise by the engine. A dialect type other than
+    /// the value's own is kept by casting the constant to it.
+    fn bind_number_literal(
+        &self,
+        text: &str,
+        value: &Value,
+        arena: &mut PlanArena,
+    ) -> Result<ScalarExpression, DatabaseError> {
+        let Some(literal) = self.context.dialect.number_literal(text) else {
+            return Ok(ScalarExpression::Constant(DataValue::try_from(value)?));
+        };
+        let (value, ty) = literal?;
+        if value.logical_type() == ty {
+            return Ok(ScalarExpression::Constant(value));
+        }
+        Ok(ScalarExpression::TypeCast {
+            expr: arena.alloc_expression(ScalarExpression::Constant(value)),
+            ty,
+            evaluator: None,
+        })
+    }
+
     pub(crate) fn bind_expr(
         &mut self,
         expr: &Expr,
@@ -2989,6 +3012,10 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                             )
                         })?;
                     DataValue::Parameter { id, ty: ty.clone() }
+                } else if let Value::Number(n, _) = &v.value {
+                    return self
+                        .bind_number_literal(n, &v.value, arena)
+                        .map_err(|err| attach_span_if_absent(err, v));
                 } else {
                     (&v.value)
                         .try_into()
@@ -3004,8 +3031,9 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                 // `-9223372036854775808` (9223372036854775808 overflows bigint).
                 if let (UnaryOperator::Minus, Expr::Value(v)) = (op, expr.as_ref()) {
                     if let Value::Number(n, long) = &v.value {
-                        let value = DataValue::try_from(&Value::Number(format!("-{n}"), *long))?;
-                        return Ok(ScalarExpression::Constant(value));
+                        let negated = format!("-{n}");
+                        let value = Value::Number(negated.clone(), *long);
+                        return self.bind_number_literal(&negated, &value, arena);
                     }
                 }
                 let expr = self

@@ -345,7 +345,7 @@ impl<A: MetaArena + ?Sized> ExprVisitorMut<A> for BindEvaluator {
         left_expr: &mut ExprRef,
         right_expr: &mut ExprRef,
         evaluator: &mut Option<BinaryEvaluatorRef>,
-        _ty: &mut LogicalType,
+        ty: &mut LogicalType,
         arena: &mut A,
     ) -> Result<(), DatabaseError> {
         self.visit(left_expr, arena)?;
@@ -353,7 +353,7 @@ impl<A: MetaArena + ?Sized> ExprVisitorMut<A> for BindEvaluator {
 
         let left_ty = left_expr.return_type(arena).into_owned();
         let right_ty = right_expr.return_type(arena).into_owned();
-        let ty = binary_operand_type(op, &left_ty, &right_ty)?.into_owned();
+        let ty = binary_eval_type(op, &left_ty, &right_ty, ty)?;
         *left_expr = left_expr.type_cast(Cow::Borrowed(&ty), arena)?;
         *right_expr = right_expr.type_cast(Cow::Borrowed(&ty), arena)?;
 
@@ -432,6 +432,35 @@ pub(crate) fn binary_operand_type<'a>(
         | BinaryOperator::NotEq => LogicalType::comparison_type(left, right),
         _ => LogicalType::max_logical_type(left, right),
     }
+}
+
+/// The type a binary expression's operands are cast to and computed in: the operand type,
+/// except that arithmetic typed DECIMAL (by a dialect, see
+/// `SqlDialect::arithmetic_return_type`) is computed in DECIMAL even when both operands are
+/// integers.
+pub(crate) fn binary_eval_type(
+    op: &BinaryOperator,
+    left: &LogicalType,
+    right: &LogicalType,
+    result: &LogicalType,
+) -> Result<LogicalType, DatabaseError> {
+    let operand = binary_operand_type(op, left, right)?.into_owned();
+    if matches!(result, LogicalType::Decimal(..))
+        && matches!(
+            op,
+            BinaryOperator::Plus
+                | BinaryOperator::Minus
+                | BinaryOperator::Multiply
+                | BinaryOperator::Divide
+                | BinaryOperator::Modulo
+        )
+        && (operand.is_signed_numeric()
+            || operand.is_unsigned_numeric()
+            || operand == LogicalType::Boolean)
+    {
+        return Ok(LogicalType::Decimal(None, None));
+    }
+    Ok(operand)
 }
 
 #[derive(Default)]

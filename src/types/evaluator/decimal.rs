@@ -47,6 +47,16 @@ decimal_binary!(
     |v1: &rust_decimal::Decimal, v2: &rust_decimal::Decimal| DataValue::Decimal(v1 - v2)
 );
 
+pub fn decimal_minus_unary_eval(value: &DataValue) -> DataValue {
+    match value {
+        // a zero keeps its sign: -(0.00) is 0.00, not -0.00
+        DataValue::Decimal(value) if value.is_zero() => DataValue::Decimal(*value),
+        DataValue::Decimal(value) => DataValue::Decimal(-*value),
+        DataValue::Null => DataValue::Null,
+        _ => unsafe { hint::unreachable_unchecked() },
+    }
+}
+
 crate::define_cast_evaluator!(decimal_to_float_cast_eval, DataValue::Decimal(value) => {
     Ok(DataValue::Float32(OrderedFloat(value.to_f32().ok_or_else(|| {
         crate::types::evaluator::cast::cast_fail(
@@ -155,10 +165,23 @@ decimal_binary!(
     decimal_not_eq_binary_eval,
     |v1: &rust_decimal::Decimal, v2: &rust_decimal::Decimal| DataValue::Boolean(v1 != v2)
 );
-decimal_binary!(
-    decimal_mod_binary_eval,
-    |v1: &rust_decimal::Decimal, v2: &rust_decimal::Decimal| DataValue::Decimal(v1 % v2)
-);
+pub fn decimal_mod_binary_eval(
+    left: &DataValue,
+    right: &DataValue,
+) -> Result<DataValue, DatabaseError> {
+    Ok(match (left, right) {
+        // rust_decimal panics on a zero divisor; NULL like integer remainder
+        (DataValue::Decimal(_), DataValue::Decimal(v2)) if v2.is_zero() => {
+            crate::diagnostics::modulo_by_zero();
+            DataValue::Null
+        }
+        (DataValue::Decimal(v1), DataValue::Decimal(v2)) => DataValue::Decimal(v1 % v2),
+        (DataValue::Decimal(_), DataValue::Null)
+        | (DataValue::Null, DataValue::Decimal(_))
+        | (DataValue::Null, DataValue::Null) => DataValue::Null,
+        _ => unsafe { hint::unreachable_unchecked() },
+    })
+}
 
 // GRCOV_EXCL_START
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -290,6 +313,10 @@ mod test {
         for (actual, expected) in cases {
             assert_eq!(actual, expected);
         }
+        assert_eq!(
+            decimal_mod_binary_eval(&left, &DataValue::Decimal(Decimal::ZERO)).unwrap(),
+            DataValue::Null
+        );
 
         assert_eq!(
             decimal_plus_binary_eval(&left, &DataValue::Null).unwrap(),

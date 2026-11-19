@@ -72,6 +72,32 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
         None
     }
 
+    /// Value and type of a numeric literal such as `0.1`, `1e2` or `18446744073709551616`,
+    /// given its text (with a leading `-` when the binder folded a unary minus into it);
+    /// `None` keeps the engine's reading (INTEGER or BIGINT when it fits, otherwise DOUBLE).
+    /// A returned type other than the value's own (for example a DECIMAL with the literal's
+    /// precision and scale) is kept as the literal's type while binding.
+    fn number_literal(
+        &self,
+        _text: &str,
+    ) -> Option<Result<(crate::types::value::DataValue, crate::types::LogicalType), DatabaseError>>
+    {
+        None
+    }
+
+    /// Result type of the arithmetic `left <op> right` (`+`, `-`, `*`, `/` or `%`) for
+    /// operands of these types; `None` keeps the engine's type. When the result is DECIMAL
+    /// the operation is computed exactly in DECIMAL (integer operands included) and, when
+    /// the type has a scale, the result is rounded half away from zero to that scale.
+    fn arithmetic_return_type(
+        &self,
+        _op: &crate::expression::BinaryOperator,
+        _left: &crate::types::LogicalType,
+        _right: &crate::types::LogicalType,
+    ) -> Option<crate::types::LogicalType> {
+        None
+    }
+
     /// Maps a core diagnostic to this dialect's level, code and wording; `None` drops it.
     /// The default keeps it as raised (code 0).
     fn map_diagnostic(
