@@ -127,26 +127,26 @@ SELECT * FROM t
 ----
 1 111 222 333
 
-# Test 8: Preside-style system config statement
+# Test 8: CMS-style system config statement
 statement ok
-DROP TABLE IF EXISTS psys_system_config
+DROP TABLE IF EXISTS cms_system_config
 
 statement ok
-CREATE TABLE psys_system_config (id VARCHAR(50) PRIMARY KEY, category VARCHAR(50), setting VARCHAR(50), value VARCHAR(50))
+CREATE TABLE cms_system_config (id VARCHAR(50) PRIMARY KEY, category VARCHAR(50), setting VARCHAR(50), value VARCHAR(50))
 
 statement ok
-INSERT INTO psys_system_config (id, category, setting, value) VALUES ('test_id', 'test_cat', 'test_setting', 'false') ON DUPLICATE KEY UPDATE value = 'true'
+INSERT INTO cms_system_config (id, category, setting, value) VALUES ('test_id', 'test_cat', 'test_setting', 'false') ON DUPLICATE KEY UPDATE value = 'true'
 
 query CCCC
-SELECT * FROM psys_system_config
+SELECT * FROM cms_system_config
 ----
 test_id test_cat test_setting false
 
 statement ok
-INSERT INTO psys_system_config (id, category, setting, value) VALUES ('test_id', 'test_cat', 'test_setting', 'updated') ON DUPLICATE KEY UPDATE value = 'true'
+INSERT INTO cms_system_config (id, category, setting, value) VALUES ('test_id', 'test_cat', 'test_setting', 'updated') ON DUPLICATE KEY UPDATE value = 'true'
 
 query CCCC
-SELECT * FROM psys_system_config
+SELECT * FROM cms_system_config
 ----
 test_id test_cat test_setting true
 
@@ -155,7 +155,7 @@ statement ok
 DROP TABLE IF EXISTS t
 
 statement ok
-DROP TABLE IF EXISTS psys_system_config
+DROP TABLE IF EXISTS cms_system_config
 
 # Test 10: UNIQUE index conflict (single column)
 statement ok
@@ -180,7 +180,7 @@ SELECT * FROM unique_test
 ----
 1 alice@example.com Alice Updated
 
-# Test 11: UNIQUE composite index (Preside schema)
+# Test 11: UNIQUE composite index (CMS schema)
 statement ok
 DROP TABLE IF EXISTS config_test
 

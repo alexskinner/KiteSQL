@@ -581,8 +581,8 @@ fn test_new_transaction_gets_statement_atomicity() -> Result<(), DatabaseError> 
 }
 
 #[test]
-fn test_on_duplicate_key_update_preside_schema() -> Result<(), DatabaseError> {
-    // Test the exact Preside psys_system_config use case:
+fn test_on_duplicate_key_update_cms_schema() -> Result<(), DatabaseError> {
+    // Test the exact CMS system config use case:
     // - UUID varchar PRIMARY KEY
     // - UNIQUE (category, setting)
     // - Fresh UUID on every insert conflicts on UNIQUE index, not PK
@@ -591,7 +591,7 @@ fn test_on_duplicate_key_update_preside_schema() -> Result<(), DatabaseError> {
     let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
 
     database.ddl(
-        "CREATE TABLE psys_system_config (
+        "CREATE TABLE cms_system_config (
             id VARCHAR(50) PRIMARY KEY, 
             category VARCHAR(50), 
             setting VARCHAR(50), 
@@ -605,14 +605,14 @@ fn test_on_duplicate_key_update_preside_schema() -> Result<(), DatabaseError> {
     // First insert
     session
         .run(
-            "INSERT INTO psys_system_config (id, category, setting, value) 
+            "INSERT INTO cms_system_config (id, category, setting, value) 
          VALUES ('uuid-001', 'system', 'boot_complete', 'false')",
         )?
         .done()?;
 
     // Verify initial row exists
     let mut iter = session.run(
-        "SELECT COUNT(*) FROM psys_system_config 
+        "SELECT COUNT(*) FROM cms_system_config 
          WHERE category = 'system' AND setting = 'boot_complete'",
     )?;
     let mut count = 0;
@@ -626,14 +626,14 @@ fn test_on_duplicate_key_update_preside_schema() -> Result<(), DatabaseError> {
     // This should conflict on UNIQUE index and update existing row
     session
         .run(
-            "INSERT INTO psys_system_config (id, category, setting, value) 
+            "INSERT INTO cms_system_config (id, category, setting, value) 
          VALUES ('uuid-002', 'system', 'boot_complete', 'should_be_ignored') 
          ON DUPLICATE KEY UPDATE value = 'true'",
         )?
         .done()?;
 
     // Verify only one row exists
-    let mut iter = session.run("SELECT COUNT(*) FROM psys_system_config")?;
+    let mut iter = session.run("SELECT COUNT(*) FROM cms_system_config")?;
     let mut total = 0;
     while iter.next_tuple(|_, _| ())?.is_some() {
         total += 1;
@@ -643,7 +643,7 @@ fn test_on_duplicate_key_update_preside_schema() -> Result<(), DatabaseError> {
 
     // Verify value was updated and id is still the original
     let mut iter = session.run(
-        "SELECT id, value FROM psys_system_config 
+        "SELECT id, value FROM cms_system_config 
          WHERE category = 'system' AND setting = 'boot_complete'",
     )?;
     let mut found = false;
@@ -654,7 +654,7 @@ fn test_on_duplicate_key_update_preside_schema() -> Result<(), DatabaseError> {
     assert!(found, "Should find the updated row");
 
     // Check updated value
-    let mut iter = session.run("SELECT id FROM psys_system_config WHERE value = 'true'")?;
+    let mut iter = session.run("SELECT id FROM cms_system_config WHERE value = 'true'")?;
     let mut id_count = 0;
     while iter.next_tuple(|_, _| ())?.is_some() {
         id_count += 1;
