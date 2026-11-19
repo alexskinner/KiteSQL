@@ -1275,8 +1275,11 @@ select a.id,b.id from ij_a a,ij_a b where b.k=a.k and a.id=2 order by b.id;
 2 2
 2 4
 
-statement error can not compare two types
-select a.id,b.id from ij_a a inner join ij_b b on a.k=(b.k is null);
+# A boolean join key compares with an integer as 0/1 (MySQL).
+query II
+select a.id,b.id from ij_a a inner join ij_b b on a.k=(b.k is null) order by a.id,b.id;
+----
+1 4
 
 statement ok
 drop table ij_c;

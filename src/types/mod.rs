@@ -275,6 +275,14 @@ impl LogicalType {
         if left.is_numeric() && right.is_numeric() {
             return LogicalType::combine_numeric_types(left, right);
         }
+        // A boolean mixed with a number (COALESCE, CASE, UNION, `b + 1`) takes the
+        // numeric type; booleans cast to it as 0/1.
+        if matches!(left, LogicalType::Boolean) && right.is_numeric() {
+            return Ok(Cow::Borrowed(right));
+        }
+        if left.is_numeric() && matches!(right, LogicalType::Boolean) {
+            return Ok(Cow::Borrowed(left));
+        }
         #[cfg(feature = "time")]
         {
             if matches!(
@@ -345,7 +353,9 @@ impl LogicalType {
         if matches!(left, LogicalType::Boolean) && right.is_numeric() {
             return if right.is_signed_numeric() {
                 let upcasted = LogicalType::Smallint;
-                Ok(Cow::Owned(LogicalType::combine_numeric_types(&upcasted, right)?.into_owned()))
+                Ok(Cow::Owned(
+                    LogicalType::combine_numeric_types(&upcasted, right)?.into_owned(),
+                ))
             } else {
                 Ok(Cow::Borrowed(right))
             };
@@ -353,7 +363,9 @@ impl LogicalType {
         if left.is_numeric() && matches!(right, LogicalType::Boolean) {
             return if left.is_signed_numeric() {
                 let upcasted = LogicalType::Smallint;
-                Ok(Cow::Owned(LogicalType::combine_numeric_types(left, &upcasted)?.into_owned()))
+                Ok(Cow::Owned(
+                    LogicalType::combine_numeric_types(left, &upcasted)?.into_owned(),
+                ))
             } else {
                 Ok(Cow::Borrowed(left))
             };
@@ -366,20 +378,37 @@ impl LogicalType {
                     LogicalType::Date | LogicalType::DateTime | LogicalType::TimeStamp(_, _)
                 )
             };
-            if (is_temporal(left) && right.is_numeric())
-                || (left.is_numeric() && is_temporal(right))
-            {
-                return if left.is_numeric() {
-                    Ok(Cow::Borrowed(left))
-                } else {
-                    Ok(Cow::Borrowed(right))
-                };
+            // MySQL compares a temporal value with a number by turning the temporal
+            // value into its YYYYMMDD[hhmmss] number: integers compare as BIGINT,
+            // anything with a fraction as DOUBLE.
+            let numeric = if is_temporal(left) && right.is_numeric() {
+                Some(right)
+            } else if left.is_numeric() && is_temporal(right) {
+                Some(left)
+            } else {
+                None
+            };
+            if let Some(numeric) = numeric {
+                return Ok(Cow::Owned(
+                    if numeric.is_signed_numeric() || numeric.is_unsigned_numeric() {
+                        LogicalType::Bigint
+                    } else {
+                        LogicalType::Double
+                    },
+                ));
             }
         }
         if left.is_signed_numeric() && right.is_unsigned_numeric()
             || left.is_unsigned_numeric() && right.is_signed_numeric()
         {
-            return LogicalType::combine_numeric_types(left, right);
+            let combined = LogicalType::combine_numeric_types(left, right)?;
+            // BIGINT vs BIGINT UNSIGNED would widen to DOUBLE and lose precision
+            // above 2^53; compare exactly as DECIMAL(20, 0) instead.
+            #[cfg(feature = "decimal")]
+            if matches!(combined.as_ref(), LogicalType::Double) {
+                return Ok(Cow::Owned(LogicalType::Decimal(Some(20), Some(0))));
+            }
+            return Ok(combined);
         }
         LogicalType::max_logical_type(left, right)
     }
@@ -1161,7 +1190,7 @@ pub(crate) mod test {
         let integer = LogicalType::Integer;
         let uinteger = LogicalType::UInteger;
         let bigint = LogicalType::Bigint;
-        
+
         assert_eq!(
             LogicalType::comparison_type(&boolean, &varchar)?.as_ref(),
             &LogicalType::Boolean
@@ -1202,7 +1231,34 @@ pub(crate) mod test {
             LogicalType::comparison_type(&uinteger, &integer)?.as_ref(),
             &LogicalType::Bigint
         );
-        
+
+        // Temporal vs numeric compares against MySQL's YYYYMMDD[hhmmss] number.
+        assert_eq!(
+            LogicalType::comparison_type(&LogicalType::DateTime, &integer)?.as_ref(),
+            &LogicalType::Bigint
+        );
+        assert_eq!(
+            LogicalType::comparison_type(&LogicalType::Double, &LogicalType::Date)?.as_ref(),
+            &LogicalType::Double
+        );
+        // u64 vs i64 must not lose precision through Double.
+        #[cfg(feature = "decimal")]
+        assert_eq!(
+            LogicalType::comparison_type(&bigint, &LogicalType::UBigint)?.as_ref(),
+            &LogicalType::Decimal(Some(20), Some(0))
+        );
+        // Boolean in arithmetic or COALESCE takes the numeric type.
+        assert_eq!(
+            LogicalType::max_logical_type(&boolean, &integer)?.as_ref(),
+            &LogicalType::Integer
+        );
+        assert_eq!(
+            LogicalType::max_logical_type(&bigint, &boolean)?.as_ref(),
+            &LogicalType::Bigint
+        );
+        // Incomparable pairs still error.
+        assert!(LogicalType::comparison_type(&LogicalType::Date, &boolean).is_err());
+
         Ok(())
     }
 }

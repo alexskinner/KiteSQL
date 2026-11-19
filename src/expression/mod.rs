@@ -353,16 +353,7 @@ impl<A: MetaArena + ?Sized> ExprVisitorMut<A> for BindEvaluator {
 
         let left_ty = left_expr.return_type(arena).into_owned();
         let right_ty = right_expr.return_type(arena).into_owned();
-        let ty = match op {
-            BinaryOperator::Gt
-            | BinaryOperator::Lt
-            | BinaryOperator::GtEq
-            | BinaryOperator::LtEq
-            | BinaryOperator::Eq
-            | BinaryOperator::NotEq => LogicalType::comparison_type(&left_ty, &right_ty)?,
-            _ => LogicalType::max_logical_type(&left_ty, &right_ty)?,
-        }
-        .into_owned();
+        let ty = binary_operand_type(op, &left_ty, &right_ty)?.into_owned();
         *left_expr = left_expr.type_cast(Cow::Borrowed(&ty), arena)?;
         *right_expr = right_expr.type_cast(Cow::Borrowed(&ty), arena)?;
 
@@ -419,6 +410,27 @@ impl<A: MetaArena + ?Sized> ExprVisitorMut<A> for BindEvaluator {
         *right_evaluator = Some(binary_create(Cow::Owned(ty), BinaryOperator::LtEq)?);
 
         Ok(())
+    }
+}
+
+/// The type both operands of `op` are cast to before evaluation: comparisons
+/// use [`LogicalType::comparison_type`], everything else
+/// [`LogicalType::max_logical_type`]. Every place that evaluates or folds a
+/// binary expression must agree on this, or constant folding and execution
+/// coerce differently.
+pub(crate) fn binary_operand_type<'a>(
+    op: &BinaryOperator,
+    left: &'a LogicalType,
+    right: &'a LogicalType,
+) -> Result<Cow<'a, LogicalType>, DatabaseError> {
+    match op {
+        BinaryOperator::Gt
+        | BinaryOperator::Lt
+        | BinaryOperator::GtEq
+        | BinaryOperator::LtEq
+        | BinaryOperator::Eq
+        | BinaryOperator::NotEq => LogicalType::comparison_type(left, right),
+        _ => LogicalType::max_logical_type(left, right),
     }
 }
 
