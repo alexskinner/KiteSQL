@@ -37,6 +37,7 @@ impl TestPackFunction {
                 name: "test_pack_fn".into(),
                 arg_types: vec![LogicalType::Integer],
                 persistence: PersistencePolicy::Transient,
+                accepts_any_args: false,
             },
             return_type: LogicalType::Integer,
         })
