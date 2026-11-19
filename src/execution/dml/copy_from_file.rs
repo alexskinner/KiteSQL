@@ -164,7 +164,9 @@ mod tests {
             Ok(column)
         }
 
-        let catalog = db.state.catalog();
+        let catalog_ref = db.state.catalog();
+
+        let catalog = catalog_ref.view();
         let mut plan_arena = crate::planner::PlanArena::new(catalog.arena);
         let columns = vec![
             plan_arena.alloc_column(test_column("a", LogicalType::Integer, Some(0))?),

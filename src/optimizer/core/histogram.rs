@@ -202,9 +202,9 @@ impl HistogramBuilder {
         }
 
         let values_len = self.meta.values_len;
-        if number_of_buckets > values_len {
-            return Err(DatabaseError::TooManyBuckets(number_of_buckets, values_len));
-        }
+        // A small or empty index gets one bucket per value (none when empty) instead of
+        // failing the whole ANALYZE: MySQL's ANALYZE TABLE works on any table.
+        let number_of_buckets = number_of_buckets.min(values_len);
 
         let HistogramBuilder {
             index_id,

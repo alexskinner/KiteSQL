@@ -160,6 +160,7 @@ mod tests {
             Operator::Update(UpdateOperator {
                 table: crate::catalog::table::DmlTable::default(),
                 value_exprs: vec![(0, update_expr)],
+                target_table_offset: 0,
             }),
         ];
 

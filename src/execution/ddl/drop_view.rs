@@ -50,18 +50,50 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for DropView<'a> {
         plan_arena: &mut ExecMetaArena<A>,
     ) -> Result<(), DatabaseError> {
         let DropViewOperator {
-            view_name,
+            view_names,
             if_exists,
         } = self.op;
 
-        let (transaction, table_codec) = arena.transaction_codec_mut();
-        if transaction
-            .drop_view(table_codec, plan_arena, view_name.clone(), *if_exists)
-            .await?
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for view_name in view_names.iter() {
+            if !seen.insert(view_name.to_string()) {
+                return Err(DatabaseError::DuplicateTableName(view_name.to_string()));
+            }
+        }
+
         {
-            arena.push_ddl_apply(DDLApply::DropView {
-                name: view_name.clone(),
-            });
+            let (transaction, table_codec) = arena.transaction_codec_mut();
+
+            if !if_exists {
+                for view_name in view_names.iter() {
+                    if transaction
+                        .root_table(table_codec, view_name, plan_arena)
+                        .await?
+                        .filter(|meta| meta.is_view)
+                        .is_none()
+                    {
+                        return Err(DatabaseError::ViewNotFound);
+                    }
+                }
+            }
+        }
+
+        let mut dropped_views = Vec::new();
+        {
+            let (transaction, table_codec) = arena.transaction_codec_mut();
+            for view_name in view_names.iter() {
+                if transaction
+                    .drop_view(table_codec, plan_arena, view_name.clone(), true)
+                    .await?
+                {
+                    dropped_views.push(view_name.clone());
+                }
+            }
+        }
+
+        for name in dropped_views {
+            arena.push_ddl_apply(DDLApply::DropView { name });
         }
 
         arena.finish();
