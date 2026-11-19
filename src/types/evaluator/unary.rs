@@ -33,6 +33,9 @@ const UNARY_BOOLEAN_NOT: u16 = 4;
 const UNARY_FLOAT32_MINUS: u16 = 5;
 const UNARY_FLOAT64_MINUS: u16 = 6;
 const UNARY_SQL_NULL: u16 = 7;
+// Evaluator positions are serialized ABI: only append.
+#[cfg(feature = "decimal")]
+const UNARY_DECIMAL_MINUS: u16 = 8;
 
 pub fn unary_create(
     ty: Cow<'_, LogicalType>,
@@ -47,6 +50,8 @@ pub fn unary_create(
         (LogicalType::Float, UnaryOperator::Minus) => UNARY_FLOAT32_MINUS,
         (LogicalType::Double, UnaryOperator::Minus) => UNARY_FLOAT64_MINUS,
         (LogicalType::SqlNull, UnaryOperator::Minus | UnaryOperator::Not) => UNARY_SQL_NULL,
+        #[cfg(feature = "decimal")]
+        (LogicalType::Decimal(..), UnaryOperator::Minus) => UNARY_DECIMAL_MINUS,
         _ => return Err(DatabaseError::UnsupportedUnaryOperator(ty.into_owned(), op)),
     };
     Ok(UnaryEvaluatorRef::new(pos))
@@ -65,6 +70,8 @@ pub(crate) fn eval_unary(
         UNARY_FLOAT32_MINUS => float32_minus_unary_eval(value),
         UNARY_FLOAT64_MINUS => float64_minus_unary_eval(value),
         UNARY_SQL_NULL => crate::types::value::DataValue::Null,
+        #[cfg(feature = "decimal")]
+        UNARY_DECIMAL_MINUS => crate::types::evaluator::decimal::decimal_minus_unary_eval(value),
         _ => unreachable!("unknown unary evaluator position {pos}"),
     })
 }
@@ -183,6 +190,18 @@ mod test {
             ),
         ];
 
+        #[cfg(feature = "decimal")]
+        let cases = {
+            let mut cases = cases;
+            // keeps the scale: -(0.10) is -0.10
+            cases.push((
+                LogicalType::Decimal(Some(3), Some(2)),
+                UnaryOperator::Minus,
+                DataValue::Decimal(rust_decimal::Decimal::new(10, 2)),
+                DataValue::Decimal(rust_decimal::Decimal::new(-10, 2)),
+            ));
+            cases
+        };
         for (ty, op, value, expected) in cases {
             let evaluator = create(ty, op)?;
             assert_eq!(evaluator.unary_eval(&value)?, expected);

@@ -62,14 +62,15 @@ impl<A: MetaArena + ?Sized> ExprVisitorMut<A> for ConstantCalculator {
                 op,
                 left_expr,
                 right_expr,
+                ty: result_ty,
                 ..
             } => {
-                let ty = crate::expression::binary_operand_type(
+                let ty = crate::expression::binary_eval_type(
                     op,
                     &left_expr.return_type(arena),
                     &right_expr.return_type(arena),
-                )?
-                .into_owned();
+                    result_ty,
+                )?;
                 self.visit(left_expr, arena)?;
                 self.visit(right_expr, arena)?;
 

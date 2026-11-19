@@ -419,8 +419,32 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
         op: expression::BinaryOperator,
         arena: &mut PlanArena,
     ) -> Result<ScalarExpression, DatabaseError> {
-        let left_ty = left_expr.return_type(arena);
-        let right_ty = right_expr.return_type(arena);
+        let left_ty = left_expr.return_type(arena).into_owned();
+        let right_ty = right_expr.return_type(arena).into_owned();
+        let arithmetic_ty = self.arithmetic_return_type(&op, &left_ty, &right_ty);
+        // An operand that is dialect-typed DECIMAL arithmetic is used before its rounding
+        // (`1 / 3 * 3` multiplies the exact quotient): the rounding applies once, at the end
+        // of an arithmetic expression. Its declared type still types this operator.
+        let (left_expr, right_expr) = if arithmetic_ty.is_some()
+            || matches!(
+                op,
+                expression::BinaryOperator::Gt
+                    | expression::BinaryOperator::Lt
+                    | expression::BinaryOperator::GtEq
+                    | expression::BinaryOperator::LtEq
+                    | expression::BinaryOperator::Eq
+                    | expression::BinaryOperator::NotEq
+            ) {
+            (
+                Self::unrounded_arithmetic(left_expr, arena),
+                Self::unrounded_arithmetic(right_expr, arena),
+            )
+        } else {
+            (left_expr, right_expr)
+        };
+        if let Some(ty) = arithmetic_ty {
+            return Ok(Self::arithmetic_expr(op, left_expr, right_expr, ty, arena));
+        }
         let ty = match &op {
             expression::BinaryOperator::Plus
             | expression::BinaryOperator::Minus
@@ -464,6 +488,91 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
             evaluator: None,
             ty,
         })
+    }
+
+    /// The dialect's result type for `+ - * / %` (see `SqlDialect::arithmetic_return_type`).
+    fn arithmetic_return_type(
+        &self,
+        _op: &expression::BinaryOperator,
+        _left: &LogicalType,
+        _right: &LogicalType,
+    ) -> Option<LogicalType> {
+        #[cfg(feature = "parser")]
+        if matches!(
+            _op,
+            expression::BinaryOperator::Plus
+                | expression::BinaryOperator::Minus
+                | expression::BinaryOperator::Multiply
+                | expression::BinaryOperator::Divide
+                | expression::BinaryOperator::Modulo
+        ) {
+            return self
+                .context
+                .dialect
+                .arithmetic_return_type(_op, _left, _right);
+        }
+        None
+    }
+
+    /// The exact operator under the rounding cast of dialect-typed DECIMAL arithmetic (see
+    /// [`Self::arithmetic_expr`]); any other expression unchanged.
+    fn unrounded_arithmetic(expr: ExprRef, arena: &PlanArena) -> ExprRef {
+        if let ScalarExpression::TypeCast {
+            expr: inner,
+            ty: LogicalType::Decimal(..),
+            evaluator: None,
+        } = arena.expression(expr)
+        {
+            if let ScalarExpression::Binary {
+                op:
+                    expression::BinaryOperator::Plus
+                    | expression::BinaryOperator::Minus
+                    | expression::BinaryOperator::Multiply
+                    | expression::BinaryOperator::Divide
+                    | expression::BinaryOperator::Modulo,
+                ty: LogicalType::Decimal(None, None),
+                ..
+            } = arena.expression(*inner)
+            {
+                return *inner;
+            }
+        }
+        expr
+    }
+
+    /// Arithmetic typed `ty` by the dialect. A DECIMAL result is computed in DECIMAL (the
+    /// operator node is typed DECIMAL without precision or scale, so integer operands are
+    /// converted rather than divided as integers) and then cast to `ty`, which rounds it half
+    /// away from zero to the scale of `ty` when `ty` has one.
+    fn arithmetic_expr(
+        op: expression::BinaryOperator,
+        left_expr: ExprRef,
+        right_expr: ExprRef,
+        ty: LogicalType,
+        arena: &mut PlanArena,
+    ) -> ScalarExpression {
+        let exact = LogicalType::Decimal(None, None);
+        if !matches!(ty, LogicalType::Decimal(..)) || ty == exact {
+            return ScalarExpression::Binary {
+                op,
+                left_expr,
+                right_expr,
+                evaluator: None,
+                ty,
+            };
+        }
+        let expr = arena.alloc_expression(ScalarExpression::Binary {
+            op,
+            left_expr,
+            right_expr,
+            evaluator: None,
+            ty: exact,
+        });
+        ScalarExpression::TypeCast {
+            expr,
+            ty,
+            evaluator: None,
+        }
     }
 
     pub(crate) fn bind_unary_op_expr(

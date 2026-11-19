@@ -74,6 +74,8 @@ impl ScalarFunctionImpl for Abs {
             DataValue::Int64(v) => DataValue::Int64(v.checked_abs().ok_or_else(overflow)?),
             DataValue::Float32(v) => DataValue::Float32(OrderedFloat(v.0.abs())),
             DataValue::Float64(v) => DataValue::Float64(OrderedFloat(v.0.abs())),
+            #[cfg(feature = "decimal")]
+            DataValue::Decimal(v) => DataValue::Decimal(v.abs()),
             _ => value.into_owned(),
         })
     }
