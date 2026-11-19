@@ -16,7 +16,7 @@ use crate::numeric_binary_evaluator_definition;
 use crate::types::evaluator::DataValue;
 
 numeric_binary_evaluator_definition!(Uint64, DataValue::UInt64);
-crate::define_integer_cast_evaluators!(Uint64, UInt64, u64, LogicalType::UBigint);
+crate::define_integer_cast_evaluators!(Uint64, UInt64, u64);
 
 // GRCOV_EXCL_START
 #[cfg(all(test, not(target_arch = "wasm32")))]

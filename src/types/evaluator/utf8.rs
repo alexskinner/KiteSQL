@@ -13,26 +13,26 @@
 // limitations under the License.
 
 use crate::errors::DatabaseError;
-use crate::types::evaluator::cast::{cast_fail, to_char, to_varbinary, to_varchar};
+use crate::types::evaluator::cast::{to_char, to_varbinary, to_varchar};
 use crate::types::evaluator::DataValue;
 use crate::types::value::{Utf8Str, Utf8Type};
-use crate::types::{CharLengthUnits, LogicalType};
+use crate::types::CharLengthUnits;
 use ordered_float::OrderedFloat;
 #[cfg(feature = "decimal")]
 use rust_decimal::Decimal;
 use std::hint;
 use std::str::FromStr;
 
-fn parse_bool_str(s: &str) -> Result<bool, DatabaseError> {
+pub(crate) fn parse_bool_str(s: &str) -> Result<bool, DatabaseError> {
     let trimmed = s.trim();
     let lower = trimmed.to_lowercase();
     match lower.as_str() {
         "true" | "t" | "yes" | "y" | "on" | "1" => Ok(true),
         "false" | "f" | "no" | "n" | "off" | "0" => Ok(false),
-        _ => Err(cast_fail(
-            LogicalType::Varchar(None, CharLengthUnits::Characters),
-            LogicalType::Boolean,
-        )),
+        _ => Err(DatabaseError::InvalidValue(format!(
+            "invalid boolean value: '{}'",
+            s
+        ))),
     }
 }
 
