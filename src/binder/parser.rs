@@ -22,8 +22,8 @@ use super::{is_valid_identifier, Binder, CteBinding, QueryBindStep, SetOperatorK
 use crate::binder::copy::{ExtSource, FileFormat};
 use crate::catalog::{ColumnCatalog, ColumnDesc, ColumnRef, TableName};
 use crate::db::{
-    BindSource, ConsumeMut, Database, DatabaseIter, Executor, OwnedPtr, State, Transaction,
-    TransactionIter,
+    BindSource, ConsumeMut, Database, DatabaseIter, Executor, OwnedPtr, PinnedTransaction, State,
+    Transaction, TransactionIter,
 };
 use crate::errors::{DatabaseError, SqlErrorSpan};
 use crate::expression;
@@ -37,7 +37,6 @@ use crate::planner::operator::alter_table::change_column::{
 };
 use crate::planner::operator::join::{JoinCondition, JoinOperator as LJoinOperator, JoinType};
 use crate::planner::operator::mark_apply::MarkApplyQuantifier;
-use crate::planner::operator::project::ProjectOperator;
 use crate::planner::operator::recursive_cte::{RecursiveCteOperator, RecursiveScanOperator};
 use crate::planner::operator::sort::SortField;
 use crate::planner::operator::{CommandType, Operator};
@@ -335,20 +334,30 @@ impl<S: Storage> Database<S> {
                 Ok::<_, DatabaseError>(read_only && statement_is_read_only(stmt)?)
             })
             .map_err(|err| err.with_sql_context(sql))?;
-        let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
-            self.transaction_isolation,
-            read_only,
-            Some(self.state.scala_functions_arc()),
-            Some(self.state.table_functions_arc()),
-        )?);
+        // Every statement of the batch binds against one pinned generation, boxed with the
+        // transaction so it lives as long as the returned iterator.
+        let transaction = OwnedPtr::new(PinnedTransaction {
+            transaction: self.storage.transaction_with_functions(
+                self.transaction_isolation,
+                read_only,
+                Some(self.state.scala_functions_arc()),
+                Some(self.state.table_functions_arc()),
+            )?,
+            catalog: self.state.catalog(),
+        });
         let mut statements = statements.into_iter().peekable();
 
         while let Some(statement) = statements.next() {
             let (plan_arena, executor) = match async {
-                let tx = unsafe { &mut *transaction.get() };
-                let (plan, arena) = self
-                    .state
-                    .build_plan(&[], tx, |binder, arena| binder.bind(&statement, arena))?;
+                let PinnedTransaction {
+                    transaction: tx,
+                    catalog,
+                } = unsafe { &mut *transaction.get() };
+                let (plan, arena) =
+                    self.state
+                        .build_plan_in(catalog.view(), &[], tx, |binder, arena| {
+                            binder.bind(&statement, arena)
+                        })?;
                 let executor = Executor::new(plan, &arena);
                 self.state.execute(tx, executor, arena, false).await
             }
@@ -404,7 +413,7 @@ impl<'txn, S: Storage> Transaction<'txn, S> {
         for statement in statements {
             let (plan, arena) = self
                 .state
-                .build_plan_in(self.catalog, &[], &self.inner, |binder, arena| {
+                .build_plan_in(self.catalog.view(), &[], &self.inner, |binder, arena| {
                     binder.bind(&statement, arena)
                 })
                 .map_err(|err| err.with_sql_context(sql))?;
@@ -429,7 +438,7 @@ impl<'txn, S: Storage> Transaction<'txn, S> {
         // Return the last statement's iterator
         let (plan, arena) = self
             .state
-            .build_plan_in(self.catalog, &[], &self.inner, |binder, arena| {
+            .build_plan_in(self.catalog.view(), &[], &self.inner, |binder, arena| {
                 binder.bind(&last_statement, arena)
             })
             .map_err(|err| err.with_sql_context(sql))?;
@@ -460,32 +469,6 @@ where
 
 struct BindStatementComplete {
     plan: LogicalPlan,
-}
-
-struct UpdateExprTargetRemapper<'a> {
-    target_schema: &'a [ColumnRef],
-}
-
-impl<A: MetaArena + ?Sized> ExprVisitorMut<A> for UpdateExprTargetRemapper<'_> {
-    fn visit_column_ref(
-        &mut self,
-        column: &mut ColumnRef,
-        position: &mut usize,
-        arena: &mut A,
-    ) -> Result<(), DatabaseError> {
-        let Some(target_position) = self
-            .target_schema
-            .iter()
-            .copied()
-            .position(|target_column| arena.same_column(target_column, *column))
-        else {
-            return Err(DatabaseError::UnsupportedStmt(
-                "joined UPDATE SET expressions can only reference target table columns".to_string(),
-            ));
-        };
-        *position = target_position;
-        Ok(())
-    }
 }
 
 impl<'s, 'a: 'b, 'b, 'arena, T, A> BindStatementStart<'s, 'a, 'b, 'arena, T, A>
@@ -905,7 +888,10 @@ where
             }
             columns.push(col);
         }
-        let mut unique_constraints = Vec::new();
+        let unique_constraints = Vec::new();
+        let mut index_constraints = Vec::new();
+        let mut used_index_names = std::collections::HashSet::new();
+
         for constraint in create.constraints {
             match constraint {
                 TableConstraint::PrimaryKey(primary) => {
@@ -914,29 +900,81 @@ where
                     })?;
                 }
                 TableConstraint::Unique(unique) => {
-                    if unique.columns.len() > 1 {
-                        // Composite unique constraint - collect it for later index creation
-                        let column_names: Result<Vec<String>, DatabaseError> = unique
-                            .columns
-                            .iter()
-                            .map(|index_col| {
-                                if let Expr::Identifier(ident) = &index_col.column.expr {
-                                    Ok(lower_ident(ident).into_owned())
-                                } else {
-                                    Err(DatabaseError::UnsupportedStmt(
-                                        "only identifier columns are supported in UNIQUE"
-                                            .to_string(),
-                                    ))
-                                }
-                            })
-                            .collect();
-                        unique_constraints.push(column_names?);
-                    } else {
-                        // Single-column unique - mark the column as unique
+                    let column_names: Result<Vec<String>, DatabaseError> = unique
+                        .columns
+                        .iter()
+                        .map(|index_col| index_key_part_column(&index_col.column.expr, &columns))
+                        .collect();
+                    let cols = column_names?;
+
+                    let index_name = unique
+                        .name
+                        .as_ref()
+                        .or(unique.index_name.as_ref())
+                        .map(|ident| lower_ident(ident).into_owned());
+                    if let Some(ref name) = index_name {
+                        used_index_names.insert(name.clone());
+                    }
+
+                    if unique.columns.len() == 1 && index_name.is_none() {
                         self.bind_constraint(&mut columns, unique.columns, |_, desc| {
                             desc.set_unique()
                         })?;
+                    } else {
+                        index_constraints.push(
+                            crate::planner::operator::create_table::IndexConstraint {
+                                name: index_name,
+                                columns: cols,
+                                is_unique: true,
+                            },
+                        );
                     }
+                }
+                TableConstraint::Index(index) => {
+                    let column_names: Result<Vec<String>, DatabaseError> = index
+                        .columns
+                        .iter()
+                        .map(|index_col| index_key_part_column(&index_col.column.expr, &columns))
+                        .collect();
+                    let cols = column_names?;
+                    let index_name = index
+                        .name
+                        .as_ref()
+                        .map(|ident| lower_ident(ident).into_owned());
+                    if let Some(ref name) = index_name {
+                        used_index_names.insert(name.clone());
+                    }
+
+                    index_constraints.push(
+                        crate::planner::operator::create_table::IndexConstraint {
+                            name: index_name,
+                            columns: cols,
+                            is_unique: false,
+                        },
+                    );
+                }
+                TableConstraint::FulltextOrSpatial(index) => {
+                    let column_names: Result<Vec<String>, DatabaseError> = index
+                        .columns
+                        .iter()
+                        .map(|index_col| index_key_part_column(&index_col.column.expr, &columns))
+                        .collect();
+                    let cols = column_names?;
+                    let index_name = index
+                        .opt_index_name
+                        .as_ref()
+                        .map(|ident| lower_ident(ident).into_owned());
+                    if let Some(ref name) = index_name {
+                        used_index_names.insert(name.clone());
+                    }
+
+                    index_constraints.push(
+                        crate::planner::operator::create_table::IndexConstraint {
+                            name: index_name,
+                            columns: cols,
+                            is_unique: false,
+                        },
+                    );
                 }
                 constraint => {
                     return Err(DatabaseError::UnsupportedStmt(format!(
@@ -946,11 +984,26 @@ where
             }
         }
 
+        for index in &mut index_constraints {
+            if index.name.is_none() && !index.columns.is_empty() {
+                let base_name = &index.columns[0];
+                let mut name = base_name.clone();
+                let mut suffix = 2;
+                while used_index_names.contains(&name) {
+                    name = format!("{}_{}", base_name, suffix);
+                    suffix += 1;
+                }
+                used_index_names.insert(name.clone());
+                index.name = Some(name);
+            }
+        }
+
         self.binder.bind_create_table(
             table_name,
             columns,
             create.if_not_exists,
             unique_constraints,
+            index_constraints,
             display_types,
         )
     }
@@ -970,17 +1023,61 @@ where
         let mut column_desc = ColumnDesc::new(type_spec.logical, None, false, None)?;
         let mut nullable = true;
 
+        let mut primary_key_seen = false;
+        let mut explicit_null = false;
+        let mut explicit_not_null = false;
+        let mut default_count = 0;
+        let mut primary_key_count = 0;
+
         for option_def in column_def.options {
             match option_def.option {
-                ColumnOption::Null => nullable = true,
-                ColumnOption::NotNull => nullable = false,
+                ColumnOption::Null => {
+                    if explicit_null {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Multiple NULL options for a single column".to_string(),
+                        ));
+                    }
+                    if explicit_not_null {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Conflicting NULL and NOT NULL options".to_string(),
+                        ));
+                    }
+                    nullable = true;
+                    explicit_null = true;
+                }
+                ColumnOption::NotNull => {
+                    if explicit_not_null {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Multiple NOT NULL options for a single column".to_string(),
+                        ));
+                    }
+                    if explicit_null {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Conflicting NULL and NOT NULL options".to_string(),
+                        ));
+                    }
+                    nullable = false;
+                    explicit_not_null = true;
+                }
                 ColumnOption::PrimaryKey(_) => {
                     column_desc.set_primary(column_index);
                     nullable = false;
-                    break;
+                    primary_key_seen = true;
+                    primary_key_count += 1;
+                    if primary_key_count > 1 {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Multiple PRIMARY KEY options for a single column".to_string(),
+                        ));
+                    }
                 }
                 ColumnOption::Unique(_) => column_desc.set_unique(),
                 ColumnOption::Default(expr) => {
+                    default_count += 1;
+                    if default_count > 1 {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Multiple DEFAULT options for a single column".to_string(),
+                        ));
+                    }
                     let mut expr = self
                         .binder
                         .bind_expr(&expr, self.arena)
@@ -995,12 +1092,31 @@ where
                         expr.type_cast(Cow::Borrowed(&column_desc.column_datatype), self.arena)?;
                     column_desc.default = Some(expr);
                 }
+                ColumnOption::Generated { .. } => {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "generated columns are not supported".to_string(),
+                    ))
+                }
+                ColumnOption::DialectSpecific(_)
+                | ColumnOption::Comment(_)
+                | ColumnOption::Check(_)
+                | ColumnOption::ForeignKey { .. }
+                | ColumnOption::CharacterSet(_)
+                | ColumnOption::OnUpdate(_)
+                | ColumnOption::Collation(_)
+                | ColumnOption::Invisible => {}
                 option => {
                     return Err(DatabaseError::UnsupportedStmt(format!(
                         "`Column` does not currently support this option: {option:?}"
                     )))
                 }
             }
+        }
+
+        if primary_key_seen && explicit_null {
+            return Err(DatabaseError::UnsupportedStmt(
+                "All parts of a PRIMARY KEY must be NOT NULL".to_string(),
+            ));
         }
 
         Ok((
@@ -1016,16 +1132,11 @@ where
         fn_constraint: F,
     ) -> Result<(), DatabaseError> {
         for (i, index_column) in exprs.into_iter().enumerate() {
-            let Expr::Identifier(ident) = index_column.column.expr else {
-                return Err(DatabaseError::UnsupportedStmt(
-                    "only identifier columns are supported in `PRIMARY KEY/UNIQUE`".to_string(),
-                ));
-            };
-            let column_name = lower_ident(&ident);
+            let column_name = index_key_part_column(&index_column.column.expr, &*table_columns)?;
 
             if let Some(column) = table_columns
                 .iter_mut()
-                .find(|column| column.name() == column_name.as_ref())
+                .find(|column| column.name() == column_name)
             {
                 fn_constraint(i, column.desc_mut())
             }
@@ -1125,29 +1236,43 @@ where
     fn drop_object(
         self,
         object_type: ObjectType,
-        mut names: Vec<ObjectName>,
+        names: Vec<ObjectName>,
         if_exists: bool,
         table: Option<ObjectName>,
     ) -> Result<LogicalPlan, DatabaseError> {
-        if names.len() != 1 {
+        if names.is_empty() {
             return Err(DatabaseError::UnsupportedStmt(
-                "only Drop a single `Table`, `View` or `Index` is allowed".to_string(),
-            ));
-        }
-        if table.is_some() && object_type != ObjectType::Index {
-            return Err(DatabaseError::UnsupportedStmt(
-                "DROP ON is only supported for INDEX".to_string(),
+                "DROP requires at least one object name".to_string(),
             ));
         }
 
         match object_type {
-            ObjectType::Table => self
-                .binder
-                .bind_drop_table(sql_table_name(names.remove(0))?, if_exists),
-            ObjectType::View => self
-                .binder
-                .bind_drop_view(sql_table_name(names.remove(0))?, if_exists),
+            ObjectType::Table => {
+                let mut table_names = Vec::with_capacity(names.len());
+                for name in names {
+                    table_names.push(sql_table_name(name)?);
+                }
+                self.binder.bind_drop_table(table_names, if_exists)
+            }
+            ObjectType::View => {
+                let mut view_names = Vec::with_capacity(names.len());
+                for name in names {
+                    view_names.push(sql_table_name(name)?);
+                }
+                self.binder.bind_drop_view(view_names, if_exists)
+            }
             ObjectType::Index => {
+                if names.len() != 1 {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "only Drop a single `Index` is allowed".to_string(),
+                    ));
+                }
+                if table.is_some() && object_type != ObjectType::Index {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "DROP ON is only supported for INDEX".to_string(),
+                    ));
+                }
+                let mut names = names;
                 let name = names.remove(0);
                 let (table_name, index_name) = if let Some(table) = table {
                     (sql_table_name(table)?, sql_object_name(name)?)
@@ -1531,20 +1656,23 @@ where
     fn update(self, update: &sqlparser::ast::Update) -> Result<LogicalPlan, DatabaseError> {
         self.binder.context.allow_default = true;
         let to = &update.table;
-        if let TableFactor::Table { name, .. } = &to.relation {
-            let is_joined_update = !to.joins.is_empty();
+        if let TableFactor::Table { name, alias, .. } = &to.relation {
             let table_name = sql_table_name(name.clone())?;
             let table_id = self.binder.context.table_id(&table_name)?;
             self.binder.with_pk(table_id);
 
             let mut plan = self.binder.bind_table_ref_sql(to, self.arena)?;
-            let (target_source, target_offset) =
+            let target_alias = sql_optional_table_alias(alias.clone());
+            let target_visible_name = target_alias
+                .as_ref()
+                .map(|a| a.name.as_ref())
+                .unwrap_or(table_name.as_ref());
+            let (_target_source, target_offset) =
                 Binder::<'a, 'b, T, A>::resolve_source_columns_in_scope(
                     &self.binder.context,
-                    &table_name,
+                    target_visible_name,
                     self.arena,
                 )?;
-            let target_schema = target_source.schema().to_vec();
 
             if let Some(predicate) = update.selection.as_ref() {
                 plan = self.binder.bind_where(plan, predicate, self.arena)?;
@@ -1561,12 +1689,41 @@ where
                                            name: &ObjectName,
                                            expression: ScalarExpression|
                  -> Result<(), DatabaseError> {
-                    let ident = single_ident_from_object_name(name)?;
+                    let (source_qualifier, column_ident) = if name.0.len() == 1 {
+                        (None, name.0.first().unwrap())
+                    } else if name.0.len() == 2 {
+                        (Some(&name.0[0]), &name.0[1])
+                    } else {
+                        return Err(attach_span_if_absent(
+                            DatabaseError::invalid_column(name.to_string()),
+                            name,
+                        ));
+                    };
+
+                    if let Some(qualifier) = source_qualifier {
+                        let qualifier_str = lower_name_part(qualifier)?;
+                        if qualifier_str.as_ref() != target_visible_name {
+                            return Err(attach_span_if_absent(
+                                DatabaseError::UnsupportedStmt(
+                                    "joined UPDATE SET can only modify target table columns"
+                                        .to_string(),
+                                ),
+                                name,
+                            ));
+                        }
+                    }
+
+                    let ident = match column_ident {
+                        ObjectNamePart::Identifier(ident) => ident.clone(),
+                        part => {
+                            return Err(DatabaseError::invalid_column(part.to_string()));
+                        }
+                    };
 
                     let column = {
                         let expr = binder.bind_column_ref_from_identifiers(
                             slice::from_ref(&ident),
-                            Some(table_name.as_ref()),
+                            Some(target_visible_name),
                             arena,
                         )?;
                         match expr {
@@ -1592,12 +1749,6 @@ where
                     };
                     let datatype = arena.column(column).datatype().clone();
                     expr = expr.type_cast(Cow::Owned(datatype), arena)?;
-                    if is_joined_update {
-                        UpdateExprTargetRemapper {
-                            target_schema: &target_schema,
-                        }
-                        .visit(&mut expr, arena)?;
-                    }
                     value_exprs.push((column, expr));
                     Ok(())
                 };
@@ -1632,22 +1783,6 @@ where
                 }
             }
             self.binder.context.allow_default = false;
-            if is_joined_update {
-                let exprs = target_schema
-                    .iter()
-                    .copied()
-                    .enumerate()
-                    .map(|(index, column)| {
-                        self.arena.alloc_expression(ScalarExpression::column_expr(
-                            column,
-                            target_offset + index,
-                        ))
-                    });
-                plan = LogicalPlan::new(
-                    Operator::Project(ProjectOperator::new(exprs)),
-                    Childrens::Only(Box::new(plan)),
-                );
-            }
             let steps = [
                 QueryBindStep::From,
                 QueryBindStep::Where,
@@ -1655,7 +1790,7 @@ where
             ];
             plan = self.binder.bind_scalar_queries(plan, &steps, self.arena)?;
             self.binder
-                .bind_update(&table_name, value_exprs, plan, self.arena)
+                .bind_update(&table_name, value_exprs, plan, target_offset, self.arena)
         } else {
             Err(DatabaseError::UnsupportedStmt(format!(
                 "UPDATE target must be a table: {:?}",
@@ -1938,6 +2073,54 @@ where
             .map(|SelectInto { name, .. }| lower_case_name(name))
             .transpose()?;
         self.insert_into(table_name.as_deref())
+    }
+}
+
+/// The column a CREATE TABLE key part names: `col`, or MySQL's prefix form `col(n)` with a
+/// positive integer length `n`, which parses as a call. Every other function or expression is a
+/// functional key part and is rejected, including a call whose name happens to match a column,
+/// such as `upper(b)` in a table with a column `upper`.
+fn index_key_part_column(expr: &Expr, columns: &[ColumnCatalog]) -> Result<String, DatabaseError> {
+    let unsupported = || {
+        DatabaseError::UnsupportedStmt(
+            "functional/expression key parts are not supported".to_string(),
+        )
+    };
+    match expr {
+        Expr::Identifier(ident) => Ok(lower_ident(ident).into_owned()),
+        Expr::Function(func) => {
+            let [ObjectNamePart::Identifier(ident)] = func.name.0.as_slice() else {
+                return Err(unsupported());
+            };
+            let FunctionArguments::List(list) = &func.args else {
+                return Err(unsupported());
+            };
+            let is_prefix_length = match list.args.as_slice() {
+                [FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(value)))] => {
+                    matches!(&value.value, Value::Number(length, false)
+                        if length.parse::<u32>().is_ok_and(|length| length > 0))
+                }
+                _ => false,
+            };
+            let column = lower_ident(ident).into_owned();
+            let is_plain_call = !func.uses_odbc_syntax
+                && matches!(func.parameters, FunctionArguments::None)
+                && list.duplicate_treatment.is_none()
+                && list.clauses.is_empty()
+                && func.filter.is_none()
+                && func.null_treatment.is_none()
+                && func.over.is_none()
+                && func.within_group.is_empty();
+            if is_prefix_length
+                && is_plain_call
+                && columns.iter().any(|candidate| candidate.name() == column)
+            {
+                Ok(column)
+            } else {
+                Err(unsupported())
+            }
+        }
+        _ => Err(unsupported()),
     }
 }
 
@@ -2393,20 +2576,6 @@ pub(super) fn lower_case_name(name: &ObjectName) -> Result<Cow<'_, str>, Databas
         DatabaseError::invalid_table(name.to_string()),
         name,
     ))
-}
-
-fn single_ident_from_object_name(name: &ObjectName) -> Result<Ident, DatabaseError> {
-    if name.0.len() != 1 {
-        return Err(attach_span_if_absent(
-            DatabaseError::invalid_column(name.to_string()),
-            name,
-        ));
-    }
-    match name.0.first() {
-        Some(ObjectNamePart::Identifier(ident)) => Ok(ident.clone()),
-        Some(part) => Err(DatabaseError::invalid_column(part.to_string())),
-        None => Err(DatabaseError::invalid_column(String::new())),
-    }
 }
 
 fn sql_index_name(name: ObjectName) -> Result<(TableName, String), DatabaseError> {
@@ -4370,6 +4539,58 @@ mod tests {
         assert!(copy_ext_source(CopyTarget::Stdout, vec![]).is_err());
         assert!(copy_file_format(vec![CopyOption::Null("NULL".to_string())]).is_err());
 
+        Ok(())
+    }
+
+    #[test]
+    async fn test_create_table_rejects_functional_key_parts() -> Result<(), DatabaseError> {
+        let tables = build_t1_table().await?;
+        for key in [
+            "UNIQUE KEY ku (upper(b))",
+            "UNIQUE KEY (upper(b))",
+            "KEY kl (lower(b))",
+            "KEY (lower(b))",
+            "KEY k (b())",
+            "KEY k (b(0))",
+            "KEY k (b(10,2))",
+            "KEY k (b('x'))",
+            "KEY k (b(1.5))",
+            "KEY k (substring(b,1,3))",
+            "UNIQUE KEY u (b())",
+            "UNIQUE KEY u (b(0))",
+            "UNIQUE KEY u (b(10,2))",
+            "UNIQUE KEY u (b('x'))",
+            "UNIQUE KEY u (substring(b,1,3))",
+            "FULLTEXT KEY f (lower(b))",
+            "PRIMARY KEY (upper(b))",
+        ] {
+            let sql =
+                format!("create table fk (id int, `upper` int, `lower` int, b varchar(20), {key})");
+            match tables.plan(&sql) {
+                Err(DatabaseError::UnsupportedStmt(message)) => assert_eq!(
+                    message, "functional/expression key parts are not supported",
+                    "{sql}"
+                ),
+                other => panic!("{sql}: expected UnsupportedStmt, got {other:?}"),
+            }
+        }
+        Ok(())
+    }
+
+    #[test]
+    async fn test_create_table_accepts_prefix_key_parts() -> Result<(), DatabaseError> {
+        let tables = build_t1_table().await?;
+        for key in [
+            "KEY (b(10))",
+            "KEY kb (b(10))",
+            "UNIQUE KEY ub (b(10))",
+            "UNIQUE KEY (b(10))",
+            "UNIQUE KEY ubc (b(10), c)",
+            "FULLTEXT KEY f (b(10))",
+        ] {
+            let sql = format!("create table pk (id int primary key, b varchar(20), c int, {key})");
+            tables.plan(&sql)?;
+        }
         Ok(())
     }
 }

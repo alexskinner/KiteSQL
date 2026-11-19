@@ -258,17 +258,19 @@ impl<'db, S: Storage> Session<'db, S> {
                 let state = &self.database.state;
                 let base = match &self.private_catalog {
                     Some(private) => private.as_ref(),
-                    None => state.catalog(),
+                    None => txn.catalog.view(),
                 };
                 let rebuilt = state.build_catalog(base, &txn.inner).await?;
                 self.private_catalog = Some(rebuilt);
                 self.catalog_dirty = false;
             }
 
+            // Bind against the generation this transaction pinned when it began (or its private
+            // catalog after its own DDL), never the latest published one.
             let state = &self.database.state;
             let catalog = match &self.private_catalog {
                 Some(private) => private.as_ref(),
-                None => state.catalog(),
+                None => txn.catalog.view(),
             };
 
             // For statement-level atomicity: execute and handle errors

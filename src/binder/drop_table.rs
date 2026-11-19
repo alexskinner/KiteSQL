@@ -24,12 +24,12 @@ use crate::types::LogicalType;
 impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, A> {
     pub(crate) fn bind_drop_table(
         &mut self,
-        table_name: TableName,
+        table_names: Vec<TableName>,
         if_exists: bool,
     ) -> Result<LogicalPlan, DatabaseError> {
         Ok(LogicalPlan::new(
             Operator::DropTable(DropTableOperator {
-                table_name,
+                table_names,
                 if_exists,
             }),
             Childrens::None,

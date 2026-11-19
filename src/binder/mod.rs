@@ -132,6 +132,10 @@ pub struct BoundSource<'a> {
     pub(crate) source: Source<'a>,
     // The first source with this visible name owns qualified name resolution.
     qualified_visible: bool,
+    // The primary-key columns of a stored table bound directly as this source, with or without
+    // an alias; empty for every other source. Grouping by all of them makes every column of the
+    // source functionally dependent on the GROUP BY list (SQL:2003).
+    pub(crate) primary_key: Vec<ColumnRef>,
 }
 
 // Sorted by (name, visible source name, source index, position). A source entry
@@ -286,6 +290,8 @@ pub struct BinderContext<'a, T: StorageTransaction> {
     expr_aliases: BTreeMap<(Option<String>, String), ExprRef>,
     // agg
     group_by_exprs: Vec<ExprRef>,
+    // Columns of sources whose whole primary key is grouped by the current query.
+    functional_columns: Vec<ColumnRef>,
     pub(crate) agg_calls: Vec<ExprRef>,
     // join
     using: HashMap<String, UsingColumn>,
@@ -357,6 +363,7 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
             cte_depth: 0,
             expr_aliases: Default::default(),
             group_by_exprs: vec![],
+            functional_columns: Vec::new(),
             agg_calls: Default::default(),
             odku_context: None,
             using: Default::default(),
@@ -390,6 +397,7 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
             cte_depth: self.cte_depth,
             expr_aliases: self.expr_aliases.clone(),
             group_by_exprs: self.group_by_exprs.clone(),
+            functional_columns: self.functional_columns.clone(),
             agg_calls: self.agg_calls.clone(),
             odku_context: None,
             using: self.using.clone(),
@@ -580,6 +588,20 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
         source: Source<'a>,
         arena: &PlanArena,
     ) {
+        self.add_keyed_bound_source(table_name, alias, join_type, source, Vec::new(), arena);
+    }
+
+    /// Like [`Self::add_bound_source`], recording the primary-key columns of a stored table
+    /// bound directly as the source.
+    pub(crate) fn add_keyed_bound_source(
+        &mut self,
+        table_name: Cow<'a, str>,
+        alias: Option<TableName>,
+        join_type: Option<JoinType>,
+        source: Source<'a>,
+        primary_key: Vec<ColumnRef>,
+        arena: &PlanArena,
+    ) {
         if self
             .bound_source(&table_name, alias.as_ref(), join_type)
             .is_some()
@@ -601,6 +623,7 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
             join_type,
             source,
             qualified_visible,
+            primary_key,
         });
         self.name_bindings
             .reserve(self.bind_table[index].source.schema_len() + 1);
@@ -796,11 +819,12 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
         for bound_source in context.bind_table {
             self.context
                 .ensure_unique_source_name(bound_source.visible_name())?;
-            self.context.add_bound_source(
+            self.context.add_keyed_bound_source(
                 bound_source.table_name,
                 bound_source.alias,
                 bound_source.join_type,
                 bound_source.source,
+                bound_source.primary_key,
                 arena,
             );
         }
@@ -918,6 +942,7 @@ pub mod test {
                 ],
                 false,
                 Vec::new(),
+                Vec::new(),
                 std::collections::BTreeMap::new(),
             )
             .await?
@@ -945,6 +970,7 @@ pub mod test {
                     ),
                 ],
                 false,
+                Vec::new(),
                 Vec::new(),
                 std::collections::BTreeMap::new(),
             )

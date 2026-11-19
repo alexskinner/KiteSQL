@@ -20,6 +20,10 @@ use ordered_float::OrderedFloat;
 use rust_decimal::prelude::ToPrimitive;
 use std::hint;
 
+crate::define_cast_evaluator!(decimal_to_boolean_cast_eval, DataValue::Decimal(value) => {
+    Ok(DataValue::Boolean(!value.is_zero()))
+});
+
 macro_rules! decimal_binary {
     ($name:ident, $body:expr) => {
         pub fn $name(left: &DataValue, right: &DataValue) -> Result<DataValue, DatabaseError> {

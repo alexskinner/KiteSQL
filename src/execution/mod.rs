@@ -1170,16 +1170,6 @@ impl<T> Clone for TxnPtr<T> {
 
 impl<T> Copy for TxnPtr<T> {}
 
-impl<T> TxnPtr<T> {
-    pub(crate) fn new(ptr: *mut T) -> Self {
-        Self(ptr)
-    }
-
-    pub(crate) fn get(self) -> *mut T {
-        self.0
-    }
-}
-
 // SAFETY: see above; the pointer is only dereferenced as `&T` / `&mut T`.
 unsafe impl<T: Send + Sync> Send for TxnPtr<T> {}
 // SAFETY: as for `Send`.

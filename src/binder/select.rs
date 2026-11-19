@@ -1268,6 +1268,10 @@ impl<'a: 'b, 'b, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder
             }
         };
 
+        let primary_key_len = match &source {
+            Source::Table(table) => table.primary_keys().len(),
+            Source::View(_) | Source::Schema(_) => 0,
+        };
         let source = if let Some(alias) = alias {
             plan = self.bind_alias(
                 plan,
@@ -1280,8 +1284,29 @@ impl<'a: 'b, 'b, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder
         } else {
             source
         };
-        self.context
-            .add_bound_source(table_name.into(), table_alias, join_type, source, arena);
+        // An alias keeps each column's descriptor, so the key is read from the bound columns:
+        // that is the identity `alias.column` references carry, which tells self-joins apart.
+        let mut primary_key = Vec::with_capacity(primary_key_len);
+        if primary_key_len > 0 {
+            primary_key.extend(
+                source
+                    .schema()
+                    .iter()
+                    .copied()
+                    .filter(|column| arena.column(*column).desc().is_primary()),
+            );
+            if primary_key.len() != primary_key_len {
+                primary_key.clear();
+            }
+        }
+        self.context.add_keyed_bound_source(
+            table_name.into(),
+            table_alias,
+            join_type,
+            source,
+            primary_key,
+            arena,
+        );
         Ok(plan)
     }
 
