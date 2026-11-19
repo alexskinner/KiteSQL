@@ -156,3 +156,77 @@ DROP TABLE IF EXISTS t
 
 statement ok
 DROP TABLE IF EXISTS psys_system_config
+
+# Test 10: UNIQUE index conflict (single column)
+statement ok
+DROP TABLE IF EXISTS unique_test
+
+statement ok
+CREATE TABLE unique_test (id INT PRIMARY KEY, email VARCHAR(100) UNIQUE, name VARCHAR(50))
+
+statement ok
+INSERT INTO unique_test VALUES (1, 'alice@example.com', 'Alice')
+
+statement ok
+INSERT INTO unique_test VALUES (2, 'alice@example.com', 'Alice Updated') ON DUPLICATE KEY UPDATE name = 'Alice Updated'
+
+query I
+SELECT COUNT(*) FROM unique_test
+----
+1
+
+query IIT
+SELECT * FROM unique_test
+----
+1 alice@example.com Alice Updated
+
+# Test 11: UNIQUE composite index (Preside schema)
+statement ok
+DROP TABLE IF EXISTS config_test
+
+statement ok
+CREATE TABLE config_test (id VARCHAR(50) PRIMARY KEY, category VARCHAR(50), setting VARCHAR(50), value VARCHAR(100), UNIQUE(category, setting))
+
+statement ok
+INSERT INTO config_test VALUES ('uuid-1', 'system', 'debug_mode', 'false')
+
+statement ok
+INSERT INTO config_test VALUES ('uuid-2', 'system', 'debug_mode', 'true') ON DUPLICATE KEY UPDATE value = 'true'
+
+query I
+SELECT COUNT(*) FROM config_test
+----
+1
+
+query CTTT
+SELECT * FROM config_test
+----
+uuid-1 system debug_mode true
+
+# Test 12: Update with no value changes (affected rows = 0)
+statement ok
+DROP TABLE IF EXISTS no_change_test
+
+statement ok
+CREATE TABLE no_change_test (id INT PRIMARY KEY, value INT)
+
+statement ok
+INSERT INTO no_change_test VALUES (1, 10)
+
+statement ok
+INSERT INTO no_change_test VALUES (1, 20) ON DUPLICATE KEY UPDATE value = 10
+
+query II
+SELECT * FROM no_change_test
+----
+1 10
+
+# Cleanup
+statement ok
+DROP TABLE IF EXISTS unique_test
+
+statement ok
+DROP TABLE IF EXISTS config_test
+
+statement ok
+DROP TABLE IF EXISTS no_change_test
