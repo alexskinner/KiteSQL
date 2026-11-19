@@ -920,14 +920,32 @@ where
                     let column_names: Result<Vec<String>, DatabaseError> = unique
                         .columns
                         .iter()
-                        .map(|index_col| {
-                            if let Expr::Identifier(ident) = &index_col.column.expr {
-                                Ok(lower_ident(ident).into_owned())
-                            } else {
-                                Err(DatabaseError::UnsupportedStmt(
-                                    "only identifier columns are supported in UNIQUE".to_string(),
-                                ))
+                        .map(|index_col| match &index_col.column.expr {
+                            Expr::Identifier(ident) => Ok(lower_ident(ident).into_owned()),
+                            Expr::Function(func) if func.name.0.len() == 1 => {
+                                match &func.name.0[0] {
+                                    ObjectNamePart::Identifier(ident) => {
+                                        Ok(lower_ident(ident).into_owned())
+                                    }
+                                    _ => Err(DatabaseError::UnsupportedStmt(
+                                        "only identifier columns are supported in INDEX"
+                                            .to_string(),
+                                    )),
+                                }
                             }
+                            Expr::Substring { expr, .. } => {
+                                if let Expr::Identifier(ident) = expr.as_ref() {
+                                    Ok(lower_ident(ident).into_owned())
+                                } else {
+                                    Err(DatabaseError::UnsupportedStmt(
+                                        "only identifier columns are supported in UNIQUE"
+                                            .to_string(),
+                                    ))
+                                }
+                            }
+                            _ => Err(DatabaseError::UnsupportedStmt(
+                                "only identifier columns are supported in UNIQUE".to_string(),
+                            )),
                         })
                         .collect();
                     let cols = column_names?;
@@ -941,19 +959,10 @@ where
                         used_index_names.insert(name.clone());
                     }
 
-                    if unique.columns.len() == 1 {
-                        self.bind_constraint(&mut columns, unique.columns.clone(), |_, desc| {
+                    if unique.columns.len() == 1 && index_name.is_none() {
+                        self.bind_constraint(&mut columns, unique.columns, |_, desc| {
                             desc.set_unique()
                         })?;
-                        if let Some(name) = index_name {
-                            index_constraints.push(
-                                crate::planner::operator::create_table::IndexConstraint {
-                                    name: Some(name),
-                                    columns: cols,
-                                    is_unique: true,
-                                },
-                            );
-                        }
                     } else {
                         index_constraints.push(
                             crate::planner::operator::create_table::IndexConstraint {
@@ -968,14 +977,32 @@ where
                     let column_names: Result<Vec<String>, DatabaseError> = index
                         .columns
                         .iter()
-                        .map(|index_col| {
-                            if let Expr::Identifier(ident) = &index_col.column.expr {
-                                Ok(lower_ident(ident).into_owned())
-                            } else {
-                                Err(DatabaseError::UnsupportedStmt(
-                                    "only identifier columns are supported in INDEX".to_string(),
-                                ))
+                        .map(|index_col| match &index_col.column.expr {
+                            Expr::Identifier(ident) => Ok(lower_ident(ident).into_owned()),
+                            Expr::Function(func) if func.name.0.len() == 1 => {
+                                match &func.name.0[0] {
+                                    ObjectNamePart::Identifier(ident) => {
+                                        Ok(lower_ident(ident).into_owned())
+                                    }
+                                    _ => Err(DatabaseError::UnsupportedStmt(
+                                        "only identifier columns are supported in INDEX"
+                                            .to_string(),
+                                    )),
+                                }
                             }
+                            Expr::Substring { expr, .. } => {
+                                if let Expr::Identifier(ident) = expr.as_ref() {
+                                    Ok(lower_ident(ident).into_owned())
+                                } else {
+                                    Err(DatabaseError::UnsupportedStmt(
+                                        "only identifier columns are supported in INDEX"
+                                            .to_string(),
+                                    ))
+                                }
+                            }
+                            _ => Err(DatabaseError::UnsupportedStmt(
+                                "only identifier columns are supported in INDEX".to_string(),
+                            )),
                         })
                         .collect();
                     let cols = column_names?;
@@ -1000,13 +1027,33 @@ where
                         .columns
                         .iter()
                         .map(|index_col| {
-                            if let Expr::Identifier(ident) = &index_col.column.expr {
-                                Ok(lower_ident(ident).into_owned())
-                            } else {
-                                Err(DatabaseError::UnsupportedStmt(
+                            match &index_col.column.expr {
+                                Expr::Identifier(ident) => Ok(lower_ident(ident).into_owned()),
+                                Expr::Function(func) if func.name.0.len() == 1 => {
+                                    match &func.name.0[0] {
+                                        ObjectNamePart::Identifier(ident) => {
+                                            Ok(lower_ident(ident).into_owned())
+                                        }
+                                        _ => Err(DatabaseError::UnsupportedStmt(
+                                            "only identifier columns are supported in INDEX"
+                                                .to_string(),
+                                        )),
+                                    }
+                                }
+                                Expr::Substring { expr, .. } => {
+                                    if let Expr::Identifier(ident) = expr.as_ref() {
+                                        Ok(lower_ident(ident).into_owned())
+                                    } else {
+                                        Err(DatabaseError::UnsupportedStmt(
+                                            "only identifier columns are supported in FULLTEXT/SPATIAL INDEX"
+                                                .to_string(),
+                                        ))
+                                    }
+                                }
+                                _ => Err(DatabaseError::UnsupportedStmt(
                                     "only identifier columns are supported in FULLTEXT/SPATIAL INDEX"
                                         .to_string(),
-                                ))
+                                )),
                             }
                         })
                         .collect();

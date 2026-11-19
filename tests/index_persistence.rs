@@ -1,8 +1,20 @@
 #![cfg(all(not(feature = "async"), feature = "lmdb"))]
 
-use kite_sql::db::DataBaseBuilder;
+use kite_sql::db::{CatalogKind, ConsumeMut, DataBaseBuilder, TransactionIter};
 use kite_sql::errors::DatabaseError;
+use kite_sql::planner::PlanArena;
 use tempfile::TempDir;
+
+struct Consume;
+impl<S: kite_sql::storage::Storage> ConsumeMut<S> for Consume {
+    type Output = ();
+    fn consume<'a>(
+        self,
+        _iter: &mut TransactionIter<'a, 'a, S::TransactionType<'a>, PlanArena<'a>>,
+    ) -> Result<Self::Output, DatabaseError> {
+        Ok(())
+    }
+}
 
 #[test]
 fn test_inline_indexes_persist_after_reopen() -> Result<(), DatabaseError> {
@@ -35,21 +47,32 @@ fn test_inline_indexes_persist_after_reopen() -> Result<(), DatabaseError> {
 
     {
         let mut database = DataBaseBuilder::path(db_path).build_lmdb()?;
+        database.load(CatalogKind::Table("t".into()))?;
 
         {
-            let result = database.run("INSERT INTO t VALUES (3, 30, 'first', 100)");
-            assert!(
-                result.is_err(),
-                "Composite UNIQUE KEY uk_bc should be enforced after reopen"
-            );
+            let result = database.run_mut("INSERT INTO t VALUES (3, 30, 'first', 100)", Consume);
+            match result {
+                Err(DatabaseError::DuplicateUniqueValue) => {}
+                Err(e) => panic!(
+                    "Expected DuplicateUniqueValue for composite UNIQUE KEY uk_bc, got error: {}",
+                    e
+                ),
+                Ok(_) => {
+                    panic!("Expected DuplicateUniqueValue for composite UNIQUE KEY uk_bc, got Ok")
+                }
+            }
         }
 
         {
-            let result = database.run("INSERT INTO t VALUES (3, 30, 'third', 100)");
-            assert!(
-                result.is_err(),
-                "Single-column UNIQUE KEY uk_c should be enforced after reopen"
-            );
+            let result = database.run_mut("INSERT INTO t VALUES (3, 30, 'third', 100)", Consume);
+            match result {
+                Err(DatabaseError::DuplicateUniqueValue) => {}
+                Err(e) => panic!(
+                    "Expected DuplicateUniqueValue for single-column UNIQUE KEY uk_c, got error: {}",
+                    e
+                ),
+                Ok(_) => panic!("Expected DuplicateUniqueValue for single-column UNIQUE KEY uk_c, got Ok"),
+            }
         }
 
         database.ddl("DROP INDEX t.idx_a")?;
@@ -66,22 +89,14 @@ fn test_prefix_lengths_accepted() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
     let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
 
-    let create_result = database.ddl(
+    database.ddl(
         "CREATE TABLE t (
             id INT PRIMARY KEY,
             text_col VARCHAR(200),
             KEY idx_prefix (text_col(10)),
             UNIQUE KEY uk_prefix (text_col(20))
         )",
-    );
-
-    if create_result.is_err() {
-        println!(
-            "Note: Prefix lengths not yet supported: {:?}",
-            create_result
-        );
-        return Ok(());
-    }
+    )?;
 
     database
         .run("INSERT INTO t VALUES (1, 'a long text value')")?
@@ -149,13 +164,20 @@ fn test_named_single_column_unique_persist() -> Result<(), DatabaseError> {
 
     {
         let mut database = DataBaseBuilder::path(db_path).build_lmdb()?;
+        database.load(CatalogKind::Table("t".into()))?;
 
         {
-            let result = database.run("INSERT INTO t VALUES (2, 100)");
-            assert!(
-                result.is_err(),
-                "Named single-column UNIQUE KEY should be enforced after reopen"
-            );
+            let result = database.run_mut("INSERT INTO t VALUES (2, 100)", Consume);
+            match result {
+                Err(DatabaseError::DuplicateUniqueValue) => {}
+                Err(e) => panic!(
+                    "Expected DuplicateUniqueValue for named single-column UNIQUE KEY uk_val, got error: {}",
+                    e
+                ),
+                Ok(_) => panic!(
+                    "Expected DuplicateUniqueValue for named single-column UNIQUE KEY uk_val, got Ok"
+                ),
+            }
         }
 
         database.ddl("DROP INDEX t.uk_val")?;
