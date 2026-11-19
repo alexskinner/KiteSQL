@@ -1,0 +1,139 @@
+statement ok
+create table t1 (pk int primary key default 5, v int)
+
+statement ok
+insert into t1 (v) values (10)
+
+query II
+select * from t1
+----
+5 10
+
+statement ok
+drop table t1
+
+statement ok
+create table t2 (pk int default 5 primary key, v int)
+
+statement ok
+insert into t2 (v) values (20)
+
+query II
+select * from t2
+----
+5 20
+
+statement ok
+drop table t2
+
+statement ok
+create table t3 (pk int not null default 10 primary key, v int)
+
+statement ok
+insert into t3 (v) values (30)
+
+query II
+select * from t3
+----
+10 30
+
+statement ok
+drop table t3
+
+statement ok
+create table t4 (pk int primary key not null default 15, v int)
+
+statement ok
+insert into t4 (v) values (40)
+
+query II
+select * from t4
+----
+15 40
+
+statement ok
+drop table t4
+
+statement ok
+create table t5 (pk int default 20 not null primary key, v int)
+
+statement ok
+insert into t5 (v) values (50)
+
+query II
+select * from t5
+----
+20 50
+
+statement ok
+drop table t5
+
+statement ok
+create table t6 (pk int unique primary key default 25, v int)
+
+statement ok
+insert into t6 (v) values (60)
+
+query II
+select * from t6
+----
+25 60
+
+statement ok
+drop table t6
+
+statement ok
+create table t7 (pk int primary key unique default 30, v int)
+
+statement ok
+insert into t7 (v) values (70)
+
+query II
+select * from t7
+----
+30 70
+
+statement ok
+drop table t7
+
+statement ok
+create table t8 (pk int default 35 primary key unique, v int)
+
+statement ok
+insert into t8 (v) values (80)
+
+query II
+select * from t8
+----
+35 80
+
+statement ok
+drop table t8
+
+statement ok
+create table t9 (id int, pk int not null unique default 40 primary key, v varchar(10))
+
+statement ok
+insert into t9 (id, v) values (1, 'test')
+
+query IIT
+select * from t9
+----
+1 40 test
+
+statement ok
+drop table t9
+
+statement ok
+create table t10 (pk int primary key default 45 not null unique, v int)
+
+statement ok
+insert into t10 (v) values (90)
+
+query II
+select * from t10
+----
+45 90
+
+statement ok
+drop table t10

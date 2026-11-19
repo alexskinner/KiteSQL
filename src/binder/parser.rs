@@ -977,7 +977,6 @@ where
                 ColumnOption::PrimaryKey(_) => {
                     column_desc.set_primary(column_index);
                     nullable = false;
-                    break;
                 }
                 ColumnOption::Unique(_) => column_desc.set_unique(),
                 ColumnOption::Default(expr) => {
