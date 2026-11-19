@@ -873,7 +873,7 @@ mod tests {
         );
         assert!(matches!(
             arena.expression(predicate).eval(&arena, Some(&unmatched)),
-            Err(DatabaseError::ParseBool(_))
+            Err(DatabaseError::CastFail { .. })
         ));
         Ok(())
     }

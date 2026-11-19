@@ -178,14 +178,7 @@ pub(crate) fn to_varchar(
 #[macro_export]
 macro_rules! numeric_to_boolean_cast {
     ($value:expr, $from:expr) => {
-        match $value {
-            0 => Ok($crate::types::value::DataValue::Boolean(false)),
-            1 => Ok($crate::types::value::DataValue::Boolean(true)),
-            _ => Err($crate::types::evaluator::cast::cast_fail(
-                $from,
-                $crate::types::LogicalType::Boolean,
-            )),
-        }
+        Ok($crate::types::value::DataValue::Boolean($value != 0))
     };
 }
 

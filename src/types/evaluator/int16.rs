@@ -13,7 +13,6 @@
 // limitations under the License.
 
 use crate::types::evaluator::DataValue;
-use crate::types::LogicalType;
 use crate::{numeric_binary_evaluator_definition, numeric_unary_evaluator_definition};
 
 numeric_unary_evaluator_definition!(Int16, DataValue::Int16);

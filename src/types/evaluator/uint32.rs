@@ -14,7 +14,6 @@
 
 use crate::numeric_binary_evaluator_definition;
 use crate::types::evaluator::DataValue;
-use crate::types::LogicalType;
 
 numeric_binary_evaluator_definition!(Uint32, DataValue::UInt32);
 crate::define_integer_cast_evaluators!(Uint32, UInt32, u32, LogicalType::UInteger);
