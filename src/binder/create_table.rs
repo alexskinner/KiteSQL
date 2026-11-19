@@ -30,6 +30,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         columns: Vec<ColumnCatalog>,
         if_not_exists: bool,
         unique_constraints: Vec<Vec<String>>,
+        index_constraints: Vec<crate::planner::operator::create_table::IndexConstraint>,
         display_types: std::collections::BTreeMap<String, std::sync::Arc<str>>,
     ) -> Result<LogicalPlan, DatabaseError> {
         let mut names = HashSet::new();
@@ -56,6 +57,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                 columns,
                 if_not_exists,
                 unique_constraints,
+                index_constraints,
                 display_types,
             }),
             Childrens::None,
@@ -127,6 +129,82 @@ mod tests {
                 );
             }
             _ => unreachable!(),
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    async fn test_column_options_order_independent() -> Result<(), DatabaseError> {
+        let storage = crate::storage::new_test_storage().await;
+        let transaction = storage.transaction()?;
+        let names = crate::storage::NameMapping::default();
+        let table_cache = crate::storage::TableCache::default();
+        let view_cache = crate::storage::ViewCache::default();
+        let function_registry = crate::function::registry::FunctionRegistry::new();
+
+        #[cfg(feature = "parser")]
+        let generic_dialect = crate::dialect::GenericSqlDialect::new();
+
+        let test_cases = vec![
+            "create table t1 (pk int primary key default 5)",
+            "create table t2 (pk int default 5 primary key)",
+            "create table t3 (pk int not null primary key default 10)",
+            "create table t4 (pk int primary key not null default 15)",
+            "create table t5 (pk int default 20 not null primary key)",
+            "create table t6 (pk int unique primary key default 25)",
+            "create table t7 (pk int primary key unique default 30)",
+        ];
+
+        for sql in test_cases {
+            let mut binder = Binder::new(
+                BinderContext::new(
+                    &names,
+                    &table_cache,
+                    &view_cache,
+                    &transaction,
+                    &function_registry,
+                    #[cfg(feature = "parser")]
+                    &generic_dialect,
+                ),
+                &[],
+                None,
+            );
+            let stmt = crate::parser::parse_sql(sql).unwrap();
+            let stmt = stmt.into_iter().next().unwrap();
+            let table_arena = crate::planner::TableArenaCell::default();
+            let mut plan_arena = crate::planner::PlanArena::new(&table_arena);
+            let plan = binder.bind(&stmt, &mut plan_arena).unwrap();
+
+            match plan.operator {
+                Operator::CreateTable(op) => {
+                    assert_eq!(op.columns.len(), 1, "SQL: {}", sql);
+                    assert_eq!(op.columns[0].name(), "pk", "SQL: {}", sql);
+                    assert!(
+                        !op.columns[0].nullable(),
+                        "SQL: {} - should not be nullable",
+                        sql
+                    );
+                    assert!(
+                        op.columns[0].desc().is_primary(),
+                        "SQL: {} - should be primary key",
+                        sql
+                    );
+                    assert!(
+                        op.columns[0].desc().default.is_some(),
+                        "SQL: {} - should have a default value",
+                        sql
+                    );
+                    if sql.contains("unique") {
+                        assert!(
+                            op.columns[0].desc().is_unique(),
+                            "SQL: {} - should be unique",
+                            sql
+                        );
+                    }
+                }
+                _ => unreachable!("Expected CreateTable operator for SQL: {}", sql),
+            }
         }
 
         Ok(())

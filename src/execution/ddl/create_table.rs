@@ -54,6 +54,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CreateTable<'a> {
             columns,
             if_not_exists,
             unique_constraints,
+            index_constraints,
             display_types,
         } = self.op;
 
@@ -66,6 +67,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CreateTable<'a> {
                 columns.clone(),
                 *if_not_exists,
                 unique_constraints.clone(),
+                index_constraints.clone(),
                 display_types.clone(),
             )
             .await?;

@@ -1453,6 +1453,7 @@ mod tests {
         let update = Operator::Update(UpdateOperator {
             table: crate::catalog::table::DmlTable::default(),
             value_exprs: vec![(1, column_expr(a, 0, &mut arena))],
+            target_table_offset: 0,
         });
         assert_eq!(referenced_columns(&update, &mut arena)?, vec![a]);
 
@@ -1499,6 +1500,7 @@ mod tests {
             )],
             if_not_exists: false,
             unique_constraints: Vec::new(),
+            index_constraints: Vec::new(),
             display_types: std::collections::BTreeMap::new(),
         });
         assert!(referenced_columns(&create_table, &mut arena)?.is_empty());
@@ -1678,6 +1680,7 @@ mod tests {
                     columns: vec![column_catalog("id"), column_catalog("name")],
                     if_not_exists: true,
                     unique_constraints: Vec::new(),
+                    index_constraints: Vec::new(),
                     display_types: std::collections::BTreeMap::new(),
                 }),
                 "Create users -> [id, name], If Not Exists: true",
@@ -1701,14 +1704,14 @@ mod tests {
             ),
             (
                 Operator::DropTable(DropTableOperator {
-                    table_name: "users".into(),
+                    table_names: vec!["users".into()],
                     if_exists: true,
                 }),
                 "Drop Table users, If Exists: true",
             ),
             (
                 Operator::DropView(DropViewOperator {
-                    view_name: "active_users".into(),
+                    view_names: vec!["active_users".into()],
                     if_exists: false,
                 }),
                 "Drop View active_users, If Exists: false",
@@ -1773,6 +1776,7 @@ mod tests {
                 Operator::Insert(InsertOperator {
                     table: crate::catalog::table::DmlTable::default(),
                     is_overwrite: true,
+                    on_duplicate_key_update: None,
                 }),
                 "Insert users, Is Overwrite: true",
             ),
@@ -1783,6 +1787,7 @@ mod tests {
                         ..Default::default()
                     },
                     value_exprs: vec![(0, arena.alloc_expression(ScalarExpression::from(7_i32)))],
+                    target_table_offset: 0,
                 }),
                 "Update users set id -> 7",
             ),

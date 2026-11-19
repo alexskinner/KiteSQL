@@ -502,6 +502,17 @@ impl<'a, V: ExprVisitor<A>, A: MetaArena + ?Sized> OperatorVisitor<'a>
         Ok(())
     }
 
+    fn visit_insert(
+        &mut self,
+        op: &'a InsertOperator,
+        _children: &mut ChildrenVisit<'a>,
+    ) -> Result<(), DatabaseError> {
+        for (_, expr) in op.on_duplicate_key_update.iter().flatten() {
+            ExprVisitor::visit(self.visitor, *expr, self.arena)?;
+        }
+        Ok(())
+    }
+
     fn visit_update(
         &mut self,
         op: &'a UpdateOperator,
@@ -748,10 +759,12 @@ pub(crate) mod tests {
             Operator::Insert(InsertOperator {
                 table: crate::catalog::table::DmlTable::default(),
                 is_overwrite: false,
+                on_duplicate_key_update: None,
             }),
             Operator::Update(UpdateOperator {
                 table: crate::catalog::table::DmlTable::default(),
                 value_exprs: vec![(0, expr(15))],
+                target_table_offset: 0,
             }),
             Operator::Delete(DeleteOperator {
                 table_id: 0,
@@ -790,6 +803,7 @@ pub(crate) mod tests {
                 columns: vec![column],
                 if_not_exists: false,
                 unique_constraints: Vec::new(),
+                index_constraints: Vec::new(),
                 display_types: std::collections::BTreeMap::new(),
             }),
             Operator::CreateIndex(CreateIndexOperator {
@@ -808,11 +822,11 @@ pub(crate) mod tests {
                 or_replace: false,
             }),
             Operator::DropTable(DropTableOperator {
-                table_name: "t1".into(),
+                table_names: vec!["t1".into()],
                 if_exists: false,
             }),
             Operator::DropView(DropViewOperator {
-                view_name: "v1".into(),
+                view_names: vec!["v1".into()],
                 if_exists: false,
             }),
             Operator::DropIndex(DropIndexOperator {

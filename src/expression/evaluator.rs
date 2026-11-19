@@ -18,7 +18,7 @@ use crate::planner::PlanArena;
 
 use crate::errors::DatabaseError;
 use crate::expression::function::scala::ScalarFunction;
-use crate::expression::{BinaryOperator, ScalarExpression, TrimWhereField};
+use crate::expression::{BinaryOperator, ScalarExpression, TrimWhereField, TypeCast};
 use crate::planner::MetaArena;
 use crate::types::evaluator::binary_create;
 use crate::types::tuple::{Input, InputRef};
@@ -197,24 +197,52 @@ impl ScalarExpression {
                     arena.expression(*expr).eval(arena, tuple)?,
                     &LogicalType::Varchar(None, CharLengthUnits::Characters),
                 )?;
-                if let Some(mut string) = value.utf8().map(String::from) {
-                    if let Some(from_expr) = from_expr {
-                        let mut from = eval_to_num!(from_expr, arena, tuple).saturating_sub(1);
-                        let len_i = string.len() as i32;
+                if let Some(string) = value.utf8() {
+                    let chars: Vec<char> = string.chars().collect();
+                    let len = chars.len() as i32;
 
-                        while from < 0 {
-                            from += len_i + 1;
+                    let start = if let Some(from_expr) = from_expr {
+                        let from = eval_to_num!(from_expr, arena, tuple);
+                        if from == 0 {
+                            return Ok(Cow::Owned(DataValue::Utf8 {
+                                value: "".into(),
+                                ty: Utf8Type::Variable(None),
+                                unit: CharLengthUnits::Characters,
+                            }));
+                        } else if from > 0 {
+                            from - 1
+                        } else {
+                            len + from
                         }
-                        if from > len_i {
-                            return Ok(Cow::Owned(DataValue::Null));
-                        }
-                        string = string.split_off(from as usize);
+                    } else {
+                        0
+                    };
+
+                    if start < 0 || start >= len {
+                        return Ok(Cow::Owned(DataValue::Utf8 {
+                            value: "".into(),
+                            ty: Utf8Type::Variable(None),
+                            unit: CharLengthUnits::Characters,
+                        }));
                     }
-                    if let Some(for_expr) = for_expr {
-                        let for_i =
-                            cmp::min(eval_to_num!(for_expr, arena, tuple) as usize, string.len());
-                        let _ = string.split_off(for_i);
+
+                    let length = if let Some(for_expr) = for_expr {
+                        eval_to_num!(for_expr, arena, tuple)
+                    } else {
+                        len - start
+                    };
+
+                    if length < 1 {
+                        return Ok(Cow::Owned(DataValue::Utf8 {
+                            value: "".into(),
+                            ty: Utf8Type::Variable(None),
+                            unit: CharLengthUnits::Characters,
+                        }));
                     }
+
+                    let start_usize = start as usize;
+                    let end = cmp::min(start_usize + length as usize, chars.len());
+                    let string: String = chars[start_usize..end].iter().collect();
 
                     Ok(Cow::Owned(DataValue::Utf8 {
                         value: string.into(),
@@ -229,14 +257,34 @@ impl ScalarExpression {
                 let varchar = LogicalType::Varchar(None, CharLengthUnits::Characters);
                 let pattern = cast_cow(arena.expression(*expr).eval(arena, tuple)?, &varchar)?;
                 let string = cast_cow(arena.expression(*in_expr).eval(arena, tuple)?, &varchar)?;
-                Ok(Cow::Owned(DataValue::Int32(
-                    string
-                        .utf8()
-                        .unwrap_or("")
-                        .find(pattern.utf8().unwrap_or(""))
-                        .map(|pos| pos as i32 + 1)
-                        .unwrap_or(0),
-                )))
+
+                match (pattern.utf8(), string.utf8()) {
+                    (Some(needle), Some(haystack)) => {
+                        if needle.is_empty() {
+                            return Ok(Cow::Owned(DataValue::Int32(1)));
+                        }
+
+                        let fold_char = |c: char| -> char {
+                            let mut lower = c.to_lowercase();
+                            match (lower.next(), lower.next()) {
+                                (Some(single), None) => single,
+                                _ => c,
+                            }
+                        };
+
+                        let needle_chars: Vec<char> = needle.chars().map(fold_char).collect();
+                        let haystack_chars: Vec<char> = haystack.chars().map(fold_char).collect();
+
+                        let pos = haystack_chars
+                            .windows(needle_chars.len())
+                            .position(|window| window == needle_chars.as_slice())
+                            .map(|idx| idx as i32 + 1)
+                            .unwrap_or(0);
+
+                        Ok(Cow::Owned(DataValue::Int32(pos)))
+                    }
+                    _ => Ok(Cow::Owned(DataValue::Null)),
+                }
             }
             ScalarExpression::Trim {
                 expr,
@@ -280,7 +328,17 @@ impl ScalarExpression {
                     Some(tuple) => inner.eval(args, arena, Some(&InputRef(tuple)))?,
                     None => inner.eval(args, arena, None)?,
                 };
-                value.cast(inner.return_type()).map(Cow::Owned)
+                if inner.accepts_any_args() {
+                    let arg_types: Vec<LogicalType> = args
+                        .iter()
+                        .map(|arg| arena.expression(*arg).return_type(arena).into_owned())
+                        .collect();
+                    value
+                        .cast(&inner.return_type_for(&arg_types))
+                        .map(Cow::Owned)
+                } else {
+                    value.cast(inner.return_type()).map(Cow::Owned)
+                }
             }
             ScalarExpression::Empty => unreachable!(),
             ScalarExpression::If {
@@ -661,6 +719,312 @@ mod tests {
         );
         assert_eq!(trim_string("ababhelloab", "ab", None), "hello");
         assert_eq!(trim_string("hello", "", None), "hello");
+    }
+
+    #[test]
+    fn substring_multibyte_characters() -> Result<(), DatabaseError> {
+        let table_arena = TableArenaCell::default();
+        let mut arena = PlanArena::new(&table_arena);
+
+        let text = arena.alloc_expression(ScalarExpression::Constant(DataValue::Utf8 {
+            value: "中文abc".into(),
+            ty: Utf8Type::Variable(None),
+            unit: CharLengthUnits::Characters,
+        }));
+
+        let from_2 = arena.alloc_expression(ScalarExpression::Constant(DataValue::Int32(2)));
+        let len_2 = arena.alloc_expression(ScalarExpression::Constant(DataValue::Int32(2)));
+
+        let expr = arena.alloc_expression(ScalarExpression::SubString {
+            expr: text,
+            from_expr: Some(from_2),
+            for_expr: Some(len_2),
+        });
+
+        let result = arena
+            .expression(expr)
+            .eval::<crate::types::tuple::Tuple>(&arena, None)?
+            .into_owned();
+
+        assert_eq!(
+            result,
+            DataValue::Utf8 {
+                value: "文a".into(),
+                ty: Utf8Type::Variable(None),
+                unit: CharLengthUnits::Characters,
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn substring_emoji() -> Result<(), DatabaseError> {
+        let table_arena = TableArenaCell::default();
+        let mut arena = PlanArena::new(&table_arena);
+
+        let text = arena.alloc_expression(ScalarExpression::Constant(DataValue::Utf8 {
+            value: "🔥test".into(),
+            ty: Utf8Type::Variable(None),
+            unit: CharLengthUnits::Characters,
+        }));
+
+        let from_2 = arena.alloc_expression(ScalarExpression::Constant(DataValue::Int32(2)));
+
+        let expr = arena.alloc_expression(ScalarExpression::SubString {
+            expr: text,
+            from_expr: Some(from_2),
+            for_expr: None,
+        });
+
+        let result = arena
+            .expression(expr)
+            .eval::<crate::types::tuple::Tuple>(&arena, None)?
+            .into_owned();
+
+        assert_eq!(
+            result,
+            DataValue::Utf8 {
+                value: "test".into(),
+                ty: Utf8Type::Variable(None),
+                unit: CharLengthUnits::Characters,
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn position_multibyte_characters() -> Result<(), DatabaseError> {
+        let table_arena = TableArenaCell::default();
+        let mut arena = PlanArena::new(&table_arena);
+
+        let pattern = arena.alloc_expression(ScalarExpression::Constant(DataValue::Utf8 {
+            value: "文".into(),
+            ty: Utf8Type::Variable(None),
+            unit: CharLengthUnits::Characters,
+        }));
+
+        let text = arena.alloc_expression(ScalarExpression::Constant(DataValue::Utf8 {
+            value: "中文abc".into(),
+            ty: Utf8Type::Variable(None),
+            unit: CharLengthUnits::Characters,
+        }));
+
+        let expr = arena.alloc_expression(ScalarExpression::Position {
+            expr: pattern,
+            in_expr: text,
+        });
+
+        let result = arena
+            .expression(expr)
+            .eval::<crate::types::tuple::Tuple>(&arena, None)?
+            .into_owned();
+
+        assert_eq!(result, DataValue::Int32(2));
+
+        Ok(())
+    }
+
+    #[test]
+    fn position_ascii_unchanged() -> Result<(), DatabaseError> {
+        let table_arena = TableArenaCell::default();
+        let mut arena = PlanArena::new(&table_arena);
+
+        let pattern = arena.alloc_expression(ScalarExpression::Constant(DataValue::Utf8 {
+            value: "world".into(),
+            ty: Utf8Type::Variable(None),
+            unit: CharLengthUnits::Characters,
+        }));
+
+        let text = arena.alloc_expression(ScalarExpression::Constant(DataValue::Utf8 {
+            value: "hello world".into(),
+            ty: Utf8Type::Variable(None),
+            unit: CharLengthUnits::Characters,
+        }));
+
+        let expr = arena.alloc_expression(ScalarExpression::Position {
+            expr: pattern,
+            in_expr: text,
+        });
+
+        let result = arena
+            .expression(expr)
+            .eval::<crate::types::tuple::Tuple>(&arena, None)?
+            .into_owned();
+
+        assert_eq!(result, DataValue::Int32(7));
+
+        Ok(())
+    }
+
+    #[test]
+    fn position_case_insensitive() -> Result<(), DatabaseError> {
+        let table_arena = TableArenaCell::default();
+        let mut arena = PlanArena::new(&table_arena);
+
+        let pattern = arena.alloc_expression(ScalarExpression::Constant(DataValue::Utf8 {
+            value: "L".into(),
+            ty: Utf8Type::Variable(None),
+            unit: CharLengthUnits::Characters,
+        }));
+
+        let text = arena.alloc_expression(ScalarExpression::Constant(DataValue::Utf8 {
+            value: "héllo".into(),
+            ty: Utf8Type::Variable(None),
+            unit: CharLengthUnits::Characters,
+        }));
+
+        let expr = arena.alloc_expression(ScalarExpression::Position {
+            expr: pattern,
+            in_expr: text,
+        });
+
+        let result = arena
+            .expression(expr)
+            .eval::<crate::types::tuple::Tuple>(&arena, None)?
+            .into_owned();
+
+        assert_eq!(result, DataValue::Int32(3));
+
+        Ok(())
+    }
+
+    #[test]
+    fn position_null_returns_null() -> Result<(), DatabaseError> {
+        let table_arena = TableArenaCell::default();
+        let mut arena = PlanArena::new(&table_arena);
+
+        let pattern = arena.alloc_expression(ScalarExpression::Constant(DataValue::Null));
+
+        let text = arena.alloc_expression(ScalarExpression::Constant(DataValue::Utf8 {
+            value: "test".into(),
+            ty: Utf8Type::Variable(None),
+            unit: CharLengthUnits::Characters,
+        }));
+
+        let expr = arena.alloc_expression(ScalarExpression::Position {
+            expr: pattern,
+            in_expr: text,
+        });
+
+        let result = arena
+            .expression(expr)
+            .eval::<crate::types::tuple::Tuple>(&arena, None)?
+            .into_owned();
+
+        assert_eq!(result, DataValue::Null);
+
+        Ok(())
+    }
+
+    #[test]
+    fn substring_negative_out_of_range() -> Result<(), DatabaseError> {
+        let table_arena = TableArenaCell::default();
+        let mut arena = PlanArena::new(&table_arena);
+
+        let text = arena.alloc_expression(ScalarExpression::Constant(DataValue::Utf8 {
+            value: "héllo".into(),
+            ty: Utf8Type::Variable(None),
+            unit: CharLengthUnits::Characters,
+        }));
+
+        let from = arena.alloc_expression(ScalarExpression::Constant(DataValue::Int32(-10)));
+
+        let expr = arena.alloc_expression(ScalarExpression::SubString {
+            expr: text,
+            from_expr: Some(from),
+            for_expr: None,
+        });
+
+        let result = arena
+            .expression(expr)
+            .eval::<crate::types::tuple::Tuple>(&arena, None)?
+            .into_owned();
+
+        assert_eq!(
+            result,
+            DataValue::Utf8 {
+                value: "".into(),
+                ty: Utf8Type::Variable(None),
+                unit: CharLengthUnits::Characters,
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn substring_past_end() -> Result<(), DatabaseError> {
+        let table_arena = TableArenaCell::default();
+        let mut arena = PlanArena::new(&table_arena);
+
+        let text = arena.alloc_expression(ScalarExpression::Constant(DataValue::Utf8 {
+            value: "héllo".into(),
+            ty: Utf8Type::Variable(None),
+            unit: CharLengthUnits::Characters,
+        }));
+
+        let from = arena.alloc_expression(ScalarExpression::Constant(DataValue::Int32(7)));
+
+        let expr = arena.alloc_expression(ScalarExpression::SubString {
+            expr: text,
+            from_expr: Some(from),
+            for_expr: None,
+        });
+
+        let result = arena
+            .expression(expr)
+            .eval::<crate::types::tuple::Tuple>(&arena, None)?
+            .into_owned();
+
+        assert_eq!(
+            result,
+            DataValue::Utf8 {
+                value: "".into(),
+                ty: Utf8Type::Variable(None),
+                unit: CharLengthUnits::Characters,
+            }
+        );
+
+        Ok(())
+    }
+
+    #[test]
+    fn substring_negative_length() -> Result<(), DatabaseError> {
+        let table_arena = TableArenaCell::default();
+        let mut arena = PlanArena::new(&table_arena);
+
+        let text = arena.alloc_expression(ScalarExpression::Constant(DataValue::Utf8 {
+            value: "héllo".into(),
+            ty: Utf8Type::Variable(None),
+            unit: CharLengthUnits::Characters,
+        }));
+
+        let from = arena.alloc_expression(ScalarExpression::Constant(DataValue::Int32(2)));
+        let length = arena.alloc_expression(ScalarExpression::Constant(DataValue::Int32(-1)));
+
+        let expr = arena.alloc_expression(ScalarExpression::SubString {
+            expr: text,
+            from_expr: Some(from),
+            for_expr: Some(length),
+        });
+
+        let result = arena
+            .expression(expr)
+            .eval::<crate::types::tuple::Tuple>(&arena, None)?
+            .into_owned();
+
+        assert_eq!(
+            result,
+            DataValue::Utf8 {
+                value: "".into(),
+                ty: Utf8Type::Variable(None),
+                unit: CharLengthUnits::Characters,
+            }
+        );
+
+        Ok(())
     }
 }
 // GRCOV_EXCL_STOP

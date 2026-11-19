@@ -177,15 +177,8 @@ pub(crate) fn to_varchar(
 
 #[macro_export]
 macro_rules! numeric_to_boolean_cast {
-    ($value:expr, $from:expr) => {
-        match $value {
-            0 => Ok($crate::types::value::DataValue::Boolean(false)),
-            1 => Ok($crate::types::value::DataValue::Boolean(true)),
-            _ => Err($crate::types::evaluator::cast::cast_fail(
-                $from,
-                $crate::types::LogicalType::Boolean,
-            )),
-        }
+    ($value:expr) => {
+        Ok($crate::types::value::DataValue::Boolean($value != 0))
     };
 }
 
@@ -308,10 +301,10 @@ macro_rules! define_cast_evaluator {
 
 #[macro_export]
 macro_rules! define_integer_cast_evaluators {
-    ($prefix:ident, $variant:ident, $src_ty:ty, $from_ty:expr) => {
+    ($prefix:ident, $variant:ident, $src_ty:ty) => {
         paste::paste! {
             $crate::define_cast_evaluator!([<$prefix:snake _to_boolean_cast_eval>], $crate::types::value::DataValue::$variant(value) => {
-                $crate::numeric_to_boolean_cast!(value, $from_ty)
+                $crate::numeric_to_boolean_cast!(value)
             });
             $crate::define_cast_evaluator!([<$prefix:snake _to_tinyint_cast_eval>], $crate::types::value::DataValue::$variant(value) => {
                 Ok($crate::types::value::DataValue::Int8(i8::try_from(value)?))
@@ -629,6 +622,9 @@ pub fn cast_create(
         (LogicalType::USmallint, _) => build_integer_cast!(cast_ref, UInt16, to, from),
         (LogicalType::UInteger, _) => build_integer_cast!(cast_ref, UInt32, to, from),
         (LogicalType::UBigint, _) => build_integer_cast!(cast_ref, UInt64, to, from),
+        (LogicalType::Float, LogicalType::Boolean) => {
+            cast_ref!(from, to)
+        }
         (LogicalType::Float, LogicalType::Tinyint) => {
             cast_ref!(from, to)
         }
@@ -665,6 +661,9 @@ pub fn cast_create(
         #[cfg(feature = "decimal")]
         (LogicalType::Float, LogicalType::Decimal(precision, scale)) => {
             cast_decimal_ref!(from, to, *precision, *scale)
+        }
+        (LogicalType::Double, LogicalType::Boolean) => {
+            cast_ref!(from, to)
         }
         (LogicalType::Double, LogicalType::Float) => {
             cast_ref!(from, to)
@@ -771,6 +770,9 @@ pub fn cast_create(
         (LogicalType::Date, LogicalType::DateTime) => {
             cast_ref!(from, to)
         }
+        (LogicalType::Date | LogicalType::DateTime, LogicalType::Bigint | LogicalType::Double) => {
+            cast_ref!(from, to)
+        }
         (LogicalType::DateTime, LogicalType::Char(_, _)) => {
             cast_string_ref!(from, to, Some(char_params(to).0), char_params(to).1)
         }
@@ -818,7 +820,8 @@ pub fn cast_create(
         }
         #[cfg(feature = "decimal")]
         (LogicalType::Decimal(_, _), to) => match to {
-            LogicalType::Float
+            LogicalType::Boolean
+            | LogicalType::Float
             | LogicalType::Double
             | LogicalType::Decimal(_, _)
             | LogicalType::Tinyint
@@ -1031,6 +1034,7 @@ impl CastEvaluatorRef {
             (CAST_USMALLINT, _) => eval_integer_cast_by_pos!(Uint16, to_code, params, value),
             (CAST_UINTEGER, _) => eval_integer_cast_by_pos!(Uint32, to_code, params, value),
             (CAST_UBIGINT, _) => eval_integer_cast_by_pos!(Uint64, to_code, params, value),
+            (CAST_FLOAT, CAST_BOOLEAN) => run!(float32_to_boolean_cast_eval),
             (CAST_FLOAT, CAST_TINYINT) => run!(float32_to_tinyint_cast_eval),
             (CAST_FLOAT, CAST_UTINYINT) => run!(float32_to_utinyint_cast_eval),
             (CAST_FLOAT, CAST_SMALLINT) => run!(float32_to_smallint_cast_eval),
@@ -1054,6 +1058,7 @@ impl CastEvaluatorRef {
                 let (precision, scale) = decimal_param(params);
                 run!(float32_to_decimal_cast_eval { precision, scale })
             }
+            (CAST_DOUBLE, CAST_BOOLEAN) => run!(float64_to_boolean_cast_eval),
             (CAST_DOUBLE, CAST_FLOAT) => run!(float64_to_float_cast_eval),
             (CAST_DOUBLE, CAST_TINYINT) => run!(float64_to_tinyint_cast_eval),
             (CAST_DOUBLE, CAST_UTINYINT) => run!(float64_to_utinyint_cast_eval),
@@ -1128,6 +1133,10 @@ impl CastEvaluatorRef {
             #[cfg(feature = "time")]
             (CAST_DATE, CAST_DATETIME) => run!(date32_to_datetime_cast_eval),
             #[cfg(feature = "time")]
+            (CAST_DATE, CAST_BIGINT) => run!(date32_to_bigint_cast_eval),
+            #[cfg(feature = "time")]
+            (CAST_DATE, CAST_DOUBLE) => run!(date32_to_double_cast_eval),
+            #[cfg(feature = "time")]
             (CAST_DATETIME, CAST_CHAR) => {
                 let (len, unit) = string_param(params);
                 let len = len.expect("char cast must have fixed length");
@@ -1140,6 +1149,10 @@ impl CastEvaluatorRef {
             }
             #[cfg(feature = "time")]
             (CAST_DATETIME, CAST_DATE) => run!(date64_to_date_cast_eval),
+            #[cfg(feature = "time")]
+            (CAST_DATETIME, CAST_BIGINT) => run!(date64_to_bigint_cast_eval),
+            #[cfg(feature = "time")]
+            (CAST_DATETIME, CAST_DOUBLE) => run!(date64_to_double_cast_eval),
             #[cfg(feature = "time")]
             (CAST_DATETIME, CAST_TIME) => run!(date64_to_time_cast_eval {
                 precision: precision_param(params)
@@ -1190,6 +1203,7 @@ impl CastEvaluatorRef {
             }
             #[cfg(feature = "decimal")]
             (CAST_DECIMAL, to_code) => match to_code {
+                CAST_BOOLEAN => run!(decimal_to_boolean_cast_eval),
                 CAST_FLOAT => run!(decimal_to_float_cast_eval),
                 CAST_DOUBLE => run!(decimal_to_double_cast_eval),
                 CAST_DECIMAL => run!(decimal_to_decimal_cast_eval),
@@ -1453,7 +1467,7 @@ mod test {
             (
                 LogicalType::Char(4, CharLengthUnits::Characters),
                 DataValue::Utf8 {
-                    value: "true".into(),
+                    value: "1".into(),
                     ty: Utf8Type::Fixed(4),
                     unit: CharLengthUnits::Characters,
                 },
@@ -1461,7 +1475,7 @@ mod test {
             (
                 LogicalType::Varchar(Some(4), CharLengthUnits::Characters),
                 DataValue::Utf8 {
-                    value: "true".into(),
+                    value: "1".into(),
                     ty: Utf8Type::Variable(Some(4)),
                     unit: CharLengthUnits::Characters,
                 },

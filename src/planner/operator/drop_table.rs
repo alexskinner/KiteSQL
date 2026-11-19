@@ -19,18 +19,20 @@ use std::fmt::Formatter;
 
 #[derive(Debug, PartialEq, Eq, Clone, Hash, ReferenceSerialization)]
 pub struct DropTableOperator {
-    /// Table name to insert to
-    pub table_name: TableName,
+    pub table_names: Vec<TableName>,
     pub if_exists: bool,
 }
 
 impl fmt::Display for DropTableOperator {
     fn fmt(&self, f: &mut Formatter) -> fmt::Result {
-        write!(
-            f,
-            "Drop Table {}, If Exists: {}",
-            self.table_name, self.if_exists
-        )?;
+        write!(f, "Drop Table")?;
+        for (i, name) in self.table_names.iter().enumerate() {
+            if i > 0 {
+                write!(f, ",")?;
+            }
+            write!(f, " {}", name)?;
+        }
+        write!(f, ", If Exists: {}", self.if_exists)?;
 
         Ok(())
     }

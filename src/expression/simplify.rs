@@ -64,7 +64,8 @@ impl<A: MetaArena + ?Sized> ExprVisitorMut<A> for ConstantCalculator {
                 right_expr,
                 ..
             } => {
-                let ty = LogicalType::max_logical_type(
+                let ty = crate::expression::binary_operand_type(
+                    op,
                     &left_expr.return_type(arena),
                     &right_expr.return_type(arena),
                 )?

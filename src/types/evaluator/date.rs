@@ -73,6 +73,25 @@ crate::define_cast_evaluator!(date32_to_datetime_cast_eval, DataValue::Date32(va
     }
 );
 
+fn date32_number(value: i32) -> Option<i64> {
+    use chrono::Datelike;
+    let date = NaiveDate::from_num_days_from_ce_opt(value)?;
+    Some(date.year() as i64 * 10_000 + date.month() as i64 * 100 + date.day() as i64)
+}
+// MySQL's numeric form of a DATE: YYYYMMDD.
+crate::define_cast_evaluator!(date32_to_bigint_cast_eval, DataValue::Date32(value) => {
+        let number = date32_number(value)
+            .ok_or_else(|| cast_fail(LogicalType::Date, LogicalType::Bigint))?;
+        Ok(DataValue::Int64(number))
+    }
+);
+crate::define_cast_evaluator!(date32_to_double_cast_eval, DataValue::Date32(value) => {
+        let number = date32_number(value)
+            .ok_or_else(|| cast_fail(LogicalType::Date, LogicalType::Double))?;
+        Ok(DataValue::Float64(ordered_float::OrderedFloat(number as f64)))
+    }
+);
+
 // GRCOV_EXCL_START
 #[cfg(all(test, not(target_arch = "wasm32")))]
 #[maybe_async]

@@ -1,0 +1,342 @@
+# Test UPDATE with JOIN support
+
+statement ok
+create table version_table (
+    record_id integer primary key,
+    id integer,
+    version_number integer,
+    is_latest varchar(1)
+);
+
+statement ok
+insert into version_table values (1, 1, 1, '0'), (2, 1, 2, '0'), (3, 2, 1, '0');
+
+# Test basic joined update with self-join anti-join pattern
+statement ok
+update version_table latest 
+left join version_table older 
+on older.id = latest.id and older.version_number > latest.version_number 
+set latest.is_latest = '1' 
+where older.id is null;
+
+query IIII
+select * from version_table order by record_id;
+----
+1 1 1 0
+2 1 2 1
+3 2 1 1
+
+# Test inner join update
+statement ok
+create table products (
+    id integer primary key,
+    name varchar(100),
+    price integer
+);
+
+statement ok
+create table price_updates (
+    product_id integer primary key,
+    new_price integer
+);
+
+statement ok
+insert into products values (1, 'apple', 100), (2, 'banana', 50), (3, 'cherry', 75);
+
+statement ok
+insert into price_updates values (1, 150), (2, 60);
+
+statement ok
+update products p
+inner join price_updates pu on p.id = pu.product_id
+set p.price = pu.new_price;
+
+query III
+select * from products order by id;
+----
+1 apple 150
+2 banana 60
+3 cherry 75
+
+# Test with duplicate matches - first match wins, each target row counted once
+statement ok
+create table target (
+    id integer primary key,
+    value integer
+);
+
+statement ok
+create table source (
+    source_id integer primary key,
+    target_id integer,
+    new_value integer
+);
+
+statement ok
+insert into target values (1, 10), (2, 20), (3, 30);
+
+statement ok
+insert into source values (1, 1, 99), (2, 1, 88), (3, 2, 77), (4, 3, 66);
+
+query I
+update target t
+inner join source s on t.id = s.target_id
+set t.value = s.new_value;
+----
+3
+
+query II
+select * from target order by id;
+----
+1 99
+2 77
+3 66
+
+# Error case: cannot update columns from joined table
+statement error joined UPDATE SET can only modify target table columns
+update products p
+inner join price_updates pu on p.id = pu.product_id
+set pu.new_price = p.price;
+
+# Test aliased single-table UPDATE
+statement ok
+create table simple (
+    id integer primary key,
+    x integer,
+    y integer
+);
+
+statement ok
+insert into simple values (1, 10, 20), (2, 30, 40);
+
+statement ok
+update simple s set s.x = s.y + 5 where s.y > 25;
+
+query III
+select * from simple order by id;
+----
+1 10 20
+2 45 40
+
+# Test RIGHT JOIN where target is on the left (hash join path)
+statement ok
+create table left_table (
+    id integer primary key,
+    value integer
+);
+
+statement ok
+create table right_table (
+    id integer primary key,
+    multiplier integer
+);
+
+statement ok
+insert into left_table values (1, 10), (2, 20);
+
+statement ok
+insert into right_table values (2, 3), (3, 4);
+
+query I
+update left_table l
+right join right_table r on l.id = r.id
+set l.value = l.value * r.multiplier;
+----
+1
+
+query II
+select * from left_table order by id;
+----
+1 10
+2 60
+
+# Test RIGHT JOIN with non-equality condition (nested loop join path)
+statement ok
+create table t1 (
+    id integer primary key,
+    val integer
+);
+
+statement ok
+create table t2 (
+    id integer primary key,
+    threshold integer
+);
+
+statement ok
+insert into t1 values (1, 50), (2, 150), (3, 250);
+
+statement ok
+insert into t2 values (1, 100), (2, 200), (3, 300);
+
+query I
+update t1
+right join t2 on t1.val < t2.threshold
+set t1.val = t1.val + 1000;
+----
+3
+
+query II
+select * from t1 order by id;
+----
+1 1050
+2 1150
+3 1250
+
+# Test three-table join
+statement ok
+create table orders (
+    order_id integer primary key,
+    customer_id integer,
+    total integer
+);
+
+statement ok
+create table customers (
+    customer_id integer primary key,
+    discount_pct integer
+);
+
+statement ok
+create table regions (
+    customer_id integer primary key,
+    bonus integer
+);
+
+statement ok
+insert into orders values (1, 10, 100), (2, 20, 200), (3, 10, 150);
+
+statement ok
+insert into customers values (10, 5), (20, 10);
+
+statement ok
+insert into regions values (10, 50), (20, 100);
+
+query I
+update orders o
+inner join customers c on o.customer_id = c.customer_id
+inner join regions r on c.customer_id = r.customer_id
+set o.total = o.total - (o.total * c.discount_pct / 100) + r.bonus;
+----
+3
+
+query III
+select * from orders order by order_id;
+----
+1 10 145
+2 20 280
+3 10 193
+
+# Test joined DELETE with INNER JOIN
+statement ok
+create table delete_target (
+    id integer primary key,
+    category varchar(10)
+);
+
+statement ok
+create table delete_source (
+    id integer primary key,
+    to_delete varchar(10)
+);
+
+statement ok
+insert into delete_target values (1, 'keep'), (2, 'remove'), (3, 'keep'), (4, 'remove');
+
+statement ok
+insert into delete_source values (2, 'yes'), (4, 'yes');
+
+query I
+delete from delete_target dt
+inner join delete_source ds on dt.id = ds.id;
+----
+2
+
+query II
+select * from delete_target order by id;
+----
+1 keep
+3 keep
+
+# Test joined DELETE with LEFT JOIN (anti-join pattern)
+statement ok
+create table items (
+    id integer primary key,
+    status varchar(10)
+);
+
+statement ok
+create table keep_list (
+    item_id integer primary key
+);
+
+statement ok
+insert into items values (1, 'active'), (2, 'active'), (3, 'active'), (4, 'active');
+
+statement ok
+insert into keep_list values (2), (4);
+
+query I
+delete from items i
+left join keep_list k on i.id = k.item_id
+where k.item_id is null;
+----
+2
+
+query II
+select * from items order by id;
+----
+2 active
+4 active
+
+# Clean up all tables
+statement ok
+drop table version_table
+
+statement ok
+drop table products
+
+statement ok
+drop table price_updates
+
+statement ok
+drop table target
+
+statement ok
+drop table source
+
+statement ok
+drop table simple
+
+statement ok
+drop table left_table
+
+statement ok
+drop table right_table
+
+statement ok
+drop table t1
+
+statement ok
+drop table t2
+
+statement ok
+drop table orders
+
+statement ok
+drop table customers
+
+statement ok
+drop table regions
+
+statement ok
+drop table delete_target
+
+statement ok
+drop table delete_source
+
+statement ok
+drop table items
+
+statement ok
+drop table keep_list

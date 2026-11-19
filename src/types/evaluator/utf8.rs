@@ -23,6 +23,19 @@ use rust_decimal::Decimal;
 use std::hint;
 use std::str::FromStr;
 
+pub(crate) fn parse_bool_str(s: &str) -> Result<bool, DatabaseError> {
+    let trimmed = s.trim();
+    let lower = trimmed.to_lowercase();
+    match lower.as_str() {
+        "true" | "t" | "yes" | "y" | "on" | "1" => Ok(true),
+        "false" | "f" | "no" | "n" | "off" | "0" => Ok(false),
+        _ => Err(DatabaseError::InvalidValue(format!(
+            "invalid boolean value: '{}'",
+            s
+        ))),
+    }
+}
+
 macro_rules! utf8_binary {
     ($name:ident, $body:expr) => {
         pub fn $name(left: &DataValue, right: &DataValue) -> Result<DataValue, DatabaseError> {
@@ -50,7 +63,7 @@ utf8_binary!(utf8_lt_binary_eval, |v1: &Utf8Str, v2: &Utf8Str| {
 });
 
 crate::define_cast_evaluator!(utf8_to_boolean_cast_eval, DataValue::Utf8 { value, .. } => {
-        Ok(DataValue::Boolean(bool::from_str(&value)?))
+        Ok(DataValue::Boolean(parse_bool_str(&value)?))
     }
 );
 crate::define_cast_evaluator!(utf8_to_tinyint_cast_eval, DataValue::Utf8 { value, .. } => {
@@ -524,6 +537,109 @@ mod test {
             utf8_to_boolean_cast_eval(utf8("true")).unwrap(),
             DataValue::Boolean(true)
         );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("TRUE")).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("True")).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8(" true ")).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("t")).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("T")).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("yes")).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("YES")).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("y")).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("Y")).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("on")).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("ON")).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("1")).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("false")).unwrap(),
+            DataValue::Boolean(false)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("FALSE")).unwrap(),
+            DataValue::Boolean(false)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("False")).unwrap(),
+            DataValue::Boolean(false)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8(" false ")).unwrap(),
+            DataValue::Boolean(false)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("f")).unwrap(),
+            DataValue::Boolean(false)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("F")).unwrap(),
+            DataValue::Boolean(false)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("no")).unwrap(),
+            DataValue::Boolean(false)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("NO")).unwrap(),
+            DataValue::Boolean(false)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("n")).unwrap(),
+            DataValue::Boolean(false)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("N")).unwrap(),
+            DataValue::Boolean(false)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("off")).unwrap(),
+            DataValue::Boolean(false)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("OFF")).unwrap(),
+            DataValue::Boolean(false)
+        );
+        assert_eq!(
+            utf8_to_boolean_cast_eval(utf8("0")).unwrap(),
+            DataValue::Boolean(false)
+        );
+        assert!(utf8_to_boolean_cast_eval(utf8("invalid")).is_err());
+        assert!(utf8_to_boolean_cast_eval(utf8("2")).is_err());
+        assert!(utf8_to_boolean_cast_eval(utf8("")).is_err());
         assert_eq!(
             utf8_to_tinyint_cast_eval(utf8("1")).unwrap(),
             DataValue::Int8(1)

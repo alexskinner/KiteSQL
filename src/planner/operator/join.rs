@@ -190,7 +190,7 @@ pub(crate) fn extract_join_keys(
                             // both to one type like `l = r` in a filter; otherwise
                             // e.g. `bigint = int` never matches.
                             if let Some((left, right)) = key {
-                                let ty = LogicalType::max_logical_type(
+                                let ty = LogicalType::comparison_type(
                                     &left.return_type(arena),
                                     &right.return_type(arena),
                                 )?
