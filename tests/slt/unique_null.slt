@@ -1,0 +1,94 @@
+# A UNIQUE key that contains a NULL never equals another key (MySQL and standard SQL),
+# so any number of rows may hold NULL in a UNIQUE column, while non-NULL keys stay unique.
+
+statement ok
+CREATE TABLE un_u (id INT PRIMARY KEY, email VARCHAR(50) UNIQUE)
+
+# INSERT
+statement ok
+INSERT INTO un_u VALUES (1, NULL), (2, NULL), (3, 'a')
+
+statement ok
+INSERT INTO un_u VALUES (4, NULL)
+
+statement error
+INSERT INTO un_u VALUES (5, 'a')
+
+query I
+SELECT id FROM un_u WHERE email IS NULL ORDER BY id
+----
+1
+2
+4
+
+# UPDATE into NULL, and out of NULL again
+statement ok
+UPDATE un_u SET email = NULL WHERE id = 3
+
+statement ok
+INSERT INTO un_u VALUES (5, 'a')
+
+statement ok
+UPDATE un_u SET email = 'b' WHERE id = 1
+
+statement error
+UPDATE un_u SET email = 'b' WHERE id = 2
+
+query IT
+SELECT * FROM un_u ORDER BY id
+----
+1 b
+2 NULL
+3 NULL
+4 NULL
+5 a
+
+statement ok
+DELETE FROM un_u WHERE id = 2
+
+query I
+SELECT id FROM un_u WHERE email IS NULL ORDER BY id
+----
+3
+4
+
+query I
+SELECT id FROM un_u WHERE email = 'b'
+----
+1
+
+# Composite keys with a partial NULL
+statement ok
+CREATE TABLE un_cu (id INT PRIMARY KEY, a INT, b INT, UNIQUE KEY k (a, b))
+
+statement ok
+INSERT INTO un_cu VALUES (1, 1, NULL), (2, 1, NULL), (3, NULL, NULL), (4, NULL, NULL), (5, 1, 1)
+
+statement error
+INSERT INTO un_cu VALUES (6, 1, 1)
+
+query I
+SELECT id FROM un_cu WHERE a = 1 ORDER BY id
+----
+1
+2
+5
+
+statement ok
+UPDATE un_cu SET b = NULL WHERE id = 5
+
+statement ok
+INSERT INTO un_cu VALUES (6, 1, 1)
+
+query I
+SELECT id FROM un_cu WHERE a = 1 AND b IS NULL ORDER BY id
+----
+1
+2
+5
+
+statement ok
+DROP TABLE un_u
+
+statement ok
+DROP TABLE un_cu

@@ -454,6 +454,15 @@ impl TableCodec {
     ///
     /// Unique index key:
     /// `{TableName}{INDEX_TAG}{BOUND_MIN_TAG}{IndexID}{BOUND_MIN_TAG}{DataValue}`
+    ///
+    /// A unique key that contains a NULL also ends with `{TupleId}`, because NULL never equals
+    /// another key (MySQL and standard SQL), so any number of rows may hold it. Such keys are
+    /// read by prefix, not by an exact get.
+    ///
+    /// Caveat: unique entries containing a NULL that were written before this layout have no
+    /// `{TupleId}` suffix. Prefix reads still find them, but deleting or updating such a row
+    /// looks for the suffixed key and leaves the old entry behind, so rebuild unique indexes
+    /// that hold NULLs after upgrading.
     pub async fn with_index<R, V: TupleLike + ?Sized>(
         &mut self,
         table_id: TableId,
@@ -486,7 +495,9 @@ impl TableCodec {
             }
 
             if let Some(tuple_id) = tuple_id {
-                if matches!(index.ty, IndexType::Normal | IndexType::Composite) {
+                if matches!(index.ty, IndexType::Normal | IndexType::Composite)
+                    || (matches!(index.ty, IndexType::Unique) && index_has_null(index.values))
+                {
                     tuple_id.memcomparable_encode(lower)?;
                 }
             }
@@ -1596,6 +1607,40 @@ mod tests {
     }
 
     #[test]
+    async fn test_table_codec_unique_index_null_key_has_tuple_id() -> Result<(), DatabaseError> {
+        async fn key(values: &[DataValue], tuple_id: i32) -> Result<Vec<u8>, DatabaseError> {
+            let index = Index::new(0, values, IndexType::Unique);
+            TableCodec::default()
+                .with_index(
+                    0,
+                    &index,
+                    Some(&DataValue::Int32(tuple_id)),
+                    async |key, _| Ok(key.to_vec()),
+                )
+                .await
+        }
+        let value = [DataValue::Int32(1)];
+        let null = [DataValue::Null];
+        let partial_null = [DataValue::Int32(1), DataValue::Null];
+
+        // A non-NULL unique key is the values alone, so two rows collide.
+        assert_eq!(key(&value, 1).await?, key(&value, 2).await?);
+        // A key with any NULL ends with the tuple id, so rows never collide,
+        // and the values-only key is a prefix of it.
+        for values in [&null[..], &partial_null[..]] {
+            let first = key(values, 1).await?;
+            let second = key(values, 2).await?;
+            assert_ne!(first, second);
+            let index = Index::new(0, values, IndexType::Unique);
+            let prefix = TableCodec::default()
+                .with_index(0, &index, None, async |key, _| Ok(key.to_vec()))
+                .await?;
+            assert!(first.starts_with(&prefix) && second.starts_with(&prefix));
+        }
+        Ok(())
+    }
+
+    #[test]
     fn test_table_codec_column() -> Result<(), DatabaseError> {
         let mut col: ColumnCatalog = ColumnCatalog::new(
             "c2".to_string(),
@@ -2125,3 +2170,8 @@ mod tests {
     }
 }
 // GRCOV_EXCL_STOP
+
+/// Whether any value of an index key is NULL.
+pub(crate) fn index_has_null<V: TupleLike + ?Sized>(values: &V) -> bool {
+    (0..values.len()).any(|i| values.value_at(i).is_null())
+}

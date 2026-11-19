@@ -549,4 +549,182 @@ mod tests {
 
         Ok(())
     }
+
+    async fn null_unique_rows<S: Storage>(
+        database: &Database<S>,
+        sql: &str,
+    ) -> Result<Vec<String>, DatabaseError> {
+        let mut iter = database.run(sql).await?;
+        let mut rows = Vec::new();
+        while let Some(row) = iter
+            .next_tuple(|_, tuple| {
+                tuple
+                    .iter()
+                    .map(ToString::to_string)
+                    .collect::<Vec<_>>()
+                    .join("|")
+            })
+            .await?
+        {
+            rows.push(row);
+        }
+        iter.done().await?;
+        Ok(rows)
+    }
+
+    async fn null_unique_exec<S: Storage>(
+        database: &Database<S>,
+        sql: &str,
+    ) -> Result<(), DatabaseError> {
+        database.run(sql).await?.done().await
+    }
+
+    #[test]
+    async fn test_unique_index_allows_many_nulls_on_insert() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .ddl("CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(50) UNIQUE)")
+            .await?;
+        null_unique_exec(&database, "INSERT INTO u VALUES (1, NULL), (2, NULL)").await?;
+        null_unique_exec(&database, "INSERT INTO u VALUES (3, NULL), (4, 'a')").await?;
+        assert_eq!(
+            null_unique_rows(
+                &database,
+                "SELECT id FROM u WHERE email IS NULL ORDER BY id"
+            )
+            .await?,
+            vec!["1", "2", "3"]
+        );
+        assert!(matches!(
+            null_unique_exec(&database, "INSERT INTO u VALUES (5, 'a')").await,
+            Err(DatabaseError::DuplicateUniqueValue)
+        ));
+        null_unique_exec(&database, "DELETE FROM u WHERE id = 2").await?;
+        assert_eq!(
+            null_unique_rows(
+                &database,
+                "SELECT id FROM u WHERE email IS NULL ORDER BY id"
+            )
+            .await?,
+            vec!["1", "3"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    async fn test_unique_index_update_into_null() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .ddl("CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(50) UNIQUE)")
+            .await?;
+        null_unique_exec(
+            &database,
+            "INSERT INTO u VALUES (1, 'a'), (2, 'b'), (3, NULL)",
+        )
+        .await?;
+        null_unique_exec(&database, "UPDATE u SET email = NULL WHERE id < 3").await?;
+        assert_eq!(
+            null_unique_rows(
+                &database,
+                "SELECT id FROM u WHERE email IS NULL ORDER BY id"
+            )
+            .await?,
+            vec!["1", "2", "3"]
+        );
+        // The old values were released, and NULL rows can take values again.
+        null_unique_exec(&database, "INSERT INTO u VALUES (4, 'a')").await?;
+        null_unique_exec(&database, "UPDATE u SET email = 'b' WHERE id = 2").await?;
+        assert!(matches!(
+            null_unique_exec(&database, "UPDATE u SET email = 'b' WHERE id = 1").await,
+            Err(DatabaseError::DuplicateUniqueValue)
+        ));
+        assert_eq!(
+            null_unique_rows(&database, "SELECT * FROM u ORDER BY id").await?,
+            vec!["1|NULL", "2|b", "3|NULL", "4|a"]
+        );
+        Ok(())
+    }
+
+    #[test]
+    async fn test_composite_unique_index_partial_null() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .ddl("CREATE TABLE cu (id INT PRIMARY KEY, a INT, b INT, UNIQUE KEY k (a, b))")
+            .await?;
+        null_unique_exec(
+            &database,
+            "INSERT INTO cu VALUES (1, 1, NULL), (2, 1, NULL), (3, NULL, NULL), (4, 1, 1)",
+        )
+        .await?;
+        null_unique_exec(&database, "INSERT INTO cu VALUES (5, NULL, NULL)").await?;
+        assert!(matches!(
+            null_unique_exec(&database, "INSERT INTO cu VALUES (6, 1, 1)").await,
+            Err(DatabaseError::DuplicateUniqueValue)
+        ));
+        assert_eq!(
+            null_unique_rows(&database, "SELECT id FROM cu WHERE a = 1 ORDER BY id").await?,
+            vec!["1", "2", "4"]
+        );
+        assert_eq!(
+            null_unique_rows(&database, "SELECT id FROM cu WHERE a = 1 AND b = 1").await?,
+            vec!["4"]
+        );
+        null_unique_exec(&database, "UPDATE cu SET b = NULL WHERE id = 4").await?;
+        assert_eq!(
+            null_unique_rows(&database, "SELECT id FROM cu WHERE a = 1 ORDER BY id").await?,
+            vec!["1", "2", "4"]
+        );
+        assert!(
+            null_unique_rows(&database, "SELECT id FROM cu WHERE a = 1 AND b = 1")
+                .await?
+                .is_empty()
+        );
+        Ok(())
+    }
+
+    #[test]
+    async fn test_unique_index_nulls_survive_reopen() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().unwrap();
+        {
+            let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+            database
+                .ddl("CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(50) UNIQUE)")
+                .await?;
+            null_unique_exec(
+                &database,
+                "INSERT INTO u VALUES (1, NULL), (2, NULL), (3, 'a')",
+            )
+            .await?;
+        }
+        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        database
+            .load(crate::db::CatalogKind::Table("u".to_string()))
+            .await?;
+        assert_eq!(
+            null_unique_rows(
+                &database,
+                "SELECT id FROM u WHERE email IS NULL ORDER BY id"
+            )
+            .await?,
+            vec!["1", "2"]
+        );
+        null_unique_exec(&database, "INSERT INTO u VALUES (4, NULL)").await?;
+        null_unique_exec(&database, "DELETE FROM u WHERE id = 1").await?;
+        assert_eq!(
+            null_unique_rows(
+                &database,
+                "SELECT id FROM u WHERE email IS NULL ORDER BY id"
+            )
+            .await?,
+            vec!["2", "4"]
+        );
+        assert!(matches!(
+            null_unique_exec(&database, "INSERT INTO u VALUES (5, 'a')").await,
+            Err(DatabaseError::DuplicateUniqueValue)
+        ));
+        Ok(())
+    }
 }
