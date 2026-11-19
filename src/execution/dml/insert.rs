@@ -20,8 +20,8 @@ use crate::execution::{
 use crate::planner::operator::insert::InsertOperator;
 use crate::planner::{ExecMetaArena, MetaArena};
 use crate::planner::{ExprRef, LogicalPlan};
-use crate::storage::StorageTransaction;
-use crate::types::index::Index;
+use crate::storage::{table_codec::TableCodec, StorageTransaction};
+use crate::types::index::{Index, IndexType};
 use crate::types::tuple::{Tuple, TupleImpl};
 use crate::types::tuple_builder::TupleBuilder;
 use crate::types::value::DataValue;
@@ -116,19 +116,46 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
             let enable_undo = arena.should_record_undo();
             let tuple_id = tuple.pk().ok_or(DatabaseError::PrimaryKeyNotFound)?;
 
-            let conflict_detected = if on_duplicate_key_update.is_some() {
-                let mut state = arena.local_state(plan_arena);
-                let (transaction, table_codec) = state.transaction_codec_mut();
-                table_codec
-                    .with_tuple(table.table_id, tuple_id, None, async |key, _| -> Result<bool, DatabaseError> {
-                        transaction.exists(key).await
-                    })
-                    .await?
+            let conflict_tuple_id = if on_duplicate_key_update.is_some() {
+                let mut conflict_id = None;
+
+                for (index_meta, exprs) in table.index_exprs.iter() {
+                    let index_meta = plan_arena.index(*index_meta);
+                    if !matches!(
+                        index_meta.ty,
+                        IndexType::PrimaryKey { .. } | IndexType::Unique
+                    ) {
+                        continue;
+                    }
+
+                    arena.rewrite(exprs, plan_arena, Some(&*tuple))?;
+                    let mut state = arena.local_state(plan_arena);
+                    let (values, transaction, table_codec) = state.tuple_transaction_codec_mut();
+                    let index = Index::new(index_meta.id, values, index_meta.ty);
+
+                    let existing_id = table_codec
+                        .with_index(table.table_id, &index, Some(tuple_id), async |key, _| {
+                            if let Some(bytes) = transaction.get_borrowed(key).await? {
+                                let existing_tuple_id = TableCodec::decode_index(bytes.as_ref())?;
+                                if &existing_tuple_id != tuple_id {
+                                    return Ok(Some(existing_tuple_id));
+                                }
+                            }
+                            Ok(None)
+                        })
+                        .await?;
+
+                    if existing_id.is_some() {
+                        conflict_id = existing_id;
+                        break;
+                    }
+                }
+                conflict_id
             } else {
-                false
+                None
             };
 
-            if conflict_detected {
+            if let Some(conflict_tuple_id) = conflict_tuple_id {
                 let update_exprs = on_duplicate_key_update.unwrap();
 
                 let mut existing_tuple = Tuple::new(Some(tuple_id.clone()), Vec::new());

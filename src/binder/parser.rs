@@ -1337,12 +1337,14 @@ where
             };
 
         self.binder.bind_insert_values(
-            &table_name,
-            schema_ref,
-            rows,
-            expr_rows.len(),
-            is_overwrite,
-            on_duplicate_update_exprs,
+            crate::binder::insert::InsertValuesParams {
+                table_name: &table_name,
+                targets: schema_ref,
+                rows,
+                row_count: expr_rows.len(),
+                is_overwrite,
+                on_duplicate_key_update: on_duplicate_update_exprs,
+            },
             self.arena,
         )
     }
@@ -1461,11 +1463,13 @@ where
             };
 
         self.binder.bind_insert_query(
-            &table_name,
-            input_plan,
-            &targets,
-            is_overwrite,
-            on_duplicate_update_exprs,
+            crate::binder::insert::InsertQueryParams {
+                table_name: &table_name,
+                input_plan,
+                targets: &targets,
+                is_overwrite,
+                on_duplicate_key_update: on_duplicate_update_exprs,
+            },
             self.arena,
         )
     }
