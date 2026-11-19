@@ -200,11 +200,14 @@ impl FunctionRegistry {
         name: &str,
         arg_types: &[LogicalType],
     ) -> Result<Arc<dyn ScalarFunctionImpl>, DatabaseError> {
+        // First pass: collect functions by name, allowing variadic functions to match any arity
         let candidates: Vec<_> = self
             .scalar_functions
             .iter()
-            .filter(|(summary, _)| summary.name.as_ref() == name)
-            .filter(|(summary, _)| summary.arg_types.len() == arg_types.len())
+            .filter(|(summary, function)| {
+                summary.name.as_ref() == name
+                    && (summary.arg_types.len() == arg_types.len() || function.accepts_any_args())
+            })
             .collect();
 
         if candidates.is_empty() {
@@ -224,7 +227,7 @@ impl FunctionRegistry {
             let mut overall_quality = MatchQuality::ExactMatch;
             let mut compatible = true;
 
-            // If the function accepts any args, skip type checking
+            // If the function accepts any args, skip type and arity checking
             if function.accepts_any_args() {
                 scored_candidates.push((MatchQuality::ImplicitCast, function.clone()));
                 continue;
