@@ -76,11 +76,12 @@ query I rowsort
 SELECT * FROM md_y
 ----
 
-statement ok
+statement error
 DROP TABLE md_x, md_x
 
-statement error
+query I rowsort
 SELECT * FROM md_x
+----
 
 statement ok
 CREATE TABLE md_base (id INT PRIMARY KEY, v INT)
@@ -124,3 +125,9 @@ SELECT * FROM md_v3
 
 statement ok
 DROP TABLE md_base
+
+statement error
+DROP VIEW md_v3, md_v3
+
+statement ok
+DROP TABLE md_x, md_y

@@ -416,8 +416,9 @@ fn drop_multiple_tables_with_duplicates() -> Result<(), DatabaseError> {
     let dir = TempDir::new().unwrap();
     let mut db = DataBaseBuilder::path(dir.path()).build_lmdb()?;
     db.ddl("CREATE TABLE t1 (id INT PRIMARY KEY)")?;
-    db.ddl("DROP TABLE t1, t1")?;
-    assert!(db.run("SELECT * FROM t1").is_err());
+    let result = db.ddl("DROP TABLE t1, t1");
+    assert!(result.is_err());
+    assert_eq!(rows(db.run("SELECT * FROM t1")?)?, Vec::<String>::new());
     Ok(())
 }
 
@@ -485,5 +486,17 @@ fn drop_multiple_views_if_exists() -> Result<(), DatabaseError> {
     db.ddl("CREATE VIEW v1 AS SELECT id FROM t")?;
     db.ddl("DROP VIEW IF EXISTS v1, v_nonexistent")?;
     assert!(db.run("SELECT * FROM v1").is_err());
+    Ok(())
+}
+
+#[test]
+fn drop_multiple_views_with_duplicates() -> Result<(), DatabaseError> {
+    let dir = TempDir::new().unwrap();
+    let mut db = DataBaseBuilder::path(dir.path()).build_lmdb()?;
+    db.ddl("CREATE TABLE t (id INT PRIMARY KEY)")?;
+    db.ddl("CREATE VIEW v1 AS SELECT id FROM t")?;
+    let result = db.ddl("DROP VIEW v1, v1");
+    assert!(result.is_err());
+    assert_eq!(rows(db.run("SELECT * FROM v1")?)?, Vec::<String>::new());
     Ok(())
 }

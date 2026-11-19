@@ -54,6 +54,14 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for DropView<'a> {
             if_exists,
         } = self.op;
 
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for view_name in view_names.iter() {
+            if !seen.insert(view_name.to_string()) {
+                return Err(DatabaseError::DuplicateTableName(view_name.to_string()));
+            }
+        }
+
         {
             let (transaction, table_codec) = arena.transaction_codec_mut();
 
