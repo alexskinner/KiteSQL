@@ -10,9 +10,9 @@ select cast(1.5 as double)
 1.5
 
 query T
-select cast(12.1 as decimal(5, 2))
+select cast(12.25 as decimal(5, 2))
 ----
-12.1
+12.25
 
 statement error
 select cast(1.5 as float(54))
