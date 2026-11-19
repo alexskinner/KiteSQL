@@ -196,3 +196,54 @@ drop table t16
 
 statement error
 create table t_invalid (pk int primary key null, v int)
+
+statement error
+create table t_invalid2 (pk int null primary key, v int)
+
+statement ok
+create table t17 (pk varchar(50) primary key character set utf8mb4, v int)
+
+statement ok
+insert into t17 values ('test', 160)
+
+query TI
+select * from t17
+----
+test 160
+
+statement ok
+drop table t17
+
+statement ok
+create table t18 (pk varchar(50) character set utf8mb4 primary key, v int)
+
+statement ok
+insert into t18 values ('test2', 170)
+
+query TI
+select * from t18
+----
+test2 170
+
+statement ok
+drop table t18
+
+statement ok
+create table t19 (updated_at timestamp primary key on update current_timestamp, v int)
+
+statement ok
+insert into t19 values ('2024-01-01 00:00:00', 180)
+
+query TI
+select * from t19
+----
+2024-01-01 00:00:00 180
+
+statement ok
+drop table t19
+
+statement error
+create table t_dup_default (pk int default 1 default 2, v int)
+
+statement error
+create table t_dup_pk (pk int primary key primary key, v int)

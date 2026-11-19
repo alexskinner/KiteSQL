@@ -971,25 +971,36 @@ where
         let mut nullable = true;
 
         let mut primary_key_seen = false;
+        let mut explicit_null = false;
+        let mut default_count = 0;
+        let mut primary_key_count = 0;
 
         for option_def in column_def.options {
             match option_def.option {
                 ColumnOption::Null => {
-                    if primary_key_seen {
-                        return Err(DatabaseError::UnsupportedStmt(
-                            "PRIMARY KEY columns cannot be NULL".to_string(),
-                        ));
-                    }
                     nullable = true;
+                    explicit_null = true;
                 }
                 ColumnOption::NotNull => nullable = false,
                 ColumnOption::PrimaryKey(_) => {
                     column_desc.set_primary(column_index);
                     nullable = false;
                     primary_key_seen = true;
+                    primary_key_count += 1;
+                    if primary_key_count > 1 {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Multiple PRIMARY KEY options for a single column".to_string(),
+                        ));
+                    }
                 }
                 ColumnOption::Unique(_) => column_desc.set_unique(),
                 ColumnOption::Default(expr) => {
+                    default_count += 1;
+                    if default_count > 1 {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Multiple DEFAULT options for a single column".to_string(),
+                        ));
+                    }
                     let mut expr = self
                         .binder
                         .bind_expr(&expr, self.arena)
@@ -1007,13 +1018,22 @@ where
                 ColumnOption::DialectSpecific(_)
                 | ColumnOption::Comment(_)
                 | ColumnOption::Check(_)
-                | ColumnOption::ForeignKey { .. } => {}
+                | ColumnOption::ForeignKey { .. }
+                | ColumnOption::CharacterSet(_)
+                | ColumnOption::OnUpdate(_)
+                | ColumnOption::Generated { .. } => {}
                 option => {
                     return Err(DatabaseError::UnsupportedStmt(format!(
                         "`Column` does not currently support this option: {option:?}"
                     )))
                 }
             }
+        }
+
+        if primary_key_seen && explicit_null {
+            return Err(DatabaseError::UnsupportedStmt(
+                "All parts of a PRIMARY KEY must be NOT NULL".to_string(),
+            ));
         }
 
         Ok((
