@@ -99,6 +99,9 @@ pub(crate) fn create_accumulator(
         (AggKind::Avg, distinct) => Box::new(AvgAccumulator::new(distinct)),
         (AggKind::Total, distinct) => Box::new(TotalAccumulator::new(distinct)),
         (AggKind::GroupConcat, distinct) => Box::new(GroupConcatAccumulator::new(distinct)),
+        (AggKind::GroupConcatWith(options), distinct) => {
+            Box::new(GroupConcatAccumulator::with_options(distinct, options))
+        }
         (AggKind::Udf(id), _) => {
             let registry = registry.ok_or_else(|| {
                 DatabaseError::UnsupportedStmt(
@@ -164,9 +167,24 @@ pub(crate) fn aggregate_arg<'a, T: TupleLike + ?Sized>(
     tuple: &'a T,
     arena: &'a (dyn MetaArena + '_),
 ) -> Result<Cow<'a, DataValue>, DatabaseError> {
-    let ScalarExpression::AggCall { args, .. } = arena.expression(agg_call) else {
+    let ScalarExpression::AggCall { args, kind, .. } = arena.expression(agg_call) else {
         unreachable!()
     };
+    if let AggKind::GroupConcatWith(options) = kind {
+        if !options.order_by.is_empty() {
+            // The value and its sort keys travel together as one tuple.
+            let values = args
+                .iter()
+                .map(|arg| {
+                    arena
+                        .expression(*arg)
+                        .eval(arena, Some(tuple))
+                        .map(Cow::into_owned)
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            return Ok(Cow::Owned(DataValue::Tuple(values)));
+        }
+    }
     if args.len() > 1 {
         return Err(DatabaseError::UnsupportedStmt(
             "currently aggregate functions only support a single Column as a parameter".to_string(),
