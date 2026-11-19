@@ -119,37 +119,53 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
             let conflict_tuple_id = if on_duplicate_key_update.is_some() {
                 let mut conflict_id = None;
 
-                for (index_meta, exprs) in table.index_exprs.iter() {
-                    let index_meta = plan_arena.index(*index_meta);
-                    if !matches!(
-                        index_meta.ty,
-                        IndexType::PrimaryKey { .. } | IndexType::Unique
-                    ) {
-                        continue;
-                    }
-
-                    arena.rewrite(exprs, plan_arena, Some(&*tuple))?;
+                // Check PRIMARY KEY for conflicts first
+                let pk_exists = {
                     let mut state = arena.local_state(plan_arena);
-                    let (values, transaction, table_codec) = state.tuple_transaction_codec_mut();
-                    let index = Index::new(index_meta.id, values, index_meta.ty);
-
-                    let existing_id = table_codec
-                        .with_index(table.table_id, &index, Some(tuple_id), async |key, _| {
-                            if let Some(bytes) = transaction.get_borrowed(key).await? {
-                                let existing_tuple_id = TableCodec::decode_index(bytes.as_ref())?;
-                                if &existing_tuple_id != tuple_id {
-                                    return Ok(Some(existing_tuple_id));
-                                }
-                            }
-                            Ok(None)
+                    let (transaction, table_codec) = state.transaction_codec_mut();
+                    table_codec
+                        .with_tuple(table.table_id, tuple_id, None, async |key, _| {
+                            transaction.exists(key).await
                         })
-                        .await?;
+                        .await?
+                };
 
-                    if existing_id.is_some() {
-                        conflict_id = existing_id;
-                        break;
+                if pk_exists {
+                    conflict_id = Some(tuple_id.clone());
+                } else {
+                    // Check UNIQUE indexes for conflicts
+                    for (index_meta, exprs) in table.index_exprs.iter() {
+                        let index_meta = plan_arena.index(*index_meta);
+                        if !matches!(index_meta.ty, IndexType::Unique) {
+                            continue;
+                        }
+
+                        arena.rewrite(exprs, plan_arena, Some(&*tuple))?;
+                        let mut state = arena.local_state(plan_arena);
+                        let (values, transaction, table_codec) =
+                            state.tuple_transaction_codec_mut();
+                        let index = Index::new(index_meta.id, values, index_meta.ty);
+
+                        let existing_id = table_codec
+                            .with_index(table.table_id, &index, Some(tuple_id), async |key, _| {
+                                if let Some(bytes) = transaction.get_borrowed(key).await? {
+                                    let existing_tuple_id =
+                                        TableCodec::decode_index(bytes.as_ref())?;
+                                    if &existing_tuple_id != tuple_id {
+                                        return Ok(Some(existing_tuple_id));
+                                    }
+                                }
+                                Ok(None)
+                            })
+                            .await?;
+
+                        if existing_id.is_some() {
+                            conflict_id = existing_id;
+                            break;
+                        }
                     }
                 }
+
                 conflict_id
             } else {
                 None
@@ -158,7 +174,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
             if let Some(conflict_tuple_id) = conflict_tuple_id {
                 let update_exprs = on_duplicate_key_update.unwrap();
 
-                let mut existing_tuple = Tuple::new(Some(tuple_id.clone()), Vec::new());
+                let mut existing_tuple = Tuple::new(Some(conflict_tuple_id.clone()), Vec::new());
                 let mut state = arena.local_state(plan_arena);
                 let (transaction, table_codec) = state.transaction_codec_mut();
 
@@ -166,7 +182,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
                     table_codec
                         .with_tuple_unchecked(
                             table.table_id,
-                            tuple_id,
+                            &conflict_tuple_id,
                             None,
                             async |key, _, pool| {
                                 let Some(bytes) = transaction.get_borrowed(key).await? else {
@@ -176,7 +192,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
                                     crate::storage::table_codec::TableCodec::decode_tuple_into(
                                         &mut existing_tuple,
                                         table.serializers.iter(),
-                                        Some(tuple_id.clone()),
+                                        Some(conflict_tuple_id.clone()),
                                         bytes.as_ref(),
                                         table.columns.len(),
                                         pool,
@@ -221,7 +237,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
                     let (values, transaction, table_codec) = state.tuple_transaction_codec_mut();
                     let old_index = Index::new(index_meta.id, values, index_meta.ty);
                     transaction
-                        .del_index(table_codec, table.table_id, &old_index, tuple_id)
+                        .del_index(table_codec, table.table_id, &old_index, &conflict_tuple_id)
                         .await?;
                     if let Some(index_values) = old_index_values {
                         arena.undo_log().record_add_index(
@@ -229,7 +245,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
                             index_meta.id,
                             index_meta.ty,
                             index_values,
-                            tuple_id.clone(),
+                            conflict_tuple_id.clone(),
                         );
                     }
                 }
@@ -256,7 +272,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
                     let (values, transaction, table_codec) = state.tuple_transaction_codec_mut();
                     let new_index = Index::new(index_meta.id, values, index_meta.ty);
                     transaction
-                        .add_index(table_codec, table.table_id, new_index, tuple_id)
+                        .add_index(table_codec, table.table_id, new_index, &conflict_tuple_id)
                         .await?;
                     if let Some(index_values) = new_index_values {
                         arena.undo_log().record_delete_index(
@@ -264,11 +280,12 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
                             index_meta.id,
                             index_meta.ty,
                             index_values,
-                            tuple_id.clone(),
+                            conflict_tuple_id.clone(),
                         );
                     }
                 }
 
+                existing_tuple_impl.set_pk(Some(conflict_tuple_id.clone()));
                 let mut state = arena.local_state(plan_arena);
                 let (transaction, table_codec) = state.transaction_codec_mut();
                 transaction
