@@ -1,0 +1,146 @@
+# SQL:2003 functional dependencies: grouping by every primary-key column of a stored table
+# source, per alias, lets SELECT, HAVING and ORDER BY use any other column of that source.
+
+statement ok
+create table fd_page (id int primary key, parent_page int, title varchar, sort_order int)
+
+statement ok
+insert into fd_page values (1, null, 'root', 4), (2, 1, 'a', 3), (3, 1, 'b', 2), (4, 2, 'c', 1)
+
+statement ok
+create table fd_pair (a int, b int, v varchar, primary key (a, b))
+
+statement ok
+insert into fd_pair values (1, 1, 'x'), (1, 2, 'y'), (2, 1, 'z')
+
+# Single-column key, no alias.
+query IIT
+select id, parent_page, title from fd_page group by id order by sort_order
+----
+4 2 c
+3 1 b
+2 1 a
+1 NULL root
+
+query II
+select id, count(*) from fd_page group by id having sort_order > 2 order by id
+----
+1 1
+2 1
+
+# The key grouped through its select alias.
+query IT
+select id as k, title from fd_page group by k order by k
+----
+1 root
+2 a
+3 b
+4 c
+
+# Self-join from Preside's admin site tree: `page` is grouped, `child_pages` is aggregated.
+query IITI
+select page.id, page.parent_page, page.title, count(child_pages.id) as child_count from fd_page page left join fd_page child_pages on (child_pages.parent_page = page.id) group by page.id order by page.sort_order
+----
+4 2 c 0
+3 1 b 0
+2 1 a 1
+1 NULL root 2
+
+query II
+select page.id, count(child_pages.id) from fd_page page left join fd_page child_pages on child_pages.parent_page = page.id group by page.id having max(child_pages.sort_order) > 1 and page.sort_order > 1 order by page.id
+----
+1 2
+
+# Both sides of the self-join grouped by their keys.
+query IITT
+select page.id, child_pages.id, page.title, child_pages.title from fd_page page join fd_page child_pages on child_pages.parent_page = page.id group by page.id, child_pages.id order by child_pages.id
+----
+1 2 root a
+1 3 root b
+2 4 a c
+
+# Composite key, with and without an alias, dependent columns inside expressions.
+query IIT
+select a, b, v from fd_pair group by a, b order by v desc
+----
+2 1 z
+1 2 y
+1 1 x
+
+query IITI
+select b, a, upper(v) as u, count(*) from fd_pair group by b, a order by u
+----
+1 1 X 1
+2 1 Y 1
+1 2 Z 1
+
+query IIT
+select fd_pair.a, fd_pair.b, fd_pair.v from fd_pair group by fd_pair.a, fd_pair.b having fd_pair.v <> 'y' order by fd_pair.a
+----
+1 1 x
+2 1 z
+
+query IIT
+select k.a, k.b, k.v from fd_pair k group by k.a, k.b order by k.v
+----
+1 1 x
+1 2 y
+2 1 z
+
+query ITIIT
+select fd_page.id, fd_page.title, fd_pair.a, fd_pair.b, fd_pair.v from fd_page join fd_pair on fd_pair.a = fd_page.id group by fd_page.id, fd_pair.a, fd_pair.b order by fd_page.id, fd_pair.b
+----
+1 root 1 1 x
+1 root 1 2 y
+2 a 2 1 z
+
+# Only part of a composite key is grouped.
+statement error must appear in the GROUP BY clause
+select a, v from fd_pair group by a
+
+# The other side of the self-join is not determined by `page.id`.
+statement error must appear in the GROUP BY clause
+select page.id, child_pages.title from fd_page page left join fd_page child_pages on child_pages.parent_page = page.id group by page.id
+
+statement error must appear in the GROUP BY clause
+select page.id, count(*) from fd_page page left join fd_page child_pages on child_pages.parent_page = page.id group by page.id order by child_pages.sort_order
+
+statement error must appear in the GROUP BY clause
+select page.id, count(*) from fd_page page left join fd_page child_pages on child_pages.parent_page = page.id group by page.id having child_pages.sort_order > 1
+
+# Another table's columns are not determined by this table's key.
+statement error must appear in the GROUP BY clause
+select fd_page.id, fd_pair.v from fd_page join fd_pair on fd_pair.a = fd_page.id group by fd_page.id
+
+# An expression over the key is not the key.
+statement error must appear in the GROUP BY clause
+select id + 0 as x, title from fd_page group by x
+
+# No key grouped: HAVING and ORDER BY on an ungrouped column are rejected.
+statement error must appear in the GROUP BY clause
+select title from fd_page group by title order by sort_order
+
+statement error must appear in the GROUP BY clause
+select title, count(*) from fd_page group by title having sort_order > 1
+
+# Derived tables, views and CTEs carry no key.
+statement error must appear in the GROUP BY clause
+select d.id, d.title from (select id, title from fd_page) d group by d.id
+
+statement ok
+create view fd_view as select * from fd_page
+
+statement error must appear in the GROUP BY clause
+select id, title from fd_view group by id
+
+statement error must appear in the GROUP BY clause
+with c as (select * from fd_page) select id, title from c group by id
+
+statement ok
+drop view fd_view
+
+statement ok
+drop table fd_pair
+
+statement ok
+drop table fd_page
