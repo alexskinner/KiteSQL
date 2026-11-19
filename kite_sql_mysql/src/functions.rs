@@ -38,14 +38,11 @@ impl FunctionPack for MySqlFunctions {
     fn install(&self, registry: &mut FunctionRegistry) -> Result<(), DatabaseError> {
         registry.register_scalar(Replace::new())?;
 
-        // LENGTH: TEXT and Integer
+        // LENGTH: accepts any type (TEXT signature, converts numerics to string)
         registry.register_scalar(Length::new(TEXT))?;
-        registry.register_scalar(Length::new(LogicalType::Integer))?;
 
-        // HEX: TEXT and Integer (Integer returns two's complement hex for negatives)
+        // HEX: accepts any type (TEXT signature, handles numerics specially)
         registry.register_scalar(Hex::new(TEXT))?;
-        registry.register_scalar(Hex::new(LogicalType::Integer))?;
-        registry.register_scalar(Hex::new(LogicalType::Bigint))?;
 
         // CONCAT: 1-10 arguments (variadic)
         for count in 1..=10 {
@@ -80,13 +77,13 @@ impl FunctionPack for MySqlFunctions {
             registry.register_scalar(Least::new(LogicalType::Integer, count))?;
         }
 
-        // ROUND: Float64, Decimal, and Integer, with 1 or 2 arguments
+        // ROUND: Register specific types (literals default to Double)
         registry.register_scalar(Round::new(LogicalType::Double, false))?;
         registry.register_scalar(Round::new(LogicalType::Double, true))?;
         
-        // Register Decimal with various precisions (common ones plus None)
+        // Register common Decimal precisions
         for precision in [None, Some(10), Some(20), Some(38)] {
-            for scale in [None, Some(0), Some(2), Some(3), Some(4)] {
+            for scale in [None, Some(0), Some(2), Some(3), Some(4), Some(6)] {
                 registry.register_scalar(Round::new(LogicalType::Decimal(precision, scale), false))?;
                 registry.register_scalar(Round::new(LogicalType::Decimal(precision, scale), true))?;
             }
@@ -213,7 +210,7 @@ impl Length {
                 name: "length".into(),
                 arg_types: vec![arg_type],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
+                accepts_any_args: true, // Accept any type, convert to text
             },
         })
     }
@@ -1117,7 +1114,7 @@ impl Hex {
                 name: "hex".into(),
                 arg_types: vec![arg_type],
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
+                accepts_any_args: true, // Accept any type, handle numerics specially
             },
         })
     }
@@ -1397,7 +1394,7 @@ impl Round {
                 name: "round".into(),
                 arg_types,
                 persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
+                accepts_any_args: false, // Type-specific matching
             },
         })
     }

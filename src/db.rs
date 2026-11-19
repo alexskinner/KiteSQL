@@ -3933,6 +3933,7 @@ pub(crate) mod test {
                         name: "my_udf".into(),
                         arg_types: vec![],
                         persistence: crate::expression::function::PersistencePolicy::Durable,
+                        accepts_any_args: false,
                     },
                     return_type: LogicalType::Integer,
                 }

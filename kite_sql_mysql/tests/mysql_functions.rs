@@ -411,21 +411,28 @@ fn ifnull_function() -> Result<(), DatabaseError> {
 #[test]
 fn round_function() -> Result<(), DatabaseError> {
     let dir = TempDir::new().unwrap();
-    let db = database(&dir)?;
+    let mut db = database(&dir)?;
+
+    db.ddl("create table t (id int primary key, val double)")?;
+    db.run("insert into t values (1, 1.5), (2, 1.234), (3, 1.567)")?
+        .done()?;
 
     use ordered_float::OrderedFloat;
     assert_eq!(
-        scalar(&db, "select round(1.5)")?,
+        scalar(&db, "select round(val) from t where id = 1")?,
         DataValue::Float64(OrderedFloat(2.0))
     );
     assert_eq!(
-        scalar(&db, "select round(1.234, 2)")?,
+        scalar(&db, "select round(val, 2) from t where id = 2")?,
         DataValue::Float64(OrderedFloat(1.23))
     );
     assert_eq!(
-        scalar(&db, "select round(1.567, 1)")?,
+        scalar(&db, "select round(val, 1) from t where id = 3")?,
         DataValue::Float64(OrderedFloat(1.6))
     );
-    assert_eq!(scalar(&db, "select round(null)")?, DataValue::Null);
+    assert_eq!(
+        scalar(&db, "select round(cast(null as double))")?,
+        DataValue::Null
+    );
     Ok(())
 }

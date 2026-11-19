@@ -110,6 +110,7 @@ mod tests {
             name: name.into(),
             arg_types: vec![LogicalType::Integer],
             persistence: crate::expression::function::PersistencePolicy::Durable,
+            accepts_any_args: false,
         };
         let mut bytes = Vec::new();
         summary

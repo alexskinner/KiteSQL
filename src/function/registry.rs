@@ -313,7 +313,6 @@ mod tests {
                     arg_types: vec![LogicalType::Integer],
                     persistence: PersistencePolicy::Transient,
                 accepts_any_args: false,
-                accepts_any_args: false,
                 },
                 return_type: LogicalType::Integer,
             })
@@ -360,7 +359,6 @@ mod tests {
                     name: "add_one".into(),
                     arg_types: vec![LogicalType::Bigint],
                     persistence: PersistencePolicy::Transient,
-                accepts_any_args: false,
                 accepts_any_args: false,
                 },
                 return_type: LogicalType::Bigint,
@@ -409,7 +407,6 @@ mod tests {
                     arg_types: vec![LogicalType::Integer],
                     persistence: PersistencePolicy::Durable,
                 accepts_any_args: false,
-                accepts_any_args: false,
                 },
                 return_type: LogicalType::Integer,
             })
@@ -456,7 +453,6 @@ mod tests {
                     name: "double_arg".into(),
                     arg_types: vec![LogicalType::Double],
                     persistence: PersistencePolicy::Transient,
-                accepts_any_args: false,
                 accepts_any_args: false,
                 },
                 return_type: LogicalType::Double,
@@ -654,7 +650,6 @@ mod tests {
                     arg_types: vec![],
                     persistence: PersistencePolicy::Durable,
                 accepts_any_args: false,
-                accepts_any_args: false,
                 },
             })
         }
@@ -763,7 +758,6 @@ mod tests {
                     name: "add_one".into(),
                     arg_types: vec![LogicalType::Integer],
                     persistence: PersistencePolicy::Durable,
-                accepts_any_args: false,
                 accepts_any_args: false,
                 },
                 return_type: LogicalType::Integer,
