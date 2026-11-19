@@ -164,18 +164,18 @@ select id from cc where ub = sb + 1
 statement error
 select id from cc where d = f
 
-# Preside adminUser2FAMigration shape.
+# CMS admin user 2FA migration shape.
 statement ok
-create table su (id varchar(35) primary key, two_step_auth_enabled boolean null, two_step_auth_key varchar(255) null, two_step_auth_key_created datetime null, two_step_auth_key_in_use boolean null)
+create table su (id varchar(35) primary key, mfa_enabled boolean null, mfa_key varchar(255) null, mfa_key_created datetime null, mfa_key_in_use boolean null)
 
 statement ok
 insert into su values ('a', null, 'k1', '2026-01-01 00:00:00', true), ('b', false, 'k2', '2026-01-01 00:00:00', true), ('c', true, 'k3', '2026-01-01 00:00:00', true), ('d', false, 'k4', null, false)
 
 statement ok
-UPDATE su SET two_step_auth_key = NULL, two_step_auth_key_created = NULL, two_step_auth_key_in_use = 0 WHERE ( two_step_auth_enabled IS NULL OR two_step_auth_enabled = 0 ) AND two_step_auth_key_in_use = 1
+UPDATE su SET mfa_key = NULL, mfa_key_created = NULL, mfa_key_in_use = 0 WHERE ( mfa_enabled IS NULL OR mfa_enabled = 0 ) AND mfa_key_in_use = 1
 
 query TTB rowsort
-select id, two_step_auth_key, two_step_auth_key_in_use from su
+select id, mfa_key, mfa_key_in_use from su
 ----
 a NULL false
 b NULL false
