@@ -364,9 +364,11 @@ impl<S: Storage> Database<S> {
                 }
             } else {
                 let inner = Some(OwnedPtr::new(TransactionIter::new(plan_arena, executor)));
+                let (pinned, _) = self.state.catalog_pinned();
                 return Ok(DatabaseIter {
                     transaction: Some(transaction),
                     inner,
+                    _pinned: pinned,
                 });
             }
         }

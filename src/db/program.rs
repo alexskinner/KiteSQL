@@ -65,7 +65,7 @@ pub struct Program<'p> {
     pub(crate) arena: ExecMetaArena<ParamArena<'p>>,
     /// Database instance ID this program was prepared on.
     pub(crate) db_id: Arc<()>,
-    /// Catalog generation this program was bound to.
+    /// Catalog generation number this program was bound to.
     pub(crate) catalog_gen: usize,
 }
 
@@ -88,7 +88,12 @@ impl<'p> Program<'p> {
         }
         // Use the transaction's pinned catalog, not the latest one.
         let catalog = transaction.catalog;
-        self.bind(catalog.arena, params.as_ref())?;
+        let catalog_gen = if let Some(ref cat) = *transaction._pinned {
+            cat.generation
+        } else {
+            0
+        };
+        self.bind(catalog_gen, params.as_ref())?;
         if transaction.read_only && !self.read_only() {
             return Err(DatabaseError::UnsupportedStmt(
                 "cannot write in a read-only transaction".into(),
@@ -114,12 +119,10 @@ impl<'p> Program<'p> {
 
     fn bind(
         &mut self,
-        table_arena: &TableArenaCell,
+        catalog_gen: usize,
         params: &[(usize, Param<'_>)],
     ) -> Result<(), DatabaseError> {
-        // Check catalog generation match by comparing arena pointers
-        let current_gen = table_arena as *const _ as usize;
-        if self.catalog_gen != current_gen {
+        if self.catalog_gen != catalog_gen {
             return Err(DatabaseError::StaleCatalog);
         }
         self.arena.parent_mut().bind(params)?;
@@ -216,7 +219,12 @@ impl<S: Storage> State<S> {
     {
         let (plan, mut arena) = self.build_plan_in(catalog, params, transaction, build)?;
         let parameter_expressions = arena.parameter_expressions();
-        let catalog_gen = catalog.arena as *const _ as usize;
+        let (published, _) = self.catalog_pinned();
+        let catalog_gen = if let Some(ref cat) = *published {
+            cat.generation
+        } else {
+            0
+        };
         Ok(Program {
             executor: Executor::new(plan, &arena),
             arena: ExecMetaArena::new(ParamArena::new(arena, parameter_expressions)),

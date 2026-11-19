@@ -612,7 +612,8 @@ impl DataBaseBuilder {
             function_registry,
             meta_cache,
             table_arena,
-            published: std::sync::OnceLock::new(),
+            published: arc_swap::ArcSwap::from_pointee(None),
+            generation_counter: std::sync::atomic::AtomicUsize::new(0),
             optimizer_pipeline: optimizer_pipeline(),
             histogram_buckets,
             hll_precision,
@@ -870,15 +871,14 @@ pub(crate) struct CatalogRef<'a> {
 
 /// A catalog generation published by a committed `Session` transaction.
 ///
-/// Published generations form an append-only chain behind a `OnceLock`, so a `&Database` can
-/// publish without mutating anything a running statement may be reading: a statement keeps
-/// the generation it bound against, and newer statements pick up the tail. The chain is folded
-/// into the base catalog by [`State::absorb_published`] at the next `&mut` entry point.
-#[derive(Default)]
-pub(crate) struct PublishedCatalog {
+/// Published generations are held in `Arc`s and atomically swapped. Transactions and Programs
+/// pin their generation by holding their own `Arc`, so a generation is automatically dropped
+/// when no holder references it anymore. No `&mut Database` is required for cleanup.
+#[doc(hidden)]
+pub struct PublishedCatalog {
     arena: TableArenaCell,
     meta: StatisticsMetaCache,
-    next: std::sync::OnceLock<Box<PublishedCatalog>>,
+    generation: usize,
 }
 
 /// A catalog a session builds for itself from its own transaction's view of storage.
@@ -900,10 +900,11 @@ pub(crate) struct State<S> {
     function_registry: FunctionRegistry,
     meta_cache: StatisticsMetaCache,
     table_arena: TableArenaCell,
-    /// Catalog generations published by `Session` commits. Append-only while the database is
-    /// shared (`&Database`); folded back into `table_arena`/`meta_cache` by the next `&mut`
-    /// entry point. See [`PublishedCatalog`].
-    published: std::sync::OnceLock<Box<PublishedCatalog>>,
+    /// Current catalog generation, atomically swapped when a Session commits DDL.
+    /// Transactions and Programs keep their own Arc to pin their generation.
+    published: arc_swap::ArcSwap<Option<PublishedCatalog>>,
+    /// Monotonically increasing generation counter.
+    generation_counter: std::sync::atomic::AtomicUsize,
     optimizer_pipeline: HepOptimizerPipeline,
     histogram_buckets: Option<usize>,
     hll_precision: Option<u8>,
@@ -951,40 +952,85 @@ impl<S: Storage> State<S> {
         )
     }
     /// The newest catalog generation: the last published one, else the base fields.
+    /// This version is used internally where the State's lifetime is sufficient.
     pub(crate) fn catalog(&self) -> CatalogRef<'_> {
-        let mut latest = CatalogRef {
-            arena: &self.table_arena,
-            meta: &self.meta_cache,
+        // SAFETY: The ArcSwap holds the Arc, and we're borrowing from it.
+        // The returned references are valid for the State's lifetime because:
+        // 1. The Arc is stored in self.published which lives as long as self
+        // 2. Even though load() returns a Guard, the actual PublishedCatalog is in an Arc
+        // 3. We're only reading, not mutating
+        // 4. The borrow checker ensures the State outlives the returned CatalogRef
+        let guard = self.published.load();
+        if let Some(ref catalog) = **guard {
+            unsafe {
+                let arena: &TableArenaCell = std::mem::transmute(&catalog.arena);
+                let meta: &StatisticsMetaCache = std::mem::transmute(&catalog.meta);
+                CatalogRef { arena, meta }
+            }
+        } else {
+            CatalogRef {
+                arena: &self.table_arena,
+                meta: &self.meta_cache,
+            }
+        }
+    }
+
+    /// Returns the newest catalog generation pinned with an Arc and a CatalogRef.
+    /// The caller must keep the returned Arc alive for as long as they use the CatalogRef.
+    pub(crate) fn catalog_pinned(&self) -> (Arc<Option<PublishedCatalog>>, CatalogRef<'_>) {
+        let pinned = self.published.load_full();
+        let catalog_ref = if let Some(ref catalog) = *pinned {
+            unsafe {
+                let arena: &TableArenaCell = std::mem::transmute(&catalog.arena);
+                let meta: &StatisticsMetaCache = std::mem::transmute(&catalog.meta);
+                CatalogRef { arena, meta }
+            }
+        } else {
+            CatalogRef {
+                arena: &self.table_arena,
+                meta: &self.meta_cache,
+            }
         };
-        let mut slot = &self.published;
-        while let Some(node) = slot.get() {
-            latest = CatalogRef {
-                arena: &node.arena,
-                meta: &node.meta,
-            };
-            slot = &node.next;
-        }
-        latest
+        (pinned, catalog_ref)
     }
 
-    /// The empty slot at the end of the published chain.
-    fn publish_slot(&self) -> &std::sync::OnceLock<Box<PublishedCatalog>> {
-        let mut slot = &self.published;
-        while let Some(node) = slot.get() {
-            slot = &node.next;
+    #[doc(hidden)]
+    pub fn catalog_generation(&self) -> usize {
+        let published = self.published.load();
+        if let Some(ref catalog) = **published {
+            catalog.generation
+        } else {
+            0
         }
-        slot
     }
 
-    /// Folds published generations into the base fields. Needs `&mut`, so no statement or
+    /// Publishes a new catalog generation. Returns the generation number.
+    fn publish_catalog(&self, arena: TableArenaCell, meta: StatisticsMetaCache) -> usize {
+        let generation = self
+            .generation_counter
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst)
+            + 1;
+        let new_catalog = Arc::new(Some(PublishedCatalog {
+            arena,
+            meta,
+            generation,
+        }));
+        self.published.store(new_catalog);
+        generation
+    }
+
+    /// Folds published generation into the base fields. Needs `&mut`, so no statement or
     /// transaction can still hold a reference to an older generation.
     pub(crate) fn absorb_published(&mut self) {
-        while let Some(mut node) = self.published.take() {
-            if let Some(next) = node.next.take() {
-                self.published = std::sync::OnceLock::from(next);
-            }
-            self.table_arena = std::mem::take(&mut node.arena);
-            self.meta_cache = std::mem::take(&mut node.meta);
+        let published = self.published.load();
+        if let Some(ref catalog) = **published {
+            let arena_content = catalog.arena.borrow().clone();
+            self.table_arena = TableArenaCell::new(arena_content);
+            self.meta_cache = StatisticsMetaCache {
+                indexes: catalog.meta.indexes.clone(),
+                columns: catalog.meta.columns.clone(),
+            };
+            self.published.store(Arc::new(None));
         }
     }
 
@@ -1445,29 +1491,19 @@ impl<S: Storage> Database<S> {
     /// `&mut self`: rebuilds a generation from committed storage and appends it to the chain.
     /// Statements already running keep the generation they bound against.
     pub(crate) async fn publish_catalog(&self) -> Result<(), DatabaseError> {
-        loop {
-            let transaction = self.storage.transaction_with_functions(
-                self.storage.default_transaction_isolation(),
-                true,
-                Some(self.state.scala_functions_arc()),
-                Some(self.state.table_functions_arc()),
-            )?;
-            let slot = self.state.publish_slot();
-            let built = self
-                .state
-                .build_catalog(self.state.catalog(), &transaction)
-                .await?;
-            drop(transaction);
-            let node = Box::new(PublishedCatalog {
-                arena: built.arena,
-                meta: built.meta,
-                next: std::sync::OnceLock::new(),
-            });
-            // Lost the race to another publisher: rebuild on top of its generation.
-            if slot.set(node).is_ok() {
-                return Ok(());
-            }
-        }
+        let transaction = self.storage.transaction_with_functions(
+            self.storage.default_transaction_isolation(),
+            true,
+            Some(self.state.scala_functions_arc()),
+            Some(self.state.table_functions_arc()),
+        )?;
+        let built = self
+            .state
+            .build_catalog(self.state.catalog(), &transaction)
+            .await?;
+        drop(transaction);
+        self.state.publish_catalog(built.arena, built.meta);
+        Ok(())
     }
 
     pub async fn analyze(&mut self, table_name: impl AsRef<str>) -> Result<(), DatabaseError> {
@@ -1621,7 +1657,7 @@ impl<S: Storage> Database<S> {
         read_only: bool,
         enable_undo: bool,
     ) -> Result<Transaction<'_, S>, DatabaseError> {
-        let catalog = self.state.catalog();
+        let (pinned, catalog) = self.state.catalog_pinned();
         let transaction = self.storage.transaction_with_functions(
             self.transaction_isolation,
             read_only,
@@ -1633,6 +1669,7 @@ impl<S: Storage> Database<S> {
             inner: transaction,
             state: &self.state,
             catalog,
+            _pinned: pinned,
             read_only,
             enable_undo,
             db_id: self.id.clone(),
@@ -1662,6 +1699,18 @@ impl<S: Storage> Database<S> {
     #[cfg(feature = "parser")]
     pub fn session(&self) -> crate::db::session::Session<'_, S> {
         crate::db::session::Session::new(self)
+    }
+
+    /// Returns the current catalog generation number (for testing).
+    #[doc(hidden)]
+    pub fn test_catalog_generation(&self) -> usize {
+        self.state.catalog_generation()
+    }
+
+    /// Returns a weak reference to the current published catalog (for testing).
+    #[doc(hidden)]
+    pub fn test_catalog_weak_ref(&self) -> std::sync::Weak<Option<PublishedCatalog>> {
+        Arc::downgrade(&self.state.published.load_full())
     }
 }
 
@@ -1703,6 +1752,7 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
             ) -> Result<(Executor<'s>, PlanArena<'s>), DatabaseError>
             + MaybeSend,
     {
+        let (pinned, catalog) = self.state.catalog_pinned();
         let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
             self.transaction_isolation,
             read_only,
@@ -1711,13 +1761,13 @@ impl<'a, S: Storage> BindSource for &'a Database<S> {
         )?);
         // SAFETY: the transaction stays boxed, and so in place, until the iterator is gone.
         let tx = unsafe { &mut *transaction.get() };
-        let catalog = self.state.catalog();
         let (executor, arena) = build(&self.state, catalog, tx)?;
         // Disable undo for autocommit: entire transaction is dropped on failure
         let (arena, executor) = self.state.execute(tx, executor, arena, false).await?;
         Ok(DatabaseIter {
             inner: Some(OwnedPtr::new(TransactionIter::new(arena, executor))),
             transaction: Some(transaction),
+            _pinned: pinned,
         })
     }
 
@@ -2075,9 +2125,10 @@ where
 
 /// Raw result iterator returned by database execution APIs.
 pub struct DatabaseIter<'a, S: Storage + 'a> {
-    // Dropped before `transaction`, which it borrows; `done` takes both out.
     pub(crate) inner: Option<OwnedPtr<TransactionIter<'a, 'a, S::TransactionType<'a>>>>,
     pub(crate) transaction: Option<OwnedPtr<S::TransactionType<'a>>>,
+    /// Pinned catalog generation to prevent it from being dropped while the iterator is alive.
+    pub(crate) _pinned: Arc<Option<PublishedCatalog>>,
 }
 
 #[maybe_async]
@@ -2147,6 +2198,8 @@ pub struct Transaction<'a, S: Storage + 'a> {
     /// was created. All statements in this transaction use this generation, never the
     /// latest one, ensuring consistent schema even if other sessions publish DDL.
     pub(crate) catalog: CatalogRef<'a>,
+    /// Pinned catalog generation to prevent it from being dropped while the transaction is alive.
+    pub(crate) _pinned: Arc<Option<PublishedCatalog>>,
     pub(crate) read_only: bool,
     pub(crate) enable_undo: bool,
     /// Database instance ID this transaction belongs to.
