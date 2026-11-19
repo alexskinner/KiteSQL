@@ -65,8 +65,8 @@ pub struct Program<'p> {
     pub(crate) arena: ExecMetaArena<ParamArena<'p>>,
     /// Database instance ID this program was prepared on.
     pub(crate) db_id: Arc<()>,
-    /// Catalog generation this program was bound to.
-    pub(crate) catalog_gen: usize,
+    /// Catalog generation this program was bound to, retained by the database for `'p`.
+    pub(crate) catalog: &'p PublishedCatalog,
 }
 
 #[maybe_async]
@@ -86,9 +86,13 @@ impl<'p> Program<'p> {
         if !Arc::ptr_eq(&self.db_id, &transaction.db_id) {
             return Err(DatabaseError::ForeignProgram);
         }
-        // Use the transaction's pinned catalog, not the latest one.
-        let catalog = transaction.catalog;
-        self.bind(catalog.arena, params.as_ref())?;
+        // The program runs only in a transaction pinned to the generation it was planned
+        // against: otherwise its plan may name tables or columns that are gone or changed.
+        if self.catalog.generation() != transaction.catalog.generation() {
+            return Err(DatabaseError::StaleCatalog);
+        }
+        let catalog = self.catalog;
+        self.bind(params.as_ref())?;
         if transaction.read_only && !self.read_only() {
             return Err(DatabaseError::UnsupportedStmt(
                 "cannot write in a read-only transaction".into(),
@@ -112,16 +116,7 @@ impl<'p> Program<'p> {
         })
     }
 
-    fn bind(
-        &mut self,
-        table_arena: &TableArenaCell,
-        params: &[(usize, Param<'_>)],
-    ) -> Result<(), DatabaseError> {
-        // Check catalog generation match by comparing arena pointers
-        let current_gen = table_arena as *const _ as usize;
-        if self.catalog_gen != current_gen {
-            return Err(DatabaseError::StaleCatalog);
-        }
+    fn bind(&mut self, params: &[(usize, Param<'_>)]) -> Result<(), DatabaseError> {
         self.arena.parent_mut().bind(params)?;
         self.arena.reset();
         Ok(())
@@ -145,7 +140,7 @@ impl<S: Storage> Database<S> {
         let transaction = self
             .storage
             .transaction_with_isolation(self.transaction_isolation, true)?;
-        let catalog = self.state.catalog();
+        let catalog = self.state.retain(&self.state.catalog());
         self.state
             .prepare_plan(self.id.clone(), catalog, &statement, params, &transaction)
     }
@@ -161,7 +156,7 @@ impl<'db, S: Storage> Transaction<'db, S> {
         let statement = self.state.parse_statement(sql)?;
         self.state.prepare_plan(
             self.db_id.clone(),
-            self.catalog,
+            self.state.retain(&self.catalog),
             &statement,
             params,
             &self.inner,
@@ -174,7 +169,7 @@ impl<S: Storage> State<S> {
     pub(crate) fn prepare_plan<'a, 'txn>(
         &'a self,
         db_id: Arc<()>,
-        catalog: CatalogRef<'a>,
+        catalog: &'a PublishedCatalog,
         statement: &Statement,
         params: &[(usize, LogicalType)],
         transaction: &S::TransactionType<'txn>,
@@ -203,7 +198,7 @@ impl<S: Storage> State<S> {
     >(
         &'a self,
         db_id: Arc<()>,
-        catalog: CatalogRef<'a>,
+        catalog: &'a PublishedCatalog,
         params: A,
         transaction: &T,
         build: F,
@@ -214,14 +209,13 @@ impl<S: Storage> State<S> {
             &mut PlanArena<'a>,
         ) -> Result<LogicalPlan, DatabaseError>,
     {
-        let (plan, mut arena) = self.build_plan_in(catalog, params, transaction, build)?;
+        let (plan, mut arena) = self.build_plan_in(catalog.view(), params, transaction, build)?;
         let parameter_expressions = arena.parameter_expressions();
-        let catalog_gen = catalog.arena as *const _ as usize;
         Ok(Program {
             executor: Executor::new(plan, &arena),
             arena: ExecMetaArena::new(ParamArena::new(arena, parameter_expressions)),
             db_id,
-            catalog_gen,
+            catalog,
         })
     }
 }

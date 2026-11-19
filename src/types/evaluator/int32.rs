@@ -13,12 +13,11 @@
 // limitations under the License.
 
 use crate::types::evaluator::DataValue;
-use crate::types::LogicalType;
 use crate::{numeric_binary_evaluator_definition, numeric_unary_evaluator_definition};
 
 numeric_unary_evaluator_definition!(Int32, DataValue::Int32);
 numeric_binary_evaluator_definition!(Int32, DataValue::Int32);
-crate::define_integer_cast_evaluators!(Int32, Int32, i32, LogicalType::Integer);
+crate::define_integer_cast_evaluators!(Int32, Int32, i32);
 
 // GRCOV_EXCL_START
 #[cfg(all(test, not(target_arch = "wasm32")))]
@@ -56,6 +55,22 @@ mod test {
 
         assert_eq!(
             int32_to_boolean_cast_eval(value.clone()).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            int32_to_boolean_cast_eval(DataValue::Int32(0)).unwrap(),
+            DataValue::Boolean(false)
+        );
+        assert_eq!(
+            int32_to_boolean_cast_eval(DataValue::Int32(2)).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            int32_to_boolean_cast_eval(DataValue::Int32(-1)).unwrap(),
+            DataValue::Boolean(true)
+        );
+        assert_eq!(
+            int32_to_boolean_cast_eval(DataValue::Int32(100)).unwrap(),
             DataValue::Boolean(true)
         );
         assert_eq!(

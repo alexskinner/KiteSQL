@@ -61,6 +61,13 @@ float64_binary!(
     }
 );
 
+crate::define_cast_evaluator!(float64_to_boolean_cast_eval, DataValue::Float64(value) => {
+    if value.is_nan() {
+        Err(DatabaseError::InvalidValue("NaN cannot be cast to boolean".to_string()))
+    } else {
+        Ok(DataValue::Boolean(value.0 != 0.0))
+    }
+});
 crate::define_cast_evaluator!(float64_to_float_cast_eval, DataValue::Float64(value) => {
     Ok(DataValue::Float32(ordered_float::OrderedFloat(value.0 as f32)))
 });

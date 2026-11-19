@@ -847,7 +847,8 @@ mod tests {
         database.analyze("t1").await?;
 
         let transaction = database.storage.transaction()?;
-        let catalog = database.state.catalog();
+        let catalog_ref = database.state.catalog();
+        let catalog = catalog_ref.view();
         let arena_borrow = catalog.arena.borrow();
         let c1_column = transaction
             .table(&arena_borrow.names, &arena_borrow.tables, "t1")?
@@ -911,7 +912,7 @@ mod tests {
             .build();
 
         let best_plan = pipeline.instantiate(plan).find_best(
-            Some(&StatisticMetaLoader::new(database.state.meta_cache())),
+            Some(&StatisticMetaLoader::new(database.state.catalog().meta())),
             &mut plan_arena,
         )?;
 

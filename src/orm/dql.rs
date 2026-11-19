@@ -25,7 +25,7 @@ impl<S: Storage> Database<S> {
         let transaction = self
             .storage
             .transaction_with_isolation(self.transaction_isolation, true)?;
-        let catalog = self.state.catalog();
+        let catalog = self.state.retain(&self.state.catalog());
         self.state.prepare_plan_with(
             self.id.clone(),
             catalog,
@@ -222,7 +222,7 @@ impl<'a, S: Storage> Transaction<'a, S> {
     {
         self.state.prepare_plan_with(
             self.db_id.clone(),
-            self.catalog,
+            self.state.retain(&self.catalog),
             params,
             &self.inner,
             |binder, arena| {

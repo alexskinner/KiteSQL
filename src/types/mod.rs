@@ -257,6 +257,18 @@ impl LogicalType {
             }
             _ => {}
         }
+        if matches!(
+            (left, right),
+            (
+                LogicalType::Boolean,
+                LogicalType::Char(_, _) | LogicalType::Varchar(_, _)
+            ) | (
+                LogicalType::Char(_, _) | LogicalType::Varchar(_, _),
+                LogicalType::Boolean
+            )
+        ) {
+            return Ok(Cow::Borrowed(&LogicalType::Boolean));
+        }
         if left.is_numeric() && right.is_numeric() {
             return LogicalType::combine_numeric_types(left, right);
         }

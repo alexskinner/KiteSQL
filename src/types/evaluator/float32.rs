@@ -19,6 +19,15 @@ use crate::types::LogicalType;
 #[cfg(feature = "decimal")]
 use rust_decimal::prelude::FromPrimitive;
 use std::hint;
+
+crate::define_cast_evaluator!(float32_to_boolean_cast_eval, DataValue::Float32(value) => {
+    if value.is_nan() {
+        Err(DatabaseError::InvalidValue("NaN cannot be cast to boolean".to_string()))
+    } else {
+        Ok(DataValue::Boolean(value.0 != 0.0))
+    }
+});
+
 pub fn float32_minus_unary_eval(value: &DataValue) -> DataValue {
     match value {
         DataValue::Float32(value) => DataValue::Float32(-value),
