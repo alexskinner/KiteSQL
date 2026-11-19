@@ -218,7 +218,7 @@ pub fn strict_store<R>(f: impl FnOnce() -> R) -> R {
 
 /// Division by zero under the current policy: `Ok(())` means "evaluate to NULL" (a warning
 /// has been recorded), `Err` fails the statement.
-pub(crate) fn division_by_zero() -> Result<(), crate::errors::DatabaseError> {
+pub fn division_by_zero() -> Result<(), crate::errors::DatabaseError> {
     match policy().division_by_zero {
         DivisionByZero::Error => Err(crate::errors::DatabaseError::InvalidValue(
             "division by zero".into(),

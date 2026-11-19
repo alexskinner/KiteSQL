@@ -37,6 +37,10 @@ pub fn install_core_functions(
     for ty in Abs::types() {
         registry.load_scalar(Abs::new(ty));
     }
+    #[cfg(feature = "decimal")]
+    {
+        registry.load_scalar(Abs::new(crate::types::LogicalType::Decimal(None, None)));
+    }
     registry.load_scalar(CharLength::new("char_length".to_lowercase()));
     registry.load_scalar(CharLength::new("character_length".to_lowercase()));
     #[cfg(feature = "time")]

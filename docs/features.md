@@ -131,6 +131,8 @@ fn map_column_type(
 
 The `map_column_type` hook takes precedence over `map_data_type`. By default, `map_column_type` wraps `map_data_type` with no display name.
 
+Two hooks let a dialect change numeric typing. `number_literal` reads a numeric literal's text and may return its value and type (for example an exact DECIMAL for `0.1`); `None` keeps the engine's reading. `arithmetic_return_type` may give the result type of `+ - * / %` for a pair of operand types. When it returns a DECIMAL with a scale, the operation is computed in DECIMAL (also for integer operands) and rounded half away from zero to that scale, once, at the end of a chain of such operations or comparisons. `None` keeps the engine's type.
+
 ### ORM Mapping: `features = ["orm"]`
 See [the ORM guide](../src/orm/README.md) for the full ORM guide, including:
 

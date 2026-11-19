@@ -195,6 +195,13 @@ impl FunctionRegistry {
             && matches!(expected, LogicalType::Varchar(None, _))
     }
 
+    /// A parameter declared as `DECIMAL` without precision or scale accepts any DECIMAL
+    /// argument, which keeps its own precision and scale.
+    fn is_decimal_widening(provided: &LogicalType, expected: &LogicalType) -> bool {
+        matches!(provided, LogicalType::Decimal(..))
+            && matches!(expected, LogicalType::Decimal(None, None))
+    }
+
     pub fn resolve_scalar(
         &self,
         name: &str,
@@ -241,6 +248,7 @@ impl FunctionRegistry {
                     overall_quality = overall_quality.max(MatchQuality::NullLiteral);
                 } else if LogicalType::can_implicit_cast(provided, expected)
                     || Self::is_string_widening(provided, expected)
+                    || Self::is_decimal_widening(provided, expected)
                 {
                     overall_quality = overall_quality.max(MatchQuality::ImplicitCast);
                 } else {
