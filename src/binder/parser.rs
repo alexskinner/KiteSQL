@@ -153,6 +153,15 @@ impl<S: Storage> State<S> {
         for stmt in &mut stmts {
             dialect.rewrite(stmt)?;
         }
+        // One policy per prepare: with several statements, the strictest choice wins.
+        let mut policy = dialect.statement_policy(&stmts[0]);
+        for stmt in &stmts[1..] {
+            let next = dialect.statement_policy(stmt);
+            if next != policy {
+                policy = crate::diagnostics::StatementPolicy::default();
+            }
+        }
+        crate::diagnostics::begin_statement(policy);
         Ok(stmts)
     }
 
@@ -184,6 +193,16 @@ impl<S: Storage> Database<S> {
     /// Parses SQL statements using this database's configured parser recursion limit.
     pub fn prepare_all<T: AsRef<str>>(&self, sql: T) -> Result<Vec<Statement>, DatabaseError> {
         self.state.prepare_all(sql)
+    }
+
+    /// Takes the diagnostics the last statement prepared on this thread raised, mapped
+    /// through the default dialect. Call it after the statement's rows are drained.
+    pub fn take_diagnostics(&self) -> Vec<crate::diagnostics::Diagnostic> {
+        let dialect = self.state.dialect_registry().default_dialect();
+        crate::diagnostics::take()
+            .into_iter()
+            .filter_map(|d| dialect.map_diagnostic(d))
+            .collect()
     }
 
     pub async fn ddl<T: AsRef<str>>(&mut self, sql: T) -> Result<(), DatabaseError> {
