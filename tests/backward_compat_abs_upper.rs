@@ -1,7 +1,7 @@
 // Backward compatibility test: ensure databases with views using abs()/upper()
 // created on main (925e292) can be loaded and queried with this branch.
 
-use kite_sql::db::{DataBaseBuilder, Database};
+use kite_sql::db::DataBaseBuilder;
 use kite_sql::errors::DatabaseError;
 use kite_sql::storage::lmdb::LmdbStorage;
 use kite_sql::types::value::DataValue;
@@ -13,7 +13,7 @@ fn test_compat_view_with_abs_upper() -> Result<(), DatabaseError> {
 
     // Create a database with views using abs() and upper() - functions that use FunctionSummary
     let storage = LmdbStorage::new(dir.path())?;
-    let mut db = DataBaseBuilder::path(".").build_with_storage(storage)?;
+    let mut db = DataBaseBuilder::path(dir.path()).build_with_storage(storage)?;
 
     db.ddl("create table t (id int primary key, val int, name varchar(20))")?;
     db.run("insert into t values (1, -5, 'hello'), (2, 10, 'world')")?

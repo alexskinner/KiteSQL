@@ -112,7 +112,6 @@ fn eval_value_as_text(
         DataValue::UInt64(i) => Ok(Some(i.to_string())),
         DataValue::Float32(f) => Ok(Some(f.0.to_string())),
         DataValue::Float64(f) => Ok(Some(f.0.to_string())),
-        #[cfg(feature = "decimal")]
         DataValue::Decimal(d) => Ok(Some(d.to_string())),
         _ => {
             let value = value.into_owned().cast(&TEXT)?;
@@ -202,6 +201,12 @@ impl ScalarFunctionImpl for Length {
         arena: &(dyn MetaArena + '_),
         tuple: Option<&dyn Input>,
     ) -> Result<DataValue, DatabaseError> {
+        if args.len() != 1 {
+            return Err(DatabaseError::InvalidValue(format!(
+                "LENGTH expects 1 argument, got {}",
+                args.len()
+            )));
+        }
         match eval_value_as_text(args[0], arena, tuple)? {
             Some(s) => Ok(DataValue::Int32(s.len() as i32)),
             None => Ok(DataValue::Null),
@@ -218,6 +223,10 @@ impl ScalarFunctionImpl for Length {
 
     fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
         None
+    }
+
+    fn accepts_any_args(&self) -> bool {
+        true
     }
 }
 
@@ -487,6 +496,11 @@ impl ScalarFunctionImpl for Locate {
         } else {
             1
         };
+
+        // Empty substring always matches at the starting position
+        if sub.is_empty() {
+            return Ok(DataValue::Int32(start_char_pos as i32));
+        }
 
         let char_count = s.chars().count();
         if start_char_pos == 0 || start_char_pos > char_count {
@@ -1049,6 +1063,12 @@ impl ScalarFunctionImpl for Hex {
         arena: &(dyn MetaArena + '_),
         tuple: Option<&dyn Input>,
     ) -> Result<DataValue, DatabaseError> {
+        if args.len() != 1 {
+            return Err(DatabaseError::InvalidValue(format!(
+                "HEX expects 1 argument, got {}",
+                args.len()
+            )));
+        }
         let value = arena.expression(args[0]).eval(arena, tuple)?;
         if value.is_null() {
             return Ok(DataValue::Null);
@@ -1443,6 +1463,13 @@ impl ScalarFunctionImpl for Round {
         arena: &(dyn MetaArena + '_),
         tuple: Option<&dyn Input>,
     ) -> Result<DataValue, DatabaseError> {
+        if args.is_empty() || args.len() > 2 {
+            return Err(DatabaseError::InvalidValue(format!(
+                "ROUND expects 1 or 2 arguments, got {}",
+                args.len()
+            )));
+        }
+
         let x_val = arena.expression(args[0]).eval(arena, tuple)?;
         if x_val.is_null() {
             return Ok(DataValue::Null);
@@ -1466,22 +1493,24 @@ impl ScalarFunctionImpl for Round {
             0
         };
 
+        // Clamp d to prevent overflow and excessive computation
+        let d = d.max(-30).min(30);
+
         match x_val.as_ref() {
             DataValue::Int32(i) => {
                 if d >= 0 {
                     Ok(DataValue::Int32(*i))
                 } else {
-                    // Use checked operations to avoid panic
+                    // Widen to i128 to handle overflow
+                    let val = *i as i128;
                     let abs_d = (-d) as u32;
-                    match 10_i32.checked_pow(abs_d) {
-                        Some(divisor) => {
-                            let result = (*i as f64 / divisor as f64).round() as i32;
-                            match result.checked_mul(divisor) {
-                                Some(val) => Ok(DataValue::Int32(val)),
-                                None => Ok(DataValue::Int32(0)), // Overflow returns 0
-                            }
-                        }
-                        None => Ok(DataValue::Int32(0)), // Exponent overflow returns 0
+                    let divisor = 10_i128.pow(abs_d);
+                    let rounded = ((val as f64 / divisor as f64).round() as i128) * divisor;
+                    // Clamp to i32 range
+                    if rounded > i32::MAX as i128 || rounded < i32::MIN as i128 {
+                        Ok(DataValue::Int32(0))
+                    } else {
+                        Ok(DataValue::Int32(rounded as i32))
                     }
                 }
             }
@@ -1489,20 +1518,19 @@ impl ScalarFunctionImpl for Round {
                 if d >= 0 {
                     Ok(DataValue::Int64(*i))
                 } else {
+                    // Widen to i128 to handle overflow
+                    let val = *i as i128;
                     let abs_d = (-d) as u32;
-                    match 10_i64.checked_pow(abs_d) {
-                        Some(divisor) => {
-                            let result = (*i as f64 / divisor as f64).round() as i64;
-                            match result.checked_mul(divisor) {
-                                Some(val) => Ok(DataValue::Int64(val)),
-                                None => Ok(DataValue::Int64(0)),
-                            }
-                        }
-                        None => Ok(DataValue::Int64(0)),
+                    let divisor = 10_i128.pow(abs_d);
+                    let rounded = ((val as f64 / divisor as f64).round() as i128) * divisor;
+                    // Clamp to i64 range
+                    if rounded > i64::MAX as i128 || rounded < i64::MIN as i128 {
+                        Ok(DataValue::Int64(0))
+                    } else {
+                        Ok(DataValue::Int64(rounded as i64))
                     }
                 }
             }
-            #[cfg(feature = "decimal")]
             DataValue::Decimal(dec) => {
                 use rust_decimal::prelude::*;
                 if d >= 0 {
@@ -1510,9 +1538,9 @@ impl ScalarFunctionImpl for Round {
                         .round_dp_with_strategy(d as u32, RoundingStrategy::MidpointAwayFromZero);
                     Ok(DataValue::Decimal(rounded))
                 } else {
-                    // For negative d, scale by 10^-d
+                    // For negative d, scale by 10^-d using Decimal
                     let abs_d = (-d) as u32;
-                    let scale_factor = Decimal::from(10_i64.pow(abs_d));
+                    let scale_factor = Decimal::from_i128_with_scale(10_i128.pow(abs_d), 0);
                     let scaled = *dec / scale_factor;
                     let rounded =
                         scaled.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
@@ -1520,16 +1548,41 @@ impl ScalarFunctionImpl for Round {
                 }
             }
             DataValue::Float32(f) => {
+                let val = f.0 as f64;
+                // Check for special values
+                if !val.is_finite() {
+                    return Ok(DataValue::Float32(*f));
+                }
+                // Clamp d to prevent NaN
                 let multiplier = 10_f64.powi(d);
-                let result = (f.0 as f64 * multiplier).round() / multiplier;
+                if !multiplier.is_finite() {
+                    return Ok(DataValue::Float32(*f));
+                }
+                let result = (val * multiplier).round() / multiplier;
                 use ordered_float::OrderedFloat;
-                Ok(DataValue::Float64(OrderedFloat(result)))
+                if result.is_finite() {
+                    Ok(DataValue::Float32(OrderedFloat(result as f32)))
+                } else {
+                    Ok(DataValue::Float32(*f))
+                }
             }
             DataValue::Float64(f) => {
+                // Check for special values
+                if !f.0.is_finite() {
+                    return Ok(DataValue::Float64(*f));
+                }
+                // Clamp d to prevent NaN
                 let multiplier = 10_f64.powi(d);
+                if !multiplier.is_finite() {
+                    return Ok(DataValue::Float64(*f));
+                }
                 let result = (f.0 * multiplier).round() / multiplier;
                 use ordered_float::OrderedFloat;
-                Ok(DataValue::Float64(OrderedFloat(result)))
+                if result.is_finite() {
+                    Ok(DataValue::Float64(OrderedFloat(result)))
+                } else {
+                    Ok(DataValue::Float64(*f))
+                }
             }
             _ => Err(DatabaseError::InvalidValue(
                 "ROUND expects numeric argument".into(),
@@ -1550,6 +1603,6 @@ impl ScalarFunctionImpl for Round {
     }
 
     fn accepts_any_args(&self) -> bool {
-        true // Accept any numeric type
+        true
     }
 }
