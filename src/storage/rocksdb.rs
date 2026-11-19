@@ -1118,7 +1118,8 @@ mod test {
             .done()?;
         let transaction = kite_sql.storage.transaction()?;
 
-        let catalog = kite_sql.state.catalog();
+        let catalog_ref = kite_sql.state.catalog();
+        let catalog = catalog_ref.view();
         let arena_borrow = catalog.arena.borrow();
         let table_name: TableName = "t1".to_string();
         let table = transaction
@@ -1199,7 +1200,8 @@ mod test {
             .done()?;
         let transaction = kite_sql.storage.transaction().unwrap();
 
-        let catalog = kite_sql.state.catalog();
+        let catalog_ref = kite_sql.state.catalog();
+        let catalog = catalog_ref.view();
         let arena_borrow = catalog.arena.borrow();
         let table = transaction
             .table(&arena_borrow.names, &arena_borrow.tables, "t1")?
@@ -1317,7 +1319,8 @@ mod test {
         kite_sql.load(CatalogKind::Table("t1".to_string()))?;
 
         let transaction = kite_sql.storage.transaction()?;
-        let catalog = kite_sql.state.catalog();
+        let catalog_ref = kite_sql.state.catalog();
+        let catalog = catalog_ref.view();
         let arena_borrow = catalog.arena.borrow();
         let table = transaction
             .table(&arena_borrow.names, &arena_borrow.tables, "t1")?
@@ -1401,7 +1404,8 @@ mod test {
         kite_sql.load(CatalogKind::Table("t1".to_string()))?;
 
         let mut transaction = kite_sql.storage.transaction().unwrap();
-        let catalog = kite_sql.state.catalog();
+        let catalog_ref = kite_sql.state.catalog();
+        let catalog = catalog_ref.view();
         let arena_borrow = catalog.arena.borrow();
         let table = transaction
             .table(&arena_borrow.names, &arena_borrow.tables, "t1")?

@@ -22,8 +22,8 @@ use super::{is_valid_identifier, Binder, CteBinding, QueryBindStep, SetOperatorK
 use crate::binder::copy::{ExtSource, FileFormat};
 use crate::catalog::{ColumnCatalog, ColumnDesc, ColumnRef, TableName};
 use crate::db::{
-    BindSource, ConsumeMut, Database, DatabaseIter, Executor, OwnedPtr, State, Transaction,
-    TransactionIter,
+    BindSource, ConsumeMut, Database, DatabaseIter, Executor, OwnedPtr, PinnedTransaction, State,
+    Transaction, TransactionIter,
 };
 use crate::errors::{DatabaseError, SqlErrorSpan};
 use crate::expression;
@@ -335,20 +335,30 @@ impl<S: Storage> Database<S> {
                 Ok::<_, DatabaseError>(read_only && statement_is_read_only(stmt)?)
             })
             .map_err(|err| err.with_sql_context(sql))?;
-        let transaction = OwnedPtr::new(self.storage.transaction_with_functions(
-            self.transaction_isolation,
-            read_only,
-            Some(self.state.scala_functions_arc()),
-            Some(self.state.table_functions_arc()),
-        )?);
+        // Every statement of the batch binds against one pinned generation, boxed with the
+        // transaction so it lives as long as the returned iterator.
+        let transaction = OwnedPtr::new(PinnedTransaction {
+            transaction: self.storage.transaction_with_functions(
+                self.transaction_isolation,
+                read_only,
+                Some(self.state.scala_functions_arc()),
+                Some(self.state.table_functions_arc()),
+            )?,
+            catalog: self.state.catalog(),
+        });
         let mut statements = statements.into_iter().peekable();
 
         while let Some(statement) = statements.next() {
             let (plan_arena, executor) = match async {
-                let tx = unsafe { &mut *transaction.get() };
-                let (plan, arena) = self
-                    .state
-                    .build_plan(&[], tx, |binder, arena| binder.bind(&statement, arena))?;
+                let PinnedTransaction {
+                    transaction: tx,
+                    catalog,
+                } = unsafe { &mut *transaction.get() };
+                let (plan, arena) =
+                    self.state
+                        .build_plan_in(catalog.view(), &[], tx, |binder, arena| {
+                            binder.bind(&statement, arena)
+                        })?;
                 let executor = Executor::new(plan, &arena);
                 self.state.execute(tx, executor, arena, false).await
             }
@@ -364,11 +374,9 @@ impl<S: Storage> Database<S> {
                 }
             } else {
                 let inner = Some(OwnedPtr::new(TransactionIter::new(plan_arena, executor)));
-                let (pinned, _) = self.state.catalog_pinned();
                 return Ok(DatabaseIter {
                     transaction: Some(transaction),
                     inner,
-                    _pinned: pinned,
                 });
             }
         }
@@ -406,7 +414,7 @@ impl<'txn, S: Storage> Transaction<'txn, S> {
         for statement in statements {
             let (plan, arena) = self
                 .state
-                .build_plan_in(self.catalog, &[], &self.inner, |binder, arena| {
+                .build_plan_in(self.catalog.view(), &[], &self.inner, |binder, arena| {
                     binder.bind(&statement, arena)
                 })
                 .map_err(|err| err.with_sql_context(sql))?;
@@ -431,7 +439,7 @@ impl<'txn, S: Storage> Transaction<'txn, S> {
         // Return the last statement's iterator
         let (plan, arena) = self
             .state
-            .build_plan_in(self.catalog, &[], &self.inner, |binder, arena| {
+            .build_plan_in(self.catalog.view(), &[], &self.inner, |binder, arena| {
                 binder.bind(&last_statement, arena)
             })
             .map_err(|err| err.with_sql_context(sql))?;

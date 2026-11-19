@@ -11,7 +11,7 @@ impl<S: Storage> Database<S> {
     fn table_catalog(&self, table_name: &str) -> Result<Option<TableCatalog>, DatabaseError> {
         let transaction = self.storage.transaction()?;
         let catalog = self.state.catalog();
-        let arena = catalog.arena.borrow();
+        let arena = catalog.arena().borrow();
         transaction
             .table(&arena.names, &arena.tables, table_name)
             .map(|table| table.cloned())
@@ -161,7 +161,8 @@ impl<S: Storage> Database<S> {
             return self.create_table::<M>().await;
         };
         let (table_primary_key, current_columns) = {
-            let table_arena = self.state.table_arena().borrow();
+            let catalog = self.state.catalog();
+            let table_arena = catalog.arena().borrow();
             let table_primary_key = table
                 .primary_keys()
                 .first()
@@ -185,7 +186,7 @@ impl<S: Storage> Database<S> {
             || !model_column_matches_catalog(
                 model_primary_key,
                 &table_primary_key,
-                &PlanArena::new(self.state.table_arena()),
+                &PlanArena::new(self.state.catalog().arena()),
             )?
         {
             return Err(DatabaseError::InvalidValue(::std::format!(
@@ -223,7 +224,7 @@ impl<S: Storage> Database<S> {
             if model_column_matches_catalog(
                 field,
                 current_column,
-                &PlanArena::new(self.state.table_arena()),
+                &PlanArena::new(self.state.catalog().arena()),
             )? {
                 continue;
             }
@@ -241,7 +242,8 @@ impl<S: Storage> Database<S> {
                 .await?;
             }
 
-            let arena = PlanArena::new(self.state.table_arena());
+            let catalog = self.state.catalog();
+            let arena = PlanArena::new(catalog.arena());
             if model_column_default(field) != catalog_column_default(current_column, &arena) {
                 execute_change_column(
                     self,
@@ -299,7 +301,7 @@ impl<S: Storage> Database<S> {
                 if model_column_rename_compatible(
                     model_field,
                     column,
-                    &PlanArena::new(self.state.table_arena()),
+                    &PlanArena::new(self.state.catalog().arena()),
                 )? {
                     candidates.push(column);
                 }
@@ -316,7 +318,7 @@ impl<S: Storage> Database<S> {
                 if model_column_rename_compatible(
                     other,
                     current_column,
-                    &PlanArena::new(self.state.table_arena()),
+                    &PlanArena::new(self.state.catalog().arena()),
                 )? {
                     reverse_candidates.push(other);
                 }
