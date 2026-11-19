@@ -23,7 +23,8 @@ use std::fmt::Write;
 use std::mem;
 
 /// `group_concat()`: non-NULL values joined with a separator (`,` by default), in input order or
-/// sorted by the ORDER BY keys; NULL when there are none.
+/// sorted by the ORDER BY keys; NULL when there are none. With several value arguments each row's
+/// values are concatenated, and a row with any NULL value is skipped (MySQL).
 pub struct GroupConcatAccumulator {
     distinct_values: Option<FxHashSet<DataValue>>,
     separator: String,
@@ -115,33 +116,66 @@ impl GroupConcatAccumulator {
     }
 }
 
+impl GroupConcatAccumulator {
+    /// One row's text: its single value, or its several values concatenated.
+    fn row_text(values: &[DataValue]) -> String {
+        let mut text = String::new();
+        for value in values {
+            let _ = write!(text, "{value}");
+        }
+        text
+    }
+
+    fn append(&mut self, row: String) {
+        match &mut self.result {
+            DataValue::Utf8 { value: text, .. } => {
+                let text = text.to_mut();
+                text.push_str(&self.separator);
+                text.push_str(&row);
+            }
+            result => *result = Self::utf8(row),
+        }
+    }
+}
+
 impl Accumulator for GroupConcatAccumulator {
     fn update_value(&mut self, value: &DataValue) -> Result<(), DatabaseError> {
-        if self.order_by.is_empty() {
-            if value.is_null() || !self.is_new(value) {
-                return Ok(());
+        // Without an ORDER BY, a tuple carries several values; with one, it carries the values
+        // followed by one key per ORDER BY entry.
+        let (values, keys) = match value {
+            DataValue::Tuple(values) => {
+                let Some(split) = values
+                    .len()
+                    .checked_sub(self.order_by.len())
+                    .filter(|split| *split > 0)
+                else {
+                    return Err(DatabaseError::InvalidValue(format!(
+                        "group_concat() expects its values and {} sort key(s), got {value}",
+                        self.order_by.len()
+                    )));
+                };
+                values.split_at(split)
             }
-            match &mut self.result {
-                DataValue::Utf8 { value: text, .. } => {
-                    let text = text.to_mut();
-                    text.push_str(&self.separator);
-                    let _ = write!(text, "{value}");
-                }
-                result => *result = Self::utf8(value.to_string()),
+            value if self.order_by.is_empty() => (std::slice::from_ref(value), &[][..]),
+            value => {
+                return Err(DatabaseError::InvalidValue(format!(
+                    "group_concat() with ORDER BY expects its value and sort keys, got {value}"
+                )))
             }
+        };
+        if values.iter().any(DataValue::is_null) {
             return Ok(());
         }
-        let DataValue::Tuple(values) = value else {
-            return Err(DatabaseError::InvalidValue(format!(
-                "group_concat() with ORDER BY expects its value and sort keys, got {value}"
-            )));
+        let is_new = match values {
+            [value] => self.is_new(value),
+            values => self.is_new(&DataValue::Tuple(values.to_vec())),
         };
-        let Some((value, keys)) = values.split_first() else {
-            return Err(DatabaseError::InvalidValue(
-                "group_concat() with ORDER BY expects its value and sort keys".to_string(),
-            ));
-        };
-        if value.is_null() || !self.is_new(value) {
+        if !is_new {
+            return Ok(());
+        }
+        if self.order_by.is_empty() {
+            let row = Self::row_text(values);
+            self.append(row);
             return Ok(());
         }
         let keys = keys
@@ -152,7 +186,7 @@ impl Accumulator for GroupConcatAccumulator {
                 key
             })
             .collect();
-        self.rows.push((value.to_string(), keys));
+        self.rows.push((Self::row_text(values), keys));
         Ok(())
     }
 
@@ -284,6 +318,49 @@ mod tests {
         assert_eq!(result(&mut accumulator)?, "b,a");
 
         assert!(accumulator.update_value(&text("not a tuple")).is_err());
+        Ok(())
+    }
+
+    #[test]
+    fn test_group_concat_several_values() -> Result<(), DatabaseError> {
+        let row = |values: Vec<DataValue>| DataValue::Tuple(values);
+        // Each row's values are concatenated; a row with any NULL value is skipped.
+        let mut accumulator = GroupConcatAccumulator::with_options(false, &options("|", &[]));
+        for value in [
+            row(vec![DataValue::Int32(1), text("-"), text("a")]),
+            row(vec![DataValue::Int32(2), text("-"), DataValue::Null]),
+            row(vec![DataValue::Int32(3), text("-"), text("c")]),
+        ] {
+            accumulator.update_value(&value)?;
+        }
+        assert_eq!(result(&mut accumulator)?, "1-a|3-c");
+
+        // DISTINCT compares the values as a tuple, not their concatenation.
+        let mut accumulator = GroupConcatAccumulator::with_options(true, &options(",", &[]));
+        for value in [
+            row(vec![text("a"), text("bc")]),
+            row(vec![text("ab"), text("c")]),
+            row(vec![text("a"), text("bc")]),
+        ] {
+            accumulator.update_value(&value)?;
+        }
+        assert_eq!(result(&mut accumulator)?, "abc,abc");
+
+        // With an ORDER BY the trailing entries are the sort keys.
+        let mut accumulator =
+            GroupConcatAccumulator::with_options(false, &options(" ", &[(false, false)]));
+        for value in [
+            row(vec![text("x"), DataValue::Int32(1), DataValue::Int32(1)]),
+            row(vec![text("y"), DataValue::Int32(2), DataValue::Int32(2)]),
+        ] {
+            accumulator.update_value(&value)?;
+        }
+        assert_eq!(result(&mut accumulator)?, "y2 x1");
+
+        // A tuple must hold at least one value besides the keys.
+        assert!(accumulator
+            .update_value(&row(vec![DataValue::Int32(1)]))
+            .is_err());
         Ok(())
     }
 }

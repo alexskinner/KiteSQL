@@ -3417,7 +3417,9 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
         }
         let function_name = name.to_string().to_lowercase();
 
-        if !clauses.is_empty() {
+        let multi_arg_group_concat =
+            function_name == "group_concat" && over.is_none() && args.len() > 1;
+        if !clauses.is_empty() || multi_arg_group_concat {
             if over.is_some() || function_name != "group_concat" {
                 return Err(attach_span_if_absent(
                     DatabaseError::UnsupportedStmt(format!(
@@ -3477,9 +3479,9 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
         result.map_err(|err| attach_span_if_absent(err, func_span))
     }
 
-    /// Binds `group_concat(value [ORDER BY key [ASC|DESC], ...] [SEPARATOR 'sep'])`. The keys
-    /// become extra arguments after the value; an integer key `n` names the `n`th argument, as
-    /// in MySQL.
+    /// Binds `group_concat(value, ... [ORDER BY key [ASC|DESC], ...] [SEPARATOR 'sep'])`. The
+    /// keys become extra arguments after the values; an integer key `n` names the `n`th value
+    /// argument, as in MySQL. Several values are concatenated per row, as `CONCAT()` would.
     fn bind_group_concat(
         &mut self,
         mut args: Vec<ExprRef>,
@@ -3543,14 +3545,20 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                 }
             }
         }
-        if args.len() != 1 {
+        if args.is_empty() {
             return Err(DatabaseError::MisMatch(
                 "number of group_concat() parameters",
-                "1",
+                ">= 1",
             ));
         }
+        // Several values always take the tuple form, which carries them to the accumulator.
+        let kind = if args.len() > 1 {
+            AggKind::GroupConcatWith(options)
+        } else {
+            options.into_kind()
+        };
         args.extend(keys);
-        self.bind_aggregate_function(options.into_kind(), args, is_distinct, arena)
+        self.bind_aggregate_function(kind, args, is_distinct, arena)
     }
 
     fn bind_window_call(

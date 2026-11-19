@@ -171,8 +171,8 @@ pub(crate) fn aggregate_arg<'a, T: TupleLike + ?Sized>(
         unreachable!()
     };
     if let AggKind::GroupConcatWith(options) = kind {
-        if !options.order_by.is_empty() {
-            // The value and its sort keys travel together as one tuple.
+        if !options.order_by.is_empty() || args.len() > 1 {
+            // The values and their sort keys travel together as one tuple.
             let values = args
                 .iter()
                 .map(|arg| {
