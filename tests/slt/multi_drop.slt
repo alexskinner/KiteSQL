@@ -1,0 +1,126 @@
+statement ok
+CREATE TABLE md_t1 (id INT PRIMARY KEY, v INT)
+
+statement ok
+CREATE TABLE md_t2 (id INT PRIMARY KEY, v INT)
+
+statement ok
+CREATE TABLE md_t3 (id INT PRIMARY KEY, v INT)
+
+statement ok
+INSERT INTO md_t1 VALUES (1, 10)
+
+statement ok
+INSERT INTO md_t2 VALUES (2, 20)
+
+statement ok
+INSERT INTO md_t3 VALUES (3, 30)
+
+query II rowsort
+SELECT * FROM md_t1
+----
+1 10
+
+statement ok
+DROP TABLE md_t1, md_t2
+
+statement error
+SELECT * FROM md_t1
+
+statement error
+SELECT * FROM md_t2
+
+query II rowsort
+SELECT * FROM md_t3
+----
+3 30
+
+statement ok
+DROP TABLE md_t3
+
+statement ok
+CREATE TABLE md_a (id INT PRIMARY KEY)
+
+statement ok
+CREATE TABLE md_b (id INT PRIMARY KEY)
+
+statement ok
+CREATE TABLE md_c (id INT PRIMARY KEY)
+
+statement ok
+DROP TABLE IF EXISTS md_a, md_b, md_c, md_nonexistent
+
+statement error
+SELECT * FROM md_a
+
+statement error
+SELECT * FROM md_b
+
+statement error
+SELECT * FROM md_c
+
+statement ok
+CREATE TABLE md_x (id INT PRIMARY KEY)
+
+statement ok
+CREATE TABLE md_y (id INT PRIMARY KEY)
+
+statement error
+DROP TABLE md_x, md_y, md_missing
+
+query I rowsort
+SELECT * FROM md_x
+----
+
+query I rowsort
+SELECT * FROM md_y
+----
+
+statement ok
+DROP TABLE md_x, md_x
+
+statement error
+SELECT * FROM md_x
+
+statement ok
+CREATE TABLE md_base (id INT PRIMARY KEY, v INT)
+
+statement ok
+INSERT INTO md_base VALUES (1, 100)
+
+statement ok
+CREATE VIEW md_v1 AS SELECT id FROM md_base
+
+statement ok
+CREATE VIEW md_v2 AS SELECT v FROM md_base
+
+query I rowsort
+SELECT * FROM md_v1
+----
+1
+
+query I rowsort
+SELECT * FROM md_v2
+----
+100
+
+statement ok
+DROP VIEW md_v1, md_v2
+
+statement error
+SELECT * FROM md_v1
+
+statement error
+SELECT * FROM md_v2
+
+statement ok
+CREATE VIEW md_v3 AS SELECT id FROM md_base
+
+statement ok
+DROP VIEW IF EXISTS md_v3, md_v_nonexistent
+
+statement error
+SELECT * FROM md_v3
+
+statement ok
+DROP TABLE md_base

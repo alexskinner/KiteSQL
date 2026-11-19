@@ -808,11 +808,11 @@ pub(crate) mod tests {
                 or_replace: false,
             }),
             Operator::DropTable(DropTableOperator {
-                table_name: "t1".into(),
+                table_names: vec!["t1".into()],
                 if_exists: false,
             }),
             Operator::DropView(DropViewOperator {
-                view_name: "v1".into(),
+                view_names: vec!["v1".into()],
                 if_exists: false,
             }),
             Operator::DropIndex(DropIndexOperator {

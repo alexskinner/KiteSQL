@@ -538,7 +538,7 @@ async fn execute_drop_view<S: Storage>(
     let view_name = view_name.to_string();
     database
         .execute_mut("ORM DROP VIEW", &[], move |binder, _| {
-            binder.bind_drop_view(view_name.as_str().into(), if_exists)
+            binder.bind_drop_view(vec![view_name.as_str().into()], if_exists)
         })
         .await
 }
@@ -626,7 +626,7 @@ async fn execute_drop_table<S: Storage>(
 ) -> Result<(), DatabaseError> {
     database
         .execute_mut("ORM DROP TABLE", &[], move |binder, _| {
-            binder.bind_drop_table(table_name.into(), if_exists)
+            binder.bind_drop_table(vec![table_name.into()], if_exists)
         })
         .await
 }

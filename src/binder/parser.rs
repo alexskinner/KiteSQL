@@ -1125,29 +1125,43 @@ where
     fn drop_object(
         self,
         object_type: ObjectType,
-        mut names: Vec<ObjectName>,
+        names: Vec<ObjectName>,
         if_exists: bool,
         table: Option<ObjectName>,
     ) -> Result<LogicalPlan, DatabaseError> {
-        if names.len() != 1 {
+        if names.is_empty() {
             return Err(DatabaseError::UnsupportedStmt(
-                "only Drop a single `Table`, `View` or `Index` is allowed".to_string(),
-            ));
-        }
-        if table.is_some() && object_type != ObjectType::Index {
-            return Err(DatabaseError::UnsupportedStmt(
-                "DROP ON is only supported for INDEX".to_string(),
+                "DROP requires at least one object name".to_string(),
             ));
         }
 
         match object_type {
-            ObjectType::Table => self
-                .binder
-                .bind_drop_table(sql_table_name(names.remove(0))?, if_exists),
-            ObjectType::View => self
-                .binder
-                .bind_drop_view(sql_table_name(names.remove(0))?, if_exists),
+            ObjectType::Table => {
+                let mut table_names = Vec::with_capacity(names.len());
+                for name in names {
+                    table_names.push(sql_table_name(name)?);
+                }
+                self.binder.bind_drop_table(table_names, if_exists)
+            }
+            ObjectType::View => {
+                let mut view_names = Vec::with_capacity(names.len());
+                for name in names {
+                    view_names.push(sql_table_name(name)?);
+                }
+                self.binder.bind_drop_view(view_names, if_exists)
+            }
             ObjectType::Index => {
+                if names.len() != 1 {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "only Drop a single `Index` is allowed".to_string(),
+                    ));
+                }
+                if table.is_some() && object_type != ObjectType::Index {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "DROP ON is only supported for INDEX".to_string(),
+                    ));
+                }
+                let mut names = names;
                 let name = names.remove(0);
                 let (table_name, index_name) = if let Some(table) = table {
                     (sql_table_name(table)?, sql_object_name(name)?)
