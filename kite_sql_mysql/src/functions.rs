@@ -44,13 +44,13 @@ impl FunctionPack for MySqlFunctions {
         // HEX: accepts any type (TEXT signature, handles numerics specially)
         registry.register_scalar(Hex::new(TEXT))?;
 
-        // CONCAT: 1-10 arguments (variadic)
-        for count in 1..=10 {
+        // CONCAT: truly variadic (1-100 arguments to cover all practical cases)
+        for count in 1..=100 {
             registry.register_scalar(Concat::new(count))?;
         }
 
-        // CONCAT_WS: 2-10 arguments
-        for count in 2..=10 {
+        // CONCAT_WS: truly variadic (2-100 arguments)
+        for count in 2..=100 {
             registry.register_scalar(ConcatWs::new(count))?;
         }
 
@@ -58,7 +58,7 @@ impl FunctionPack for MySqlFunctions {
         registry.register_scalar(Locate::new(2))?;
         registry.register_scalar(Locate::new(3))?;
         registry.register_scalar(Instr::new())?;
-        registry.register_scalar(Position::new())?;
+        // POSITION is handled by core evaluator (PR #38), don't register here
         registry.register_scalar(Left::new())?;
         registry.register_scalar(Right::new())?;
         registry.register_scalar(Lpad::new())?;
@@ -69,32 +69,18 @@ impl FunctionPack for MySqlFunctions {
         registry.register_scalar(Rtrim::new())?;
         registry.register_scalar(Uuid::new())?;
 
-        // GREATEST/LEAST: TEXT and Integer, 2-10 arguments
-        for count in 2..=10 {
-            registry.register_scalar(Greatest::new(TEXT, count))?;
-            registry.register_scalar(Greatest::new(LogicalType::Integer, count))?;
-            registry.register_scalar(Least::new(TEXT, count))?;
-            registry.register_scalar(Least::new(LogicalType::Integer, count))?;
+        // GREATEST/LEAST: truly variadic (2-100 arguments), single impl for all types
+        for count in 2..=100 {
+            registry.register_scalar(Greatest::new(count))?;
+            registry.register_scalar(Least::new(count))?;
         }
 
-        // ROUND: Register specific types (literals default to Double)
+        // ROUND: accepts any numeric type via accepts_any_args
         registry.register_scalar(Round::new(LogicalType::Double, false))?;
         registry.register_scalar(Round::new(LogicalType::Double, true))?;
-        
-        // Register common Decimal precisions
-        for precision in [None, Some(10), Some(20), Some(38)] {
-            for scale in [None, Some(0), Some(2), Some(3), Some(4), Some(6)] {
-                registry.register_scalar(Round::new(LogicalType::Decimal(precision, scale), false))?;
-                registry.register_scalar(Round::new(LogicalType::Decimal(precision, scale), true))?;
-            }
-        }
-        
-        registry.register_scalar(Round::new(LogicalType::Integer, false))?;
-        registry.register_scalar(Round::new(LogicalType::Integer, true))?;
-        registry.register_scalar(Round::new(LogicalType::Bigint, false))?;
-        registry.register_scalar(Round::new(LogicalType::Bigint, true))?;
 
         Ok(())
+    }
     }
 }
 
@@ -112,6 +98,7 @@ fn eval_text(
 }
 
 /// Evaluate an argument as text, converting numbers to their string representation (MySQL formatting).
+/// Booleans convert to "1" or "0".
 fn eval_value_as_text(
     arg: ExprRef,
     arena: &(dyn MetaArena + '_),
@@ -122,6 +109,7 @@ fn eval_value_as_text(
         return Ok(None);
     }
     match value.as_ref() {
+        DataValue::Boolean(b) => Ok(Some(if *b { "1" } else { "0" }.to_string())),
         DataValue::Int8(i) => Ok(Some(i.to_string())),
         DataValue::Int16(i) => Ok(Some(i.to_string())),
         DataValue::Int32(i) => Ok(Some(i.to_string())),
@@ -132,6 +120,7 @@ fn eval_value_as_text(
         DataValue::UInt64(i) => Ok(Some(i.to_string())),
         DataValue::Float32(f) => Ok(Some(f.0.to_string())),
         DataValue::Float64(f) => Ok(Some(f.0.to_string())),
+        #[cfg(feature = "decimal")]
         DataValue::Decimal(d) => Ok(Some(d.to_string())),
         _ => {
             let value = value.into_owned().cast(&TEXT)?;
@@ -479,7 +468,12 @@ impl ScalarFunctionImpl for Locate {
                 return Ok(DataValue::Null);
             }
             match pos.as_ref() {
-                DataValue::Int32(p) => *p.max(&1) as usize,
+                DataValue::Int32(p) => {
+                    if *p < 1 {
+                        return Ok(DataValue::Int32(0));
+                    }
+                    *p as usize
+                }
                 _ => {
                     return Err(DatabaseError::InvalidValue(
                         "position must be integer".into(),
@@ -1116,14 +1110,17 @@ impl ScalarFunctionImpl for Hex {
         }
 
         let hex = match value.as_ref() {
-            DataValue::Int8(i) => format!("{:016X}", *i as i64 as u64),
-            DataValue::Int16(i) => format!("{:016X}", *i as i64 as u64),
-            DataValue::Int32(i) => format!("{:016X}", *i as i64 as u64),
-            DataValue::Int64(i) => format!("{:016X}", *i as u64),
-            DataValue::UInt8(i) => format!("{:016X}", *i as u64),
-            DataValue::UInt16(i) => format!("{:016X}", *i as u64),
-            DataValue::UInt32(i) => format!("{:016X}", *i as u64),
-            DataValue::UInt64(i) => format!("{:016X}", *i),
+            DataValue::Boolean(b) => format!("{:X}", if *b { 1 } else { 0 }),
+            DataValue::Int8(i) => format!("{:X}", *i as i64 as u64),
+            DataValue::Int16(i) => format!("{:X}", *i as i64 as u64),
+            DataValue::Int32(i) => format!("{:X}", *i as i64 as u64),
+            DataValue::Int64(i) => format!("{:X}", *i as u64),
+            DataValue::UInt8(i) => format!("{:X}", *i as u64),
+            DataValue::UInt16(i) => format!("{:X}", *i as u64),
+            DataValue::UInt32(i) => format!("{:X}", *i as u64),
+            DataValue::UInt64(i) => format!("{:X}", *i),
+            DataValue::Float32(f) => format!("{:X}", f.0.round() as i64 as u64),
+            DataValue::Float64(f) => format!("{:X}", f.0.round() as i64 as u64),
             _ => {
                 match eval_value_as_text(args[0], arena, tuple)? {
                     Some(s) => s.bytes().map(|b| format!("{:02X}", b)).collect(),
@@ -1144,6 +1141,10 @@ impl ScalarFunctionImpl for Hex {
 
     fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
         None
+    }
+
+    fn accepts_any_args(&self) -> bool {
+        true
     }
 }
 
@@ -1413,27 +1414,54 @@ impl ScalarFunctionImpl for Round {
                 if d >= 0 {
                     Ok(DataValue::Int32(*i))
                 } else {
-                    let divisor = 10_i32.pow((-d) as u32);
-                    let result = (*i as f64 / divisor as f64).round() as i32 * divisor;
-                    Ok(DataValue::Int32(result))
+                    // Use checked operations to avoid panic
+                    let abs_d = (-d) as u32;
+                    match 10_i32.checked_pow(abs_d) {
+                        Some(divisor) => {
+                            let result = (*i as f64 / divisor as f64).round() as i32;
+                            match result.checked_mul(divisor) {
+                                Some(val) => Ok(DataValue::Int32(val)),
+                                None => Ok(DataValue::Int32(0)), // Overflow returns 0
+                            }
+                        }
+                        None => Ok(DataValue::Int32(0)), // Exponent overflow returns 0
+                    }
                 }
             }
             DataValue::Int64(i) => {
                 if d >= 0 {
                     Ok(DataValue::Int64(*i))
                 } else {
-                    let divisor = 10_i64.pow((-d) as u32);
-                    let result = (*i as f64 / divisor as f64).round() as i64 * divisor;
-                    Ok(DataValue::Int64(result))
+                    let abs_d = (-d) as u32;
+                    match 10_i64.checked_pow(abs_d) {
+                        Some(divisor) => {
+                            let result = (*i as f64 / divisor as f64).round() as i64;
+                            match result.checked_mul(divisor) {
+                                Some(val) => Ok(DataValue::Int64(val)),
+                                None => Ok(DataValue::Int64(0)),
+                            }
+                        }
+                        None => Ok(DataValue::Int64(0)),
+                    }
                 }
             }
+            #[cfg(feature = "decimal")]
             DataValue::Decimal(dec) => {
                 use rust_decimal::prelude::*;
-                let rounded = dec.round_dp_with_strategy(
-                    d.max(0) as u32,
-                    RoundingStrategy::MidpointAwayFromZero,
-                );
-                Ok(DataValue::Decimal(rounded))
+                if d >= 0 {
+                    let rounded = dec.round_dp_with_strategy(
+                        d as u32,
+                        RoundingStrategy::MidpointAwayFromZero,
+                    );
+                    Ok(DataValue::Decimal(rounded))
+                } else {
+                    // For negative d, scale by 10^-d
+                    let abs_d = (-d) as u32;
+                    let scale_factor = Decimal::from(10_i64.pow(abs_d));
+                    let scaled = *dec / scale_factor;
+                    let rounded = scaled.round_dp_with_strategy(0, RoundingStrategy::MidpointAwayFromZero);
+                    Ok(DataValue::Decimal(rounded * scale_factor))
+                }
             }
             DataValue::Float32(f) => {
                 let multiplier = 10_f64.powi(d);
@@ -1463,5 +1491,9 @@ impl ScalarFunctionImpl for Round {
 
     fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
         None
+    }
+
+    fn accepts_any_args(&self) -> bool {
+        true // Accept any numeric type
     }
 }

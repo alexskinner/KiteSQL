@@ -115,8 +115,7 @@ fn round_with_integer() -> Result<(), DatabaseError> {
     let mut db = database(&dir)?;
 
     db.ddl("create table t (id int primary key, val int)")?;
-    db.run("insert into t values (1, 123), (2, 456)")?
-        .done()?;
+    db.run("insert into t values (1, 123), (2, 456)")?.done()?;
 
     // Integer with d >= 0 returns the integer unchanged
     let rows = db.run("select round(val, 2) from t order by id")?;
@@ -156,8 +155,7 @@ fn hex_with_bigint_column() -> Result<(), DatabaseError> {
     let mut db = database(&dir)?;
 
     db.ddl("create table t (id int primary key, val bigint)")?;
-    db.run("insert into t values (1, 255), (2, -1)")?
-        .done()?;
+    db.run("insert into t values (1, 255), (2, -1)")?.done()?;
 
     let rows = db.run("select hex(val) from t order by id")?;
     let mut results = Vec::new();
@@ -167,7 +165,10 @@ fn hex_with_bigint_column() -> Result<(), DatabaseError> {
     }
     iter.done()?;
 
-    assert_eq!(results[0][0], DataValue::from("00000000000000FF".to_string()));
+    assert_eq!(
+        results[0][0],
+        DataValue::from("00000000000000FF".to_string())
+    );
     assert_eq!(
         results[1][0],
         DataValue::from("FFFFFFFFFFFFFFFF".to_string())
@@ -232,7 +233,10 @@ fn greatest_least_with_integers() -> Result<(), DatabaseError> {
     let dir = TempDir::new().unwrap();
     let db = database(&dir)?;
 
-    assert_eq!(scalar(&db, "select greatest(1, 5, 3)")?, DataValue::Int32(5));
+    assert_eq!(
+        scalar(&db, "select greatest(1, 5, 3)")?,
+        DataValue::Int32(5)
+    );
     assert_eq!(scalar(&db, "select least(1, 5, 3)")?, DataValue::Int32(1));
     Ok(())
 }
@@ -242,10 +246,7 @@ fn greatest_least_with_null() -> Result<(), DatabaseError> {
     let dir = TempDir::new().unwrap();
     let db = database(&dir)?;
 
-    assert_eq!(
-        scalar(&db, "select greatest(1, null, 3)")?,
-        DataValue::Null
-    );
+    assert_eq!(scalar(&db, "select greatest(1, null, 3)")?, DataValue::Null);
     assert_eq!(scalar(&db, "select least(1, null, 3)")?, DataValue::Null);
     Ok(())
 }
