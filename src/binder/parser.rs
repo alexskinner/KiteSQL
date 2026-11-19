@@ -1022,17 +1022,61 @@ where
         let mut column_desc = ColumnDesc::new(type_spec.logical, None, false, None)?;
         let mut nullable = true;
 
+        let mut primary_key_seen = false;
+        let mut explicit_null = false;
+        let mut explicit_not_null = false;
+        let mut default_count = 0;
+        let mut primary_key_count = 0;
+
         for option_def in column_def.options {
             match option_def.option {
-                ColumnOption::Null => nullable = true,
-                ColumnOption::NotNull => nullable = false,
+                ColumnOption::Null => {
+                    if explicit_null {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Multiple NULL options for a single column".to_string(),
+                        ));
+                    }
+                    if explicit_not_null {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Conflicting NULL and NOT NULL options".to_string(),
+                        ));
+                    }
+                    nullable = true;
+                    explicit_null = true;
+                }
+                ColumnOption::NotNull => {
+                    if explicit_not_null {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Multiple NOT NULL options for a single column".to_string(),
+                        ));
+                    }
+                    if explicit_null {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Conflicting NULL and NOT NULL options".to_string(),
+                        ));
+                    }
+                    nullable = false;
+                    explicit_not_null = true;
+                }
                 ColumnOption::PrimaryKey(_) => {
                     column_desc.set_primary(column_index);
                     nullable = false;
-                    break;
+                    primary_key_seen = true;
+                    primary_key_count += 1;
+                    if primary_key_count > 1 {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Multiple PRIMARY KEY options for a single column".to_string(),
+                        ));
+                    }
                 }
                 ColumnOption::Unique(_) => column_desc.set_unique(),
                 ColumnOption::Default(expr) => {
+                    default_count += 1;
+                    if default_count > 1 {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "Multiple DEFAULT options for a single column".to_string(),
+                        ));
+                    }
                     let mut expr = self
                         .binder
                         .bind_expr(&expr, self.arena)
@@ -1047,12 +1091,31 @@ where
                         expr.type_cast(Cow::Borrowed(&column_desc.column_datatype), self.arena)?;
                     column_desc.default = Some(expr);
                 }
+                ColumnOption::Generated { .. } => {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "generated columns are not supported".to_string(),
+                    ))
+                }
+                ColumnOption::DialectSpecific(_)
+                | ColumnOption::Comment(_)
+                | ColumnOption::Check(_)
+                | ColumnOption::ForeignKey { .. }
+                | ColumnOption::CharacterSet(_)
+                | ColumnOption::OnUpdate(_)
+                | ColumnOption::Collation(_)
+                | ColumnOption::Invisible => {}
                 option => {
                     return Err(DatabaseError::UnsupportedStmt(format!(
                         "`Column` does not currently support this option: {option:?}"
                     )))
                 }
             }
+        }
+
+        if primary_key_seen && explicit_null {
+            return Err(DatabaseError::UnsupportedStmt(
+                "All parts of a PRIMARY KEY must be NOT NULL".to_string(),
+            ));
         }
 
         Ok((
