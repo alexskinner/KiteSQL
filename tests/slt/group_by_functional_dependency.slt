@@ -37,7 +37,7 @@ select id as k, title from fd_page group by k order by k
 3 b
 4 c
 
-# Self-join from Preside's admin site tree: `page` is grouped, `child_pages` is aggregated.
+# Self-join over a CMS page tree: `page` is grouped, `child_pages` is aggregated.
 query IITI
 select page.id, page.parent_page, page.title, count(child_pages.id) as child_count from fd_page page left join fd_page child_pages on (child_pages.parent_page = page.id) group by page.id order by page.sort_order
 ----
