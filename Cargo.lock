@@ -2032,8 +2032,10 @@ name = "kite_sql_mysql"
 version = "0.7.0"
 dependencies = [
  "kite_sql",
+ "ordered-float",
  "sqlparser",
  "tempfile",
+ "uuid",
 ]
 
 [[package]]
