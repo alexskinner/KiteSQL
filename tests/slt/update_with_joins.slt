@@ -288,3 +288,55 @@ select * from items order by id;
 ----
 2 active
 4 active
+
+# Clean up all tables
+statement ok
+drop table version_table
+
+statement ok
+drop table products
+
+statement ok
+drop table price_updates
+
+statement ok
+drop table target
+
+statement ok
+drop table source
+
+statement ok
+drop table simple
+
+statement ok
+drop table left_table
+
+statement ok
+drop table right_table
+
+statement ok
+drop table t1
+
+statement ok
+drop table t2
+
+statement ok
+drop table orders
+
+statement ok
+drop table customers
+
+statement ok
+drop table regions
+
+statement ok
+drop table delete_target
+
+statement ok
+drop table delete_source
+
+statement ok
+drop table items
+
+statement ok
+drop table keep_list

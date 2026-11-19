@@ -100,13 +100,17 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
             None
         };
 
-        let mut updated_pks: HashSet<TupleId> = HashSet::new();
+        let mut updated_pks: Option<HashSet<TupleId>> = None;
 
         while input.next_tuple(arena, plan_arena).await? {
             let joined_tuple = arena.take_tuple();
 
             let is_simple_update =
                 *target_table_offset == 0 && joined_tuple.len() == table.columns.len();
+
+            if !is_simple_update && updated_pks.is_none() {
+                updated_pks = Some(HashSet::new());
+            }
 
             let (mut tuple, eval_tuple_owned, old_pk) = if is_simple_update {
                 let pk = joined_tuple.pk().cloned();
@@ -134,8 +138,10 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                 continue;
             };
 
-            if !updated_pks.insert(old_pk.clone()) {
-                continue;
+            if let Some(ref mut pks) = updated_pks {
+                if !pks.insert(old_pk.clone()) {
+                    continue;
+                }
             }
 
             // Capture old tuple for undo (before modification)
