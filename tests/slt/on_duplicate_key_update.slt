@@ -230,3 +230,52 @@ DROP TABLE IF EXISTS config_test
 
 statement ok
 DROP TABLE IF EXISTS no_change_test
+
+# Test 13: VALUES() function - most common ODKU idiom
+statement ok
+DROP TABLE IF EXISTS values_test
+
+# Test 13: VALUES() function - most common ODKU idiom
+statement ok
+DROP TABLE IF EXISTS values_test
+
+statement ok
+CREATE TABLE values_test (id INT PRIMARY KEY, name VARCHAR(50), counter INT)
+
+statement ok
+INSERT INTO values_test VALUES (1, 'Alice', 10)
+
+statement ok
+INSERT INTO values_test VALUES (1, 'Bob', 20) ON DUPLICATE KEY UPDATE name = VALUES(name), counter = VALUES(counter)
+
+query ICI rowsort
+SELECT * FROM values_test
+----
+1 Bob 20
+
+# Test 14: Same-statement multi-row conflict
+statement ok
+DROP TABLE IF EXISTS same_stmt_test
+
+statement ok
+CREATE TABLE same_stmt_test (id INT PRIMARY KEY, v INT)
+
+statement ok
+INSERT INTO same_stmt_test VALUES (1, 10), (1, 20) ON DUPLICATE KEY UPDATE v = VALUES(v)
+
+query I
+SELECT COUNT(*) FROM same_stmt_test
+----
+1
+
+query II
+SELECT * FROM same_stmt_test
+----
+1 20
+
+# Cleanup
+statement ok
+DROP TABLE IF EXISTS values_test
+
+statement ok
+DROP TABLE IF EXISTS same_stmt_test

@@ -250,11 +250,19 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
                     }
                 }
 
+                // Create combined tuple: [existing values, would-be-inserted values]
+                // This allows VALUES(col) to reference the insert values via the second half
+                let combined_tuple_impl = TupleImpl::concat(
+                    TupleImpl::from(existing_tuple.clone()),
+                    TupleImpl::from((&**tuple).clone()),
+                    existing_tuple.pk.clone(),
+                );
+
                 let mut existing_tuple_impl = TupleImpl::from(existing_tuple);
                 for (column_index, expr) in update_exprs {
                     let value = plan_arena
                         .expression(*expr)
-                        .eval(plan_arena, Some(&existing_tuple_impl))?;
+                        .eval(plan_arena, Some(&combined_tuple_impl))?;
                     existing_tuple_impl[*column_index] = value.into_owned();
                 }
 

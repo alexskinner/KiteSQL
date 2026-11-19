@@ -1330,8 +1330,13 @@ where
         self.binder.context.allow_default = false;
 
         let on_duplicate_update_exprs =
-            if let Some((assignments, _insert_alias)) = on_duplicate_key_update {
-                Some(self.bind_on_duplicate_assignments(assignments, &table_name)?)
+            if let Some((assignments, insert_alias)) = on_duplicate_key_update {
+                let row_alias = insert_alias.as_ref().map(|a| a.row_alias.to_string());
+                Some(self.bind_on_duplicate_assignments(
+                    assignments,
+                    &table_name,
+                    row_alias.as_deref(),
+                )?)
             } else {
                 None
             };
@@ -1353,6 +1358,7 @@ where
         &mut self,
         assignments: &[Assignment],
         table_name: &str,
+        row_alias: Option<&str>,
     ) -> Result<Vec<(usize, ExprRef)>, DatabaseError> {
         let table_name_ref: TableName = table_name.into();
         let source = self
@@ -1360,6 +1366,28 @@ where
             .context
             .source_and_bind(&table_name_ref, None, None, false, self.arena)?
             .ok_or(DatabaseError::TableNotFound)?;
+
+        // Create a pseudo-source for the would-be-inserted row values
+        // This allows VALUES(col) and AS alias.col to reference insert values
+        let excluded_source_id = self.arena.alloc_source();
+        let original_schema = source.schema().to_vec();
+        let mut excluded_columns = Vec::with_capacity(original_schema.len());
+
+        for (position, &original_col) in original_schema.iter().enumerate() {
+            let original = self.arena.column(original_col);
+            let mut excluded_col = original.clone();
+            excluded_col.set_source(excluded_source_id, position as u64, true);
+            let excluded_col_ref = self.arena.alloc_column(excluded_col);
+            excluded_columns.push(excluded_col_ref);
+        }
+
+        // Store mapping for VALUES() and alias rewriting
+        let odku_context = crate::binder::OdkuContext {
+            original_columns: original_schema.clone(),
+            excluded_columns: excluded_columns.clone(),
+            row_alias: row_alias.map(|s| s.to_string()),
+        };
+        self.binder.context.set_odku_context(Some(odku_context));
 
         let mut update_exprs = Vec::with_capacity(assignments.len());
         for assignment in assignments {
@@ -1412,6 +1440,10 @@ where
             let value_ref = self.arena.alloc_expression(value_expr);
             update_exprs.push((column_index, value_ref));
         }
+
+        // Clear odku context after binding
+        self.binder.context.set_odku_context(None);
+
         Ok(update_exprs)
     }
 
@@ -1456,8 +1488,13 @@ where
         };
 
         let on_duplicate_update_exprs =
-            if let Some((assignments, _insert_alias)) = on_duplicate_key_update {
-                Some(self.bind_on_duplicate_assignments(assignments, &table_name)?)
+            if let Some((assignments, insert_alias)) = on_duplicate_key_update {
+                let row_alias = insert_alias.as_ref().map(|a| a.row_alias.to_string());
+                Some(self.bind_on_duplicate_assignments(
+                    assignments,
+                    &table_name,
+                    row_alias.as_deref(),
+                )?)
             } else {
                 None
             };
@@ -3024,6 +3061,42 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                 ))
             }
         };
+        // Intercept VALUES(col) in ON DUPLICATE KEY UPDATE context
+        if let Some(odku_ctx) = self.context.odku_context() {
+            if func_args.len() == 1 && name.0.len() == 1 {
+                if let ObjectNamePart::Identifier(func_name_ident) = &name.0[0] {
+                    let func_name_lower = func_name_ident.value.to_lowercase();
+
+                    if func_name_lower == "values" {
+                        // Rewrite VALUES(col) to __excluded.col
+                        let arg_expr = match &func_args[0] {
+                            FunctionArg::Named { arg, .. } => arg,
+                            FunctionArg::ExprNamed { arg, .. } => arg,
+                            FunctionArg::Unnamed(arg) => arg,
+                        };
+
+                        if let FunctionArgExpr::Expr(Expr::Identifier(col_ident)) = arg_expr {
+                            // Find column position in original schema
+                            let col_name = &col_ident.value;
+                            let position = odku_ctx
+                                .original_columns
+                                .iter()
+                                .position(|&col_ref| arena.column(col_ref).name() == col_name)
+                                .ok_or_else(|| DatabaseError::column_not_found(col_name.clone()))?;
+
+                            // Return reference to excluded column (original_len + position)
+                            let excluded_col = odku_ctx.excluded_columns[position];
+                            let combined_position = odku_ctx.original_columns.len() + position;
+                            return Ok(ScalarExpression::column_expr(
+                                excluded_col,
+                                combined_position,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
+
         let mut args = Vec::with_capacity(func_args.len());
 
         for arg in func_args {

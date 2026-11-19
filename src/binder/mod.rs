@@ -258,6 +258,12 @@ pub(crate) struct BoundScalarQuery {
     param_bindings: Vec<(ScalarQueryRef, ExprRef)>,
 }
 
+pub struct OdkuContext {
+    pub original_columns: Vec<ColumnRef>,
+    pub excluded_columns: Vec<ColumnRef>,
+    pub row_alias: Option<String>,
+}
+
 pub struct BinderContext<'a, T: StorageTransaction> {
     pub(crate) function_registry: &'a crate::function::registry::FunctionRegistry,
     pub(crate) names: &'a NameMapping,
@@ -274,6 +280,7 @@ pub struct BinderContext<'a, T: StorageTransaction> {
     // and do not share the current FROM namespace.
     source_scope_start: usize,
     ctes: Vec<CteBinding>,
+    odku_context: Option<OdkuContext>,
     pub(crate) cte_depth: usize,
     // alias
     expr_aliases: BTreeMap<(Option<String>, String), ExprRef>,
@@ -351,6 +358,7 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
             expr_aliases: Default::default(),
             group_by_exprs: vec![],
             agg_calls: Default::default(),
+            odku_context: None,
             using: Default::default(),
             bind_step: QueryBindStep::From,
             sub_queries: Default::default(),
@@ -383,6 +391,7 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
             expr_aliases: self.expr_aliases.clone(),
             group_by_exprs: self.group_by_exprs.clone(),
             agg_calls: self.agg_calls.clone(),
+            odku_context: None,
             using: self.using.clone(),
             bind_step: self.bind_step,
             sub_queries: Default::default(),
@@ -471,6 +480,14 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
 
     pub fn has_join_outer_ref(&self) -> bool {
         self.has_join_outer_ref
+    }
+
+    pub fn set_odku_context(&mut self, context: Option<OdkuContext>) {
+        self.odku_context = context;
+    }
+
+    pub fn odku_context(&self) -> Option<&OdkuContext> {
+        self.odku_context.as_ref()
     }
 
     pub fn table(&self, table_name: &str) -> Result<Option<&'a TableCatalog>, DatabaseError> {
