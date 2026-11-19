@@ -21,6 +21,16 @@ pub struct InsertOperator {
     pub(crate) table: DmlTable,
     pub is_overwrite: bool,
     pub on_duplicate_key_update: Option<Vec<(usize, ExprRef)>>,
+    /// The table's identity column, whose omitted or NULL values the insert generates.
+    pub identity: Option<IdentityTarget>,
+}
+
+#[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, ReferenceSerialization)]
+pub struct IdentityTarget {
+    /// Position of the identity column in the table's columns.
+    pub index: usize,
+    /// Whether an explicit 0 also generates a value (see `SqlDialect::identity_zero_generates`).
+    pub zero_generates: bool,
 }
 
 impl Explain for InsertOperator {

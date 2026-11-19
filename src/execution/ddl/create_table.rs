@@ -56,6 +56,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CreateTable<'a> {
             unique_constraints,
             index_constraints,
             display_types,
+            identity,
         } = self.op;
 
         let (transaction, table_codec) = arena.transaction_codec_mut();
@@ -71,7 +72,18 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CreateTable<'a> {
                 display_types.clone(),
             )
             .await?;
-        if let Some(table) = table {
+        if let Some(mut table) = table {
+            if let Some(identity) = identity {
+                transaction
+                    .set_identity(
+                        table_codec,
+                        plan_arena,
+                        &mut table,
+                        &identity.column,
+                        identity.start.map(i128::from),
+                    )
+                    .await?;
+            }
             arena.push_ddl_apply(DDLApply::upsert_table(table, false));
         }
 

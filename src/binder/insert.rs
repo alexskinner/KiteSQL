@@ -17,7 +17,7 @@ use crate::catalog::table::DmlTable;
 use crate::catalog::ColumnRef;
 use crate::errors::DatabaseError;
 use crate::expression::ScalarExpression;
-use crate::planner::operator::insert::InsertOperator;
+use crate::planner::operator::insert::{IdentityTarget, InsertOperator};
 use crate::planner::operator::values::ValuesOperator;
 use crate::planner::operator::Operator;
 use crate::planner::{Childrens, ExprRef, LogicalPlan, PlanArena};
@@ -43,13 +43,16 @@ pub(crate) struct InsertQueryParams<'a> {
     pub on_duplicate_key_update: Option<Vec<(usize, ExprRef)>>,
 }
 
+/// The bound target table, each value column's position in it, and its identity column.
+type InsertTarget = (DmlTable, Vec<Option<usize>>, Option<IdentityTarget>);
+
 impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, A> {
     fn insert_table(
         &self,
         table_name: &str,
         targets: &[ColumnRef],
         arena: &mut PlanArena<'_>,
-    ) -> Result<(DmlTable, Vec<Option<usize>>), DatabaseError> {
+    ) -> Result<InsertTarget, DatabaseError> {
         let catalog = self
             .context
             .table(table_name)?
@@ -69,7 +72,17 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                 }
             }
         }
-        Ok((table, sources))
+        let identity = catalog
+            .identity_column()
+            .and_then(|id| catalog.get_column_by_id(&id))
+            .map(|(index, _)| IdentityTarget {
+                index,
+                #[cfg(feature = "parser")]
+                zero_generates: self.context.dialect.identity_zero_generates(),
+                #[cfg(not(feature = "parser"))]
+                zero_generates: false,
+            });
+        Ok((table, sources, identity))
     }
 
     pub(crate) fn bind_insert_values(
@@ -85,7 +98,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
             is_overwrite,
             on_duplicate_key_update,
         } = params;
-        let (table, sources) = self.insert_table(table_name, &targets, arena)?;
+        let (table, sources, identity) = self.insert_table(table_name, &targets, arena)?;
         let mut values = Vec::with_capacity(row_count * table.columns.len());
         for row in rows.chunks(targets.len()) {
             for (&column, source) in table.columns.iter().zip(&sources) {
@@ -102,6 +115,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                 table,
                 is_overwrite,
                 on_duplicate_key_update,
+                identity,
             }),
             Childrens::Only(Box::new(values_plan)),
         ))
@@ -119,7 +133,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
             is_overwrite,
             on_duplicate_key_update,
         } = params;
-        let (table, sources) = self.insert_table(table_name, targets, arena)?;
+        let (table, sources, identity) = self.insert_table(table_name, targets, arena)?;
         // Project the input to all columns in table order, filling in defaults.
         let mut projection = Vec::with_capacity(table.columns.len());
         for (&column, source) in table.columns.iter().zip(&sources) {
@@ -138,6 +152,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                 table,
                 is_overwrite,
                 on_duplicate_key_update,
+                identity,
             }),
             Childrens::Only(Box::new(input_plan)),
         ))

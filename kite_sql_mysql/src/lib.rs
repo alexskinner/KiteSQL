@@ -36,6 +36,7 @@
 //! # }
 //! ```
 
+pub mod auto_increment;
 pub mod functions;
 pub use functions::MySqlFunctions;
 
@@ -240,6 +241,9 @@ impl SqlDialect for MySqlDialect {
     }
 
     fn rewrite(&self, stmt: &mut Statement) -> Result<(), DatabaseError> {
+        if let Statement::CreateTable(create) = stmt {
+            auto_increment::rewrite_create_table(create)?;
+        }
         let _ = visit_expressions_mut(stmt, |expr| {
             associate_integer_divide(expr);
             ControlFlow::<()>::Continue(())
@@ -277,6 +281,12 @@ impl SqlDialect for MySqlDialect {
             },
             _ => StatementPolicy::default(),
         }
+    }
+
+    /// Without `NO_AUTO_VALUE_ON_ZERO` in sql_mode, MySQL generates the next
+    /// `AUTO_INCREMENT` value for an explicit 0 as for NULL.
+    fn identity_zero_generates(&self) -> bool {
+        true
     }
 
     /// MySQL reads `0.1` as an exact DECIMAL (so `0.1 + 0.2 = 0.3`), keeps `1e2` a DOUBLE and
@@ -372,8 +382,7 @@ impl SqlDialect for MySqlDialect {
                 let type_name_lower = type_name.to_lowercase();
 
                 if type_name_lower.as_str() == "serial" {
-                    // TODO: serial should also apply NOT NULL UNIQUE AUTO_INCREMENT constraints
-                    // Currently only the type mapping (BIGINT UNSIGNED) is implemented
+                    // `rewrite` adds SERIAL's NOT NULL UNIQUE AUTO_INCREMENT
                     Some(Ok(
                         ColumnTypeSpec::new(LogicalType::UBigint).with_display("serial")
                     ))

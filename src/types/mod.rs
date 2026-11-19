@@ -229,6 +229,25 @@ impl LogicalType {
         )
     }
 
+    pub fn is_integer(&self) -> bool {
+        self.is_signed_numeric() || self.is_unsigned_numeric()
+    }
+
+    /// The largest value an integer type holds; `None` for other types.
+    pub fn integer_max(&self) -> Option<i128> {
+        Some(match self {
+            LogicalType::Tinyint => i8::MAX as i128,
+            LogicalType::UTinyint => u8::MAX as i128,
+            LogicalType::Smallint => i16::MAX as i128,
+            LogicalType::USmallint => u16::MAX as i128,
+            LogicalType::Integer => i32::MAX as i128,
+            LogicalType::UInteger => u32::MAX as i128,
+            LogicalType::Bigint => i64::MAX as i128,
+            LogicalType::UBigint => u64::MAX as i128,
+            _ => return None,
+        })
+    }
+
     pub fn is_floating_point_numeric(&self) -> bool {
         matches!(self, LogicalType::Float | LogicalType::Double)
     }

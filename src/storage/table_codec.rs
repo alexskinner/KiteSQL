@@ -117,6 +117,14 @@ enum CodecType {
     View,
     Tuple,
     DisplayTypes,
+    Identity,
+}
+
+/// The two identity keys of a table (see [`TableCodec::with_identity`]).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IdentitySlot {
+    Column,
+    Counter,
 }
 
 const INDEX_STATISTICS_TAG: u8 = b'i';
@@ -275,6 +283,10 @@ impl TableCodec {
             CodecType::DisplayTypes => {
                 out.extend_from_slice(&prefix);
                 out.push(b'4');
+            }
+            CodecType::Identity => {
+                out.extend_from_slice(&prefix);
+                out.push(b'5');
             }
             CodecType::Index => {
                 out.extend_from_slice(&prefix);
@@ -706,6 +718,38 @@ impl TableCodec {
         arena: &mut (impl MetaArena + ?Sized),
     ) -> Result<crate::catalog::DisplayTypesMeta, DatabaseError> {
         crate::catalog::DisplayTypesMeta::decode::<T, _, _>(&mut Cursor::new(bytes), None, arena)
+    }
+
+    /// Key: `{TableId}{IDENTITY_TAG}{slot}`. The [`IdentitySlot::Column`] key holds the
+    /// identity column's id, the [`IdentitySlot::Counter`] key the next value to generate.
+    pub async fn with_identity<R>(
+        &mut self,
+        table_id: TableId,
+        slot: IdentitySlot,
+        f: impl AsyncFnOnce(&[u8]) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.clear_buffers();
+        let key = self.with_table_buffers(table_id, |key, prefix, _| {
+            Self::write_key_prefix(key, CodecType::Identity, prefix);
+            key.push(match slot {
+                IdentitySlot::Column => b'0',
+                IdentitySlot::Counter => b'1',
+            });
+            Ok(key.clone())
+        })?;
+
+        f(key.as_slice()).await
+    }
+
+    pub fn encode_identity_value(value: i128) -> [u8; 16] {
+        value.to_le_bytes()
+    }
+
+    pub fn decode_identity_value(bytes: &[u8]) -> Result<i128, DatabaseError> {
+        let bytes: [u8; 16] = bytes
+            .try_into()
+            .map_err(|_| DatabaseError::InvalidValue("malformed identity metadata".to_string()))?;
+        Ok(i128::from_le_bytes(bytes))
     }
 
     /// Key: `{TableName}{STATISTICS_TAG}{BOUND_MIN_TAG}{INDEX_ID}{INDEX_STATISTICS_TAG}{ROOT_TAG}`.

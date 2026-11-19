@@ -17,7 +17,7 @@ use crate::errors::DatabaseError;
 use crate::execution::{
     build_read, ExecBuilder, ExecContext, ExecNode, ExecutorNode, WriteExecutor,
 };
-use crate::planner::operator::insert::InsertOperator;
+use crate::planner::operator::insert::{IdentityTarget, InsertOperator};
 use crate::planner::{ExecMetaArena, MetaArena};
 use crate::planner::{ExprRef, LogicalPlan};
 use crate::storage::{table_codec::TableCodec, StorageTransaction};
@@ -35,6 +35,7 @@ pub struct Insert<'a> {
     done: bool,
     is_overwrite: bool,
     on_duplicate_key_update: Option<&'a [(usize, ExprRef)]>,
+    identity: Option<IdentityTarget>,
 }
 
 impl<'a> WriteExecutor<'a> for Insert<'a> {
@@ -46,6 +47,7 @@ impl<'a> WriteExecutor<'a> for Insert<'a> {
                 table,
                 is_overwrite,
                 on_duplicate_key_update,
+                identity,
             },
             input_plan,
         ): Self::Input,
@@ -60,6 +62,7 @@ impl<'a> WriteExecutor<'a> for Insert<'a> {
             done: false,
             is_overwrite: *is_overwrite,
             on_duplicate_key_update: on_duplicate_key_update.as_deref(),
+            identity: *identity,
         }))
     }
 }
@@ -90,13 +93,30 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
             tuple,
             is_overwrite,
             on_duplicate_key_update,
+            identity,
             ..
         } = self;
         if table.primary_key_indices.is_empty() {
             return Err(DatabaseError::not_null());
         }
+        let identity = *identity;
         let mut affected_rows = 0;
         let mut row = 0;
+        // The identity counter: read once, written back once the rows are stored.
+        let identity_start = match identity {
+            Some(_) => {
+                let mut state = arena.local_state(plan_arena);
+                let (transaction, table_codec) = state.transaction_codec_mut();
+                Some(
+                    transaction
+                        .identity_next(table_codec, table.table_id)
+                        .await?,
+                )
+            }
+            None => None,
+        };
+        let mut identity_next = identity_start;
+        let mut first_generated = None;
 
         while input.next_tuple(arena, plan_arena).await? {
             tuple.clear();
@@ -104,12 +124,33 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
             arena.result_mut().drain_values(|value| tuple.push(value));
             for (i, column) in table.columns.iter().enumerate() {
                 let column = plan_arena.column(*column);
-                let value = crate::diagnostics::store_cast(
+                let mut value = crate::diagnostics::store_cast(
                     mem::replace(&mut tuple[i], DataValue::Null),
                     column.datatype(),
                     column.name(),
                     row,
                 )?;
+                if let (Some(target), Some(next)) = (identity, identity_next.as_mut()) {
+                    if target.index == i {
+                        let explicit = integer_value(&value);
+                        if value.is_null() || (target.zero_generates && explicit == Some(0)) {
+                            // Past the type's maximum the counter keeps handing out the
+                            // maximum, so the insert fails on the key rather than overflowing.
+                            let max = column.datatype().integer_max().unwrap_or(i128::MAX);
+                            let generated = (*next).min(max);
+                            *next = generated.saturating_add(1);
+                            first_generated.get_or_insert(generated);
+                            value = crate::diagnostics::store_cast(
+                                identity_value(generated),
+                                column.datatype(),
+                                column.name(),
+                                row,
+                            )?;
+                        } else if let Some(explicit) = explicit.filter(|v| *v >= *next) {
+                            *next = explicit.saturating_add(1);
+                        }
+                    }
+                }
                 value.check_len(column.datatype())?;
                 if value.is_null() && !column.nullable() {
                     return Err(DatabaseError::not_null_column(column.name().to_string()));
@@ -399,8 +440,43 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
                 affected_rows += 1;
             }
         }
+        if let Some(next) = identity_next.filter(|next| Some(*next) != identity_start) {
+            let mut state = arena.local_state(plan_arena);
+            let (transaction, table_codec) = state.transaction_codec_mut();
+            transaction
+                .set_identity_next(table_codec, table.table_id, next)
+                .await?;
+        }
+        if first_generated.is_some() {
+            crate::identity::set_last_generated(first_generated);
+        }
         arena.produce(TupleBuilder::build_result(affected_rows.to_string()).into());
         arena.resume();
         Ok(())
+    }
+}
+
+/// An integer column value as `i128`; `None` for NULL and non-integers.
+fn integer_value(value: &DataValue) -> Option<i128> {
+    Some(match value {
+        DataValue::Int8(v) => *v as i128,
+        DataValue::Int16(v) => *v as i128,
+        DataValue::Int32(v) => *v as i128,
+        DataValue::Int64(v) => *v as i128,
+        DataValue::UInt8(v) => *v as i128,
+        DataValue::UInt16(v) => *v as i128,
+        DataValue::UInt32(v) => *v as i128,
+        DataValue::UInt64(v) => *v as i128,
+        _ => return None,
+    })
+}
+
+/// A generated identity value, before it is cast to the column type.
+fn identity_value(value: i128) -> DataValue {
+    match i64::try_from(value) {
+        Ok(v) => DataValue::Int64(v),
+        Err(_) => u64::try_from(value)
+            .map(DataValue::UInt64)
+            .unwrap_or(DataValue::Null),
     }
 }

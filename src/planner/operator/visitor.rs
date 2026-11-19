@@ -760,6 +760,7 @@ pub(crate) mod tests {
                 table: crate::catalog::table::DmlTable::default(),
                 is_overwrite: false,
                 on_duplicate_key_update: None,
+                identity: None,
             }),
             Operator::Update(UpdateOperator {
                 table: crate::catalog::table::DmlTable::default(),
@@ -805,6 +806,7 @@ pub(crate) mod tests {
                 unique_constraints: Vec::new(),
                 index_constraints: Vec::new(),
                 display_types: std::collections::BTreeMap::new(),
+                identity: None,
             }),
             Operator::CreateIndex(CreateIndexOperator {
                 table_id: 0,

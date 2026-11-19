@@ -74,6 +74,14 @@ impl FunctionPack for MySqlFunctions {
         registry.register_scalar(Round::new_variadic())?;
         registry.register_scalar(IntegerDivide::new())?;
 
+        // LAST_INSERT_ID() and LAST_INSERT_ID(expr); a host that registered its own keeps it.
+        for with_arg in [false, true] {
+            match registry.register_scalar(crate::auto_increment::LastInsertId::new(with_arg)) {
+                Ok(()) | Err(DatabaseError::FunctionAlreadyExists(_)) => {}
+                Err(err) => return Err(err),
+            }
+        }
+
         Ok(())
     }
 }
