@@ -1072,6 +1072,10 @@ pub enum BinaryOperator {
 
     And,
     Or,
+
+    /// Case-insensitive LIKE (`ILIKE`): characters compare after simple lower-case folding.
+    ILike(Option<char>),
+    NotILike(Option<char>),
 }
 
 impl fmt::Display for BinaryOperator {
@@ -1105,6 +1109,14 @@ impl fmt::Display for BinaryOperator {
             }
             BinaryOperator::NotLike(escape_char) => {
                 write!(f, "not like")?;
+                like_op(f, escape_char)
+            }
+            BinaryOperator::ILike(escape_char) => {
+                write!(f, "ilike")?;
+                like_op(f, escape_char)
+            }
+            BinaryOperator::NotILike(escape_char) => {
+                write!(f, "not ilike")?;
                 like_op(f, escape_char)
             }
         }

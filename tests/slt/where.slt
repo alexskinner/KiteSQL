@@ -962,3 +962,30 @@ drop table cp_b;
 
 statement ok
 drop table cp_c;
+
+# ILIKE: case-insensitive LIKE
+statement ok
+create table ilike_t(id int primary key, s varchar)
+
+statement ok
+insert into ilike_t values (1, 'hello'), (2, 'HELLO'), (3, 'Help'), (4, 'world')
+
+query I rowsort
+select id from ilike_t where s ilike 'hel%'
+----
+1
+2
+3
+
+query I rowsort
+select id from ilike_t where s not ilike 'HELLO'
+----
+3
+4
+
+query I
+select id from ilike_t where s ilike 'h_l!_' escape '!'
+----
+
+statement ok
+drop table ilike_t

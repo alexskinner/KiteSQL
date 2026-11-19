@@ -35,6 +35,10 @@ impl ReferenceSerialization for BinaryEvaluatorParams {
                 1u8.encode(writer, is_direct, arena)?;
                 escape_char.encode(writer, is_direct, arena)
             }
+            BinaryEvaluatorParams::ILike { escape_char } => {
+                2u8.encode(writer, is_direct, arena)?;
+                escape_char.encode(writer, is_direct, arena)
+            }
         }
     }
 
@@ -46,6 +50,9 @@ impl ReferenceSerialization for BinaryEvaluatorParams {
         Ok(match u8::decode(reader, context.as_deref_mut(), arena)? {
             0 => BinaryEvaluatorParams::Unit,
             1 => BinaryEvaluatorParams::Like {
+                escape_char: Option::<char>::decode(reader, context, arena)?,
+            },
+            2 => BinaryEvaluatorParams::ILike {
                 escape_char: Option::<char>::decode(reader, context, arena)?,
             },
             _ => unreachable!(),

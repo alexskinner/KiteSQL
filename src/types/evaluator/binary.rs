@@ -310,6 +310,14 @@ pub fn binary_create(
                 binary_pos(BINARY_UTF8_BASE, UTF8_NOT_LIKE_OFFSET),
                 BinaryEvaluatorParams::Like { escape_char },
             )),
+            BinaryOperator::ILike(escape_char) => Ok(BinaryEvaluatorRef::new(
+                binary_pos(BINARY_UTF8_BASE, UTF8_LIKE_OFFSET),
+                BinaryEvaluatorParams::ILike { escape_char },
+            )),
+            BinaryOperator::NotILike(escape_char) => Ok(BinaryEvaluatorRef::new(
+                binary_pos(BINARY_UTF8_BASE, UTF8_NOT_LIKE_OFFSET),
+                BinaryEvaluatorParams::ILike { escape_char },
+            )),
             _ => Err(DatabaseError::UnsupportedBinaryOperator(ty.clone(), op)),
         },
         LogicalType::SqlNull => unit_binary_ref(BINARY_SQL_NULL),
@@ -499,18 +507,24 @@ pub(crate) fn eval_binary(
         x if x == binary_pos(BINARY_UTF8_BASE, UTF8_NOT_EQ_OFFSET) => {
             utf8_not_eq_binary_eval(left, right)
         }
-        x if x == binary_pos(BINARY_UTF8_BASE, UTF8_LIKE_OFFSET) => {
-            let BinaryEvaluatorParams::Like { escape_char } = params else {
-                unreachable!()
-            };
-            utf8_like_binary_eval(*escape_char, left, right)
-        }
-        x if x == binary_pos(BINARY_UTF8_BASE, UTF8_NOT_LIKE_OFFSET) => {
-            let BinaryEvaluatorParams::Like { escape_char } = params else {
-                unreachable!()
-            };
-            utf8_not_like_binary_eval(*escape_char, left, right)
-        }
+        x if x == binary_pos(BINARY_UTF8_BASE, UTF8_LIKE_OFFSET) => match params {
+            BinaryEvaluatorParams::Like { escape_char } => {
+                utf8_like_binary_eval(*escape_char, left, right)
+            }
+            BinaryEvaluatorParams::ILike { escape_char } => {
+                utf8_ilike_binary_eval(*escape_char, left, right)
+            }
+            BinaryEvaluatorParams::Unit => unreachable!(),
+        },
+        x if x == binary_pos(BINARY_UTF8_BASE, UTF8_NOT_LIKE_OFFSET) => match params {
+            BinaryEvaluatorParams::Like { escape_char } => {
+                utf8_not_like_binary_eval(*escape_char, left, right)
+            }
+            BinaryEvaluatorParams::ILike { escape_char } => {
+                utf8_not_ilike_binary_eval(*escape_char, left, right)
+            }
+            BinaryEvaluatorParams::Unit => unreachable!(),
+        },
         BINARY_SQL_NULL => null_binary_eval(left, right),
         x if x == binary_pos(BINARY_TUPLE_BASE, TUPLE_EQ_OFFSET) => {
             tuple_eq_binary_eval(left, right)

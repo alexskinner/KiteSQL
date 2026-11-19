@@ -446,6 +446,8 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
             | expression::BinaryOperator::NotEq
             | expression::BinaryOperator::Like(_)
             | expression::BinaryOperator::NotLike(_)
+            | expression::BinaryOperator::ILike(_)
+            | expression::BinaryOperator::NotILike(_)
             | expression::BinaryOperator::And
             | expression::BinaryOperator::Or => LogicalType::Boolean,
             expression::BinaryOperator::StringConcat => {
