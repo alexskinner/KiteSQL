@@ -23,14 +23,16 @@ use crate::planner::LogicalPlan;
 use crate::planner::{ExecMetaArena, MetaArena};
 use crate::storage::StorageTransaction;
 use crate::types::index::Index;
-use crate::types::tuple::Tuple;
+use crate::types::tuple::{Tuple, TupleId};
 use crate::types::tuple_builder::TupleBuilder;
+use std::collections::HashSet;
 use std::mem;
 use std::sync::Arc;
 
 pub struct Update<'a> {
     table: &'a DmlTable,
     value_exprs: &'a [(usize, ExprRef)],
+    target_table_offset: usize,
     input: ExecNode<'a>,
     done: bool,
 }
@@ -39,7 +41,14 @@ impl<'a> WriteExecutor<'a> for Update<'a> {
     type Input = (&'a UpdateOperator, &'a LogicalPlan);
 
     fn into_executor<B: ExecBuilder>(
-        (UpdateOperator { table, value_exprs }, input_plan): Self::Input,
+        (
+            UpdateOperator {
+                table,
+                value_exprs,
+                target_table_offset,
+            },
+            input_plan,
+        ): Self::Input,
         arena: &mut B,
         plan_arena: &(dyn MetaArena + 'a),
     ) -> ExecNode<'a> {
@@ -47,6 +56,7 @@ impl<'a> WriteExecutor<'a> for Update<'a> {
         ExecNode::Update(Box::new(Update {
             table,
             value_exprs,
+            target_table_offset: *target_table_offset,
             input,
             done: false,
         }))
@@ -76,6 +86,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
         let Update {
             table,
             value_exprs,
+            target_table_offset,
             input,
             ..
         } = self;
@@ -88,11 +99,50 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
         } else {
             None
         };
+
+        let mut updated_pks: Option<HashSet<TupleId>> = None;
+
         while input.next_tuple(arena, plan_arena).await? {
-            let mut tuple = arena.take_tuple();
-            let Some(old_pk) = tuple.pk().cloned() else {
+            let joined_tuple = arena.take_tuple();
+
+            let is_simple_update =
+                *target_table_offset == 0 && joined_tuple.len() == table.columns.len();
+
+            if !is_simple_update && updated_pks.is_none() {
+                updated_pks = Some(HashSet::new());
+            }
+
+            let (mut tuple, eval_tuple_owned, old_pk) = if is_simple_update {
+                let pk = joined_tuple.pk().cloned();
+                (joined_tuple, None, pk)
+            } else {
+                let target_values: Vec<_> = (0..table.columns.len())
+                    .map(|i| joined_tuple[*target_table_offset + i].clone())
+                    .collect();
+
+                if target_values.iter().all(|v| v.is_null()) {
+                    continue;
+                }
+
+                let target_pk =
+                    Tuple::primary_projection(&table.primary_key_indices, &target_values[..]);
+                let tuple = Tuple {
+                    pk: Some(target_pk.clone()),
+                    values: target_values,
+                }
+                .into();
+                (tuple, Some(joined_tuple), Some(target_pk))
+            };
+
+            let Some(old_pk) = old_pk else {
                 continue;
             };
+
+            if let Some(ref mut pks) = updated_pks {
+                if !pks.insert(old_pk.clone()) {
+                    continue;
+                }
+            }
 
             // Capture old tuple for undo (before modification)
             let old_tuple = if enable_undo {
@@ -129,11 +179,12 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                 }
             }
 
-            // Every expression reads the old row, so evaluate them all before writing.
+            // Every expression reads the old row (or joined row for joined updates), so evaluate them all before writing.
             for (_, expr) in value_exprs.iter() {
+                let eval_tuple = eval_tuple_owned.as_ref().unwrap_or(&tuple);
                 let value = plan_arena
                     .expression(*expr)
-                    .eval(plan_arena, Some(&tuple))?;
+                    .eval(plan_arena, Some(eval_tuple))?;
                 values.push(value.into_owned());
             }
             for ((position, _), value) in value_exprs.iter().zip(values.drain(..)) {

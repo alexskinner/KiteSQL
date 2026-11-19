@@ -1453,6 +1453,7 @@ mod tests {
         let update = Operator::Update(UpdateOperator {
             table: crate::catalog::table::DmlTable::default(),
             value_exprs: vec![(1, column_expr(a, 0, &mut arena))],
+            target_table_offset: 0,
         });
         assert_eq!(referenced_columns(&update, &mut arena)?, vec![a]);
 
@@ -1783,6 +1784,7 @@ mod tests {
                         ..Default::default()
                     },
                     value_exprs: vec![(0, arena.alloc_expression(ScalarExpression::from(7_i32)))],
+                    target_table_offset: 0,
                 }),
                 "Update users set id -> 7",
             ),
