@@ -281,6 +281,10 @@ impl ScalarFunctionImpl for Concat {
     fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
         None
     }
+
+    fn accepts_any_args(&self) -> bool {
+        true
+    }
 }
 
 /// `CONCAT_WS(separator, str1, str2, ...)`: concatenates strings with separator. Skips NULL values.
@@ -339,6 +343,10 @@ impl ScalarFunctionImpl for ConcatWs {
 
     fn monotonicity(&self) -> Option<Vec<Option<bool>>> {
         None
+    }
+
+    fn accepts_any_args(&self) -> bool {
+        true
     }
 }
 
@@ -804,9 +812,9 @@ impl ScalarFunctionImpl for Rpad {
         arena: &(dyn MetaArena + '_),
         tuple: Option<&dyn Input>,
     ) -> Result<DataValue, DatabaseError> {
-        let str_val = eval_text(args[0], arena, tuple)?;
+        let str_val = eval_value_as_text(args[0], arena, tuple)?;
         let len = arena.expression(args[1]).eval(arena, tuple)?;
-        let pad = eval_text(args[2], arena, tuple)?;
+        let pad = eval_value_as_text(args[2], arena, tuple)?;
 
         if str_val.is_none() || len.is_null() || pad.is_none() {
             return Ok(DataValue::Null);
@@ -1195,60 +1203,89 @@ impl ScalarFunctionImpl for Greatest {
             values.push(value.into_owned());
         }
 
-        // Check if all arguments are numeric
-        let all_numeric = values.iter().all(|v| {
-            matches!(
-                v,
-                DataValue::Int8(_)
-                    | DataValue::Int16(_)
-                    | DataValue::Int32(_)
-                    | DataValue::Int64(_)
-                    | DataValue::UInt8(_)
-                    | DataValue::UInt16(_)
-                    | DataValue::UInt32(_)
-                    | DataValue::UInt64(_)
-                    | DataValue::Float32(_)
-                    | DataValue::Float64(_)
-            )
-        });
-
-        if all_numeric {
-            // Numeric comparison: convert to f64
-            let mut max_numeric = f64::NEG_INFINITY;
-            for v in &values {
-                let num = match v {
-                    DataValue::Int8(i) => *i as f64,
-                    DataValue::Int16(i) => *i as f64,
-                    DataValue::Int32(i) => *i as f64,
-                    DataValue::Int64(i) => *i as f64,
-                    DataValue::UInt8(i) => *i as f64,
-                    DataValue::UInt16(i) => *i as f64,
-                    DataValue::UInt32(i) => *i as f64,
-                    DataValue::UInt64(i) => *i as f64,
-                    DataValue::Float32(f) => f.0 as f64,
-                    DataValue::Float64(f) => f.0,
-                    _ => unreachable!(),
-                };
-                if num > max_numeric {
-                    max_numeric = num;
-                }
-            }
-            use ordered_float::OrderedFloat;
-            Ok(DataValue::Float64(OrderedFloat(max_numeric)))
-        } else {
+        // Determine common type: strings > decimals > floats > ints
+        let has_string = values.iter().any(|v| matches!(v, DataValue::Utf8 { .. }));
+        if has_string {
             // String comparison
-            let mut max_value = values.remove(0);
-            for value in values {
-                if value > max_value {
-                    max_value = value;
+            let mut max_str = match &values[0] {
+                v => v.to_string(),
+                DataValue::Boolean(b) => if *b { "1" } else { "0" }.to_string(),
+                v => v.to_string(),
+            };
+            for v in &values[1..] {
+                let s = match v {
+                    v => v.to_string(),
+                    DataValue::Boolean(b) => if *b { "1" } else { "0" }.to_string(),
+                    v => v.to_string(),
+                };
+                if s > max_str {
+                    max_str = s;
                 }
             }
-            Ok(max_value)
+            return Ok(DataValue::from(max_str));
         }
+
+        let has_decimal = values.iter().any(|v| matches!(v, DataValue::Decimal(_)));
+        if has_decimal {
+            // Decimal comparison: widen all to Decimal
+            use rust_decimal::Decimal;
+            let mut max_dec = Decimal::MIN;
+            for v in values {
+                let d = match v {
+                    DataValue::Decimal(d) => d,
+                    DataValue::Boolean(b) => Decimal::from(if b { 1 } else { 0 }),
+                    DataValue::Int8(i) => Decimal::from(i),
+                    DataValue::Int16(i) => Decimal::from(i),
+                    DataValue::Int32(i) => Decimal::from(i),
+                    DataValue::Int64(i) => Decimal::from(i),
+                    DataValue::UInt8(i) => Decimal::from(i),
+                    DataValue::UInt16(i) => Decimal::from(i),
+                    DataValue::UInt32(i) => Decimal::from(i),
+                    DataValue::UInt64(i) => Decimal::from(i),
+                    DataValue::Float32(f) => Decimal::try_from(f.0 as f64).unwrap_or(Decimal::ZERO),
+                    DataValue::Float64(f) => Decimal::try_from(f.0).unwrap_or(Decimal::ZERO),
+                    _ => Decimal::ZERO,
+                };
+                if d > max_dec {
+                    max_dec = d;
+                }
+            }
+            return Ok(DataValue::Decimal(max_dec));
+        }
+
+        // Numeric comparison (int/float/bool): convert to f64
+        let mut max_numeric = f64::NEG_INFINITY;
+        for v in &values {
+            let num = match v {
+                DataValue::Boolean(b) => {
+                    if *b {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+                DataValue::Int8(i) => *i as f64,
+                DataValue::Int16(i) => *i as f64,
+                DataValue::Int32(i) => *i as f64,
+                DataValue::Int64(i) => *i as f64,
+                DataValue::UInt8(i) => *i as f64,
+                DataValue::UInt16(i) => *i as f64,
+                DataValue::UInt32(i) => *i as f64,
+                DataValue::UInt64(i) => *i as f64,
+                DataValue::Float32(f) => f.0 as f64,
+                DataValue::Float64(f) => f.0,
+                _ => 0.0,
+            };
+            if num > max_numeric {
+                max_numeric = num;
+            }
+        }
+        use ordered_float::OrderedFloat;
+        Ok(DataValue::Float64(OrderedFloat(max_numeric)))
     }
 
     fn return_type(&self) -> &LogicalType {
-        &LogicalType::Double // Return Double for mixed numeric, varies otherwise
+        &LogicalType::Double
     }
 
     fn summary(&self) -> &FunctionSummary {
@@ -1260,7 +1297,7 @@ impl ScalarFunctionImpl for Greatest {
     }
 
     fn accepts_any_args(&self) -> bool {
-        true // Accept any types, compare appropriately
+        true
     }
 }
 
@@ -1306,60 +1343,89 @@ impl ScalarFunctionImpl for Least {
             values.push(value.into_owned());
         }
 
-        // Check if all arguments are numeric
-        let all_numeric = values.iter().all(|v| {
-            matches!(
-                v,
-                DataValue::Int8(_)
-                    | DataValue::Int16(_)
-                    | DataValue::Int32(_)
-                    | DataValue::Int64(_)
-                    | DataValue::UInt8(_)
-                    | DataValue::UInt16(_)
-                    | DataValue::UInt32(_)
-                    | DataValue::UInt64(_)
-                    | DataValue::Float32(_)
-                    | DataValue::Float64(_)
-            )
-        });
-
-        if all_numeric {
-            // Numeric comparison: convert to f64
-            let mut min_numeric = f64::INFINITY;
-            for v in &values {
-                let num = match v {
-                    DataValue::Int8(i) => *i as f64,
-                    DataValue::Int16(i) => *i as f64,
-                    DataValue::Int32(i) => *i as f64,
-                    DataValue::Int64(i) => *i as f64,
-                    DataValue::UInt8(i) => *i as f64,
-                    DataValue::UInt16(i) => *i as f64,
-                    DataValue::UInt32(i) => *i as f64,
-                    DataValue::UInt64(i) => *i as f64,
-                    DataValue::Float32(f) => f.0 as f64,
-                    DataValue::Float64(f) => f.0,
-                    _ => unreachable!(),
-                };
-                if num < min_numeric {
-                    min_numeric = num;
-                }
-            }
-            use ordered_float::OrderedFloat;
-            Ok(DataValue::Float64(OrderedFloat(min_numeric)))
-        } else {
+        // Determine common type: strings > decimals > floats > ints
+        let has_string = values.iter().any(|v| matches!(v, DataValue::Utf8 { .. }));
+        if has_string {
             // String comparison
-            let mut min_value = values.remove(0);
-            for value in values {
-                if value < min_value {
-                    min_value = value;
+            let mut min_str = match &values[0] {
+                v => v.to_string(),
+                DataValue::Boolean(b) => if *b { "1" } else { "0" }.to_string(),
+                v => v.to_string(),
+            };
+            for v in &values[1..] {
+                let s = match v {
+                    v => v.to_string(),
+                    DataValue::Boolean(b) => if *b { "1" } else { "0" }.to_string(),
+                    v => v.to_string(),
+                };
+                if s < min_str {
+                    min_str = s;
                 }
             }
-            Ok(min_value)
+            return Ok(DataValue::from(min_str));
         }
+
+        let has_decimal = values.iter().any(|v| matches!(v, DataValue::Decimal(_)));
+        if has_decimal {
+            // Decimal comparison: widen all to Decimal
+            use rust_decimal::Decimal;
+            let mut min_dec = Decimal::MAX;
+            for v in values {
+                let d = match v {
+                    DataValue::Decimal(d) => d,
+                    DataValue::Boolean(b) => Decimal::from(if b { 1 } else { 0 }),
+                    DataValue::Int8(i) => Decimal::from(i),
+                    DataValue::Int16(i) => Decimal::from(i),
+                    DataValue::Int32(i) => Decimal::from(i),
+                    DataValue::Int64(i) => Decimal::from(i),
+                    DataValue::UInt8(i) => Decimal::from(i),
+                    DataValue::UInt16(i) => Decimal::from(i),
+                    DataValue::UInt32(i) => Decimal::from(i),
+                    DataValue::UInt64(i) => Decimal::from(i),
+                    DataValue::Float32(f) => Decimal::try_from(f.0 as f64).unwrap_or(Decimal::ZERO),
+                    DataValue::Float64(f) => Decimal::try_from(f.0).unwrap_or(Decimal::ZERO),
+                    _ => Decimal::ZERO,
+                };
+                if d < min_dec {
+                    min_dec = d;
+                }
+            }
+            return Ok(DataValue::Decimal(min_dec));
+        }
+
+        // Numeric comparison (int/float/bool): convert to f64
+        let mut min_numeric = f64::INFINITY;
+        for v in &values {
+            let num = match v {
+                DataValue::Boolean(b) => {
+                    if *b {
+                        1.0
+                    } else {
+                        0.0
+                    }
+                }
+                DataValue::Int8(i) => *i as f64,
+                DataValue::Int16(i) => *i as f64,
+                DataValue::Int32(i) => *i as f64,
+                DataValue::Int64(i) => *i as f64,
+                DataValue::UInt8(i) => *i as f64,
+                DataValue::UInt16(i) => *i as f64,
+                DataValue::UInt32(i) => *i as f64,
+                DataValue::UInt64(i) => *i as f64,
+                DataValue::Float32(f) => f.0 as f64,
+                DataValue::Float64(f) => f.0,
+                _ => 0.0,
+            };
+            if num < min_numeric {
+                min_numeric = num;
+            }
+        }
+        use ordered_float::OrderedFloat;
+        Ok(DataValue::Float64(OrderedFloat(min_numeric)))
     }
 
     fn return_type(&self) -> &LogicalType {
-        &LogicalType::Double // Return Double for mixed numeric, varies otherwise
+        &LogicalType::Double
     }
 
     fn summary(&self) -> &FunctionSummary {
@@ -1371,7 +1437,7 @@ impl ScalarFunctionImpl for Least {
     }
 
     fn accepts_any_args(&self) -> bool {
-        true // Accept any types, compare appropriately
+        true
     }
 }
 
