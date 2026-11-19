@@ -272,26 +272,6 @@ impl LogicalType {
                 CharLengthUnits::Characters,
             )));
         }
-        if matches!(left, LogicalType::Boolean) && right.is_numeric() {
-            return if right.is_signed_numeric() {
-                let upcasted = LogicalType::Smallint;
-                Ok(Cow::Owned(LogicalType::combine_numeric_types(&upcasted, right)?.into_owned()))
-            } else if right.is_unsigned_numeric() {
-                Ok(Cow::Borrowed(right))
-            } else {
-                Ok(Cow::Borrowed(right))
-            };
-        }
-        if left.is_numeric() && matches!(right, LogicalType::Boolean) {
-            return if left.is_signed_numeric() {
-                let upcasted = LogicalType::Smallint;
-                Ok(Cow::Owned(LogicalType::combine_numeric_types(left, &upcasted)?.into_owned()))
-            } else if left.is_unsigned_numeric() {
-                Ok(Cow::Borrowed(left))
-            } else {
-                Ok(Cow::Borrowed(left))
-            };
-        }
         if left.is_numeric() && right.is_numeric() {
             return LogicalType::combine_numeric_types(left, right);
         }
