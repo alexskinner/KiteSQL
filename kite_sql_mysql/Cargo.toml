@@ -12,7 +12,7 @@ categories = ["development-tools", "database"]
 
 [dependencies]
 kite_sql = { path = "..", default-features = false, features = ["parser"] }
-sqlparser = "0.61"
+sqlparser = { version = "0.61", features = ["visitor"] }
 
 [dev-dependencies]
 kite_sql = { path = "..", default-features = false, features = ["time", "macros", "parser", "lmdb", "spill", "decimal", "orm", "copy"] }
