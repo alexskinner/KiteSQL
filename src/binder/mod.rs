@@ -41,7 +41,7 @@ mod drop_table;
 mod drop_view;
 mod explain;
 pub mod expr;
-mod insert;
+pub(crate) mod insert;
 #[cfg(feature = "parser")]
 mod parser;
 mod select;
