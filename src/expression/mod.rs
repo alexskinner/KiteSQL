@@ -526,8 +526,16 @@ impl TypeCast for ScalarExpression {
                     .map(|expr| expr.return_type(arena).into_owned())
                     .collect(),
             )),
-            ScalarExpression::ScalaFunction(ScalarFunction { inner, .. }) => {
-                Cow::Borrowed(inner.return_type())
+            ScalarExpression::ScalaFunction(ScalarFunction { inner, args }) => {
+                if inner.accepts_any_args() {
+                    let arg_types: Vec<LogicalType> = args
+                        .iter()
+                        .map(|arg| arena.expression(*arg).return_type(arena).into_owned())
+                        .collect();
+                    Cow::Owned(inner.return_type_for(&arg_types))
+                } else {
+                    Cow::Borrowed(inner.return_type())
+                }
             }
         }
     }

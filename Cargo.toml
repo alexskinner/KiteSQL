@@ -73,6 +73,7 @@ name              = "async_s3"
 required-features = ["slatedb-s3", "orm"]
 
 [dependencies]
+arc-swap              = { version = "1" }
 bumpalo               = { version = "3", default-features = false, features = ["collections"] }
 hashbrown             = { version = "0.15", default-features = false }
 ordered-float         = { version = "4" }

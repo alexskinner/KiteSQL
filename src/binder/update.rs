@@ -27,6 +27,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         table_name: &str,
         assignments: Vec<(ColumnRef, ExprRef)>,
         input: LogicalPlan,
+        target_table_offset: usize,
         arena: &mut PlanArena<'_>,
     ) -> Result<LogicalPlan, DatabaseError> {
         let table_catalog = self
@@ -66,7 +67,11 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                 })
         })?;
         Ok(LogicalPlan::new(
-            Operator::Update(UpdateOperator { table, value_exprs }),
+            Operator::Update(UpdateOperator {
+                table,
+                value_exprs,
+                target_table_offset,
+            }),
             Childrens::Only(Box::new(input)),
         ))
     }

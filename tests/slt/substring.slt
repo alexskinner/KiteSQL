@@ -9,11 +9,6 @@ select substring('pineapple' from -5 for 10 )
 apple
 
 query T
-select substring('pineapple', -15, 10 )
-----
-apple
-
-query T
 select substring('pineapple' for 4 )
 ----
 pine
@@ -43,3 +38,128 @@ query T
 select substring('abc', 1, 10);
 ----
 abc
+
+query TTTT
+select substring('中文abc', 2), substring('中文abc', 3), substring('中文abc', 2, 2), substring('ëa', 2)
+----
+文abc abc 文a a
+
+query T
+select substring('中文abc' from -2)
+----
+bc
+
+query I
+select position('文' in '中文abc')
+----
+2
+
+query I
+select position('abc' in '中文abc')
+----
+3
+
+query I
+select position('x' in '中文abc')
+----
+0
+
+query T
+select substring('🔥test', 2)
+----
+test
+
+query T
+select substring('🔥test', 1, 1)
+----
+🔥
+
+query I
+select position('🔥' in 'hello🔥world')
+----
+6
+
+query I
+select position('L' in 'héllo')
+----
+3
+
+query I
+select position('É' in 'héllo')
+----
+2
+
+query T
+select position(NULL in 'test')
+----
+NULL
+
+query T
+select position('test' in NULL)
+----
+NULL
+
+query T
+select position(NULL in NULL)
+----
+NULL
+
+query T
+select substring('pineapple', -15, 10) = ''
+----
+true
+
+query I
+select char_length(substring('pineapple', -15, 10))
+----
+0
+
+query T
+select substring('test', 0) = ''
+----
+true
+
+query I
+select char_length(substring('test', 0))
+----
+0
+
+query T
+select substring('hello', 10) = ''
+----
+true
+
+query I
+select char_length(substring('hello', 10))
+----
+0
+
+query T
+select substring('test', 2, -1) = ''
+----
+true
+
+query I
+select char_length(substring('test', 2, -1))
+----
+0
+
+query I
+select position('x' in 'İx')
+----
+2
+
+query I
+select position('x' in 'İİİx')
+----
+4
+
+query I
+select position('' in 'abc')
+----
+1
+
+query I
+select position('' in '')
+----
+1

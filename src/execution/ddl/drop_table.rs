@@ -50,18 +50,50 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for DropTable<'a> {
         plan_arena: &mut ExecMetaArena<A>,
     ) -> Result<(), DatabaseError> {
         let DropTableOperator {
-            table_name,
+            table_names,
             if_exists,
         } = self.op;
 
-        let (transaction, table_codec) = arena.transaction_codec_mut();
-        if transaction
-            .drop_table(table_codec, plan_arena, table_name.clone(), *if_exists)
-            .await?
+        use std::collections::HashSet;
+        let mut seen = HashSet::new();
+        for table_name in table_names.iter() {
+            if !seen.insert(table_name.to_string()) {
+                return Err(DatabaseError::DuplicateTableName(table_name.to_string()));
+            }
+        }
+
         {
-            arena.push_ddl_apply(DDLApply::DropTable {
-                name: table_name.clone(),
-            });
+            let (transaction, table_codec) = arena.transaction_codec_mut();
+
+            if !if_exists {
+                for table_name in table_names.iter() {
+                    if transaction
+                        .root_table(table_codec, table_name, plan_arena)
+                        .await?
+                        .filter(|meta| !meta.is_view)
+                        .is_none()
+                    {
+                        return Err(DatabaseError::TableNotFound);
+                    }
+                }
+            }
+        }
+
+        let mut dropped_tables = Vec::new();
+        {
+            let (transaction, table_codec) = arena.transaction_codec_mut();
+            for table_name in table_names.iter() {
+                if transaction
+                    .drop_table(table_codec, plan_arena, table_name.clone(), true)
+                    .await?
+                {
+                    dropped_tables.push(table_name.clone());
+                }
+            }
+        }
+
+        for name in dropped_tables {
+            arena.push_ddl_apply(DDLApply::DropTable { name });
         }
 
         arena.finish();

@@ -874,6 +874,7 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         columns: Vec<ColumnCatalog>,
         if_not_exists: bool,
         unique_constraints: Vec<Vec<String>>,
+        index_constraints: Vec<crate::planner::operator::create_table::IndexConstraint>,
         display_types: std::collections::BTreeMap<String, std::sync::Arc<str>>,
     ) -> Result<Option<TableCatalog>, DatabaseError> {
         match self
@@ -895,7 +896,6 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
         }
         self.create_index_meta_from_column(table_codec, plan_arena, &mut table_catalog)?;
 
-        // Create unique indexes for composite unique constraints
         for column_names in unique_constraints {
             let mut column_ids = Vec::with_capacity(column_names.len());
             for column_name in &column_names {
@@ -912,11 +912,66 @@ pub trait StorageTransaction: Sized + MaybeSend + MaybeSync + MaybeStatic {
                 }
             }
 
-            // Generate index name: uk_<col1>_<col2>_...
             let index_name = format!("uk_{}", column_names.join("_"));
 
-            // Create the composite unique index
-            table_catalog.add_index_meta(index_name, column_ids, IndexType::Unique, plan_arena)?;
+            let meta_ref = table_catalog.add_index_meta(
+                index_name,
+                column_ids,
+                IndexType::Unique,
+                plan_arena,
+            )?;
+            let meta = plan_arena.index(meta_ref);
+            table_codec.with_index_meta(
+                table_id,
+                meta.id,
+                Some(meta),
+                plan_arena,
+                |key, value| self.set(key, value),
+            )?;
+        }
+
+        for index_def in index_constraints {
+            let mut column_ids = Vec::with_capacity(index_def.columns.len());
+            for column_name in &index_def.columns {
+                if let Some(column) = table_catalog.get_column_by_name(column_name) {
+                    let column_id = plan_arena.column(column).id().ok_or_else(|| {
+                        DatabaseError::invalid_column(format!("column {} has no id", column_name))
+                    })?;
+                    column_ids.push(column_id);
+                } else {
+                    return Err(DatabaseError::invalid_column(format!(
+                        "column {} not found in table",
+                        column_name
+                    )));
+                }
+            }
+
+            let index_name = index_def.name.unwrap_or_else(|| {
+                if index_def.columns.is_empty() {
+                    "idx".to_string()
+                } else {
+                    index_def.columns[0].clone()
+                }
+            });
+
+            let index_type = if index_def.is_unique {
+                IndexType::Unique
+            } else if column_ids.len() == 1 {
+                IndexType::Normal
+            } else {
+                IndexType::Composite
+            };
+
+            let meta_ref =
+                table_catalog.add_index_meta(index_name, column_ids, index_type, plan_arena)?;
+            let meta = plan_arena.index(meta_ref);
+            table_codec.with_index_meta(
+                table_id,
+                meta.id,
+                Some(meta),
+                plan_arena,
+                |key, value| self.set(key, value),
+            )?;
         }
 
         for column in table_catalog

@@ -752,6 +752,7 @@ pub(crate) mod tests {
             Operator::Update(UpdateOperator {
                 table: crate::catalog::table::DmlTable::default(),
                 value_exprs: vec![(0, expr(15))],
+                target_table_offset: 0,
             }),
             Operator::Delete(DeleteOperator {
                 table_id: 0,
@@ -790,6 +791,7 @@ pub(crate) mod tests {
                 columns: vec![column],
                 if_not_exists: false,
                 unique_constraints: Vec::new(),
+                index_constraints: Vec::new(),
                 display_types: std::collections::BTreeMap::new(),
             }),
             Operator::CreateIndex(CreateIndexOperator {
@@ -808,11 +810,11 @@ pub(crate) mod tests {
                 or_replace: false,
             }),
             Operator::DropTable(DropTableOperator {
-                table_name: "t1".into(),
+                table_names: vec!["t1".into()],
                 if_exists: false,
             }),
             Operator::DropView(DropViewOperator {
-                view_name: "v1".into(),
+                view_names: vec!["v1".into()],
                 if_exists: false,
             }),
             Operator::DropIndex(DropIndexOperator {

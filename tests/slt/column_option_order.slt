@@ -1,0 +1,300 @@
+statement ok
+create table t1 (pk int primary key default 5, v int)
+
+statement ok
+insert into t1 (v) values (10)
+
+query II
+select * from t1
+----
+5 10
+
+statement ok
+drop table t1
+
+statement ok
+create table t2 (pk int default 5 primary key, v int)
+
+statement ok
+insert into t2 (v) values (20)
+
+query II
+select * from t2
+----
+5 20
+
+statement ok
+drop table t2
+
+statement ok
+create table t3 (pk int not null default 10 primary key, v int)
+
+statement ok
+insert into t3 (v) values (30)
+
+query II
+select * from t3
+----
+10 30
+
+statement ok
+drop table t3
+
+statement ok
+create table t4 (pk int primary key not null default 15, v int)
+
+statement ok
+insert into t4 (v) values (40)
+
+query II
+select * from t4
+----
+15 40
+
+statement ok
+drop table t4
+
+statement ok
+create table t5 (pk int default 20 not null primary key, v int)
+
+statement ok
+insert into t5 (v) values (50)
+
+query II
+select * from t5
+----
+20 50
+
+statement ok
+drop table t5
+
+statement ok
+create table t6 (pk int unique primary key default 25, v int)
+
+statement ok
+insert into t6 (v) values (60)
+
+query II
+select * from t6
+----
+25 60
+
+statement ok
+drop table t6
+
+statement ok
+create table t7 (pk int primary key unique default 30, v int)
+
+statement ok
+insert into t7 (v) values (70)
+
+query II
+select * from t7
+----
+30 70
+
+statement ok
+drop table t7
+
+statement ok
+create table t8 (pk int default 35 primary key unique, v int)
+
+statement ok
+insert into t8 (v) values (80)
+
+query II
+select * from t8
+----
+35 80
+
+statement ok
+drop table t8
+
+statement ok
+create table t9 (id int, pk int not null unique default 40 primary key, v varchar(10))
+
+statement ok
+insert into t9 (id, v) values (1, 'test')
+
+query IIT
+select * from t9
+----
+1 40 test
+
+statement ok
+drop table t9
+
+statement ok
+create table t10 (pk int primary key default 45 not null unique, v int)
+
+statement ok
+insert into t10 (v) values (90)
+
+query II
+select * from t10
+----
+45 90
+
+statement ok
+drop table t10
+
+statement ok
+create table t13 (pk int primary key comment 'test comment', v int)
+
+statement ok
+insert into t13 values (50, 120)
+
+query II
+select * from t13
+----
+50 120
+
+statement ok
+drop table t13
+
+statement ok
+create table t14 (pk int comment 'test' primary key, v int)
+
+statement ok
+insert into t14 values (60, 130)
+
+query II
+select * from t14
+----
+60 130
+
+statement ok
+drop table t14
+
+statement ok
+create table t15 (pk int primary key check (pk > 0), v int)
+
+statement ok
+insert into t15 values (70, 140)
+
+query II
+select * from t15
+----
+70 140
+
+statement ok
+drop table t15
+
+statement ok
+create table t16 (pk int check (pk > 0) primary key, v int)
+
+statement ok
+insert into t16 values (80, 150)
+
+query II
+select * from t16
+----
+80 150
+
+statement ok
+drop table t16
+
+statement error
+create table t_invalid (pk int primary key null, v int)
+
+statement error
+create table t_invalid2 (pk int null primary key, v int)
+
+statement ok
+create table t17 (pk varchar(50) primary key character set utf8mb4, v int)
+
+statement ok
+insert into t17 values ('test', 160)
+
+query TI
+select * from t17
+----
+test 160
+
+statement ok
+drop table t17
+
+statement ok
+create table t18 (pk varchar(50) character set utf8mb4 primary key, v int)
+
+statement ok
+insert into t18 values ('test2', 170)
+
+query TI
+select * from t18
+----
+test2 170
+
+statement ok
+drop table t18
+
+statement ok
+create table t19 (updated_at timestamp primary key on update current_timestamp, v int)
+
+statement ok
+insert into t19 values ('2024-01-01 00:00:00', 180)
+
+query TI
+select * from t19
+----
+2024-01-01 00:00:00 180
+
+statement ok
+drop table t19
+
+statement error
+create table t_dup_default (pk int default 1 default 2, v int)
+
+statement error
+create table t_dup_pk (pk int primary key primary key, v int)
+
+statement ok
+create table t20 (pk varchar(50) primary key collate utf8mb4_bin, v int)
+
+statement ok
+insert into t20 values ('test', 190)
+
+query TI
+select * from t20
+----
+test 190
+
+statement ok
+drop table t20
+
+statement ok
+create table t21 (pk varchar(50) collate utf8mb4_bin primary key, v int)
+
+statement ok
+insert into t21 values ('test2', 200)
+
+query TI
+select * from t21
+----
+test2 200
+
+statement ok
+drop table t21
+
+statement ok
+create table t22 (pk int primary key invisible, v int)
+
+statement ok
+insert into t22 values (90, 210)
+
+query II
+select * from t22
+----
+90 210
+
+statement ok
+drop table t22
+
+statement error
+create table t_generated (pk int primary key, v int as (pk * 2))
+
+statement error
+create table t_null_not_null (pk int null not null, v int)
+
+statement error
+create table t_null_null (pk int null null, v int)
