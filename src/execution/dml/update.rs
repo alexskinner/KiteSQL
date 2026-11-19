@@ -23,8 +23,9 @@ use crate::planner::LogicalPlan;
 use crate::planner::{ExecMetaArena, MetaArena};
 use crate::storage::StorageTransaction;
 use crate::types::index::Index;
-use crate::types::tuple::Tuple;
+use crate::types::tuple::{Tuple, TupleId};
 use crate::types::tuple_builder::TupleBuilder;
+use std::collections::HashSet;
 use std::mem;
 use std::sync::Arc;
 
@@ -98,29 +99,44 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
         } else {
             None
         };
+
+        let mut updated_pks: HashSet<TupleId> = HashSet::new();
+
         while input.next_tuple(arena, plan_arena).await? {
             let joined_tuple = arena.take_tuple();
 
             let is_simple_update =
                 *target_table_offset == 0 && joined_tuple.len() == table.columns.len();
 
-            let (mut tuple, eval_tuple_owned) = if is_simple_update {
-                (joined_tuple, None)
+            let (mut tuple, eval_tuple_owned, old_pk) = if is_simple_update {
+                let pk = joined_tuple.pk().cloned();
+                (joined_tuple, None, pk)
             } else {
                 let target_values: Vec<_> = (0..table.columns.len())
                     .map(|i| joined_tuple[*target_table_offset + i].clone())
                     .collect();
+
+                if target_values.iter().all(|v| v.is_null()) {
+                    continue;
+                }
+
+                let target_pk =
+                    Tuple::primary_projection(&table.primary_key_indices, &target_values[..]);
                 let tuple = Tuple {
-                    pk: joined_tuple.pk().cloned(),
+                    pk: Some(target_pk.clone()),
                     values: target_values,
                 }
                 .into();
-                (tuple, Some(joined_tuple))
+                (tuple, Some(joined_tuple), Some(target_pk))
             };
 
-            let Some(old_pk) = tuple.pk().cloned() else {
+            let Some(old_pk) = old_pk else {
                 continue;
             };
+
+            if !updated_pks.insert(old_pk.clone()) {
+                continue;
+            }
 
             // Capture old tuple for undo (before modification)
             let old_tuple = if enable_undo {

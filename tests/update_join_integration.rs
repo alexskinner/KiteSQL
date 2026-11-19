@@ -64,16 +64,48 @@ mod tests {
             .done()
             .unwrap();
 
-        db.run(
-            "UPDATE `_version_psys_accessdenied` `latest` \
-             LEFT JOIN `_version_psys_accessdenied` `older` \
-             ON `older`.id = `latest`.id AND `older`._version_number > `latest`._version_number \
-             SET `latest`._version_is_latest_draft = '1' \
-             WHERE `older`.id IS NULL",
-        )
-        .unwrap()
-        .done()
-        .unwrap();
+        let mut iter = db
+            .run(
+                "UPDATE `_version_psys_accessdenied` `latest` \
+                 LEFT JOIN `_version_psys_accessdenied` `older` \
+                 ON `older`.id = `latest`.id AND `older`._version_number > `latest`._version_number \
+                 SET `latest`._version_is_latest_draft = '1' \
+                 WHERE `older`.id IS NULL",
+            )
+            .unwrap();
+        let count = iter
+            .next_tuple(|_, tuple| tuple[0].utf8().unwrap().parse::<i32>().unwrap())
+            .unwrap()
+            .unwrap();
+        iter.done().unwrap();
+        assert_eq!(count, 2, "Should update exactly 2 rows");
+
+        let mut iter = db
+            .run("SELECT * FROM _version_psys_accessdenied ORDER BY record_id")
+            .unwrap();
+        let mut rows = Vec::new();
+        while let Some(row) = iter
+            .next_tuple(|_, tuple| {
+                (
+                    tuple[0].i32().unwrap(),
+                    tuple[1].i32().unwrap(),
+                    tuple[2].i32().unwrap(),
+                    tuple[3].utf8().unwrap().to_string(),
+                )
+            })
+            .unwrap()
+        {
+            rows.push(row);
+        }
+        iter.done().unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (1, 1, 1, "0".to_string()),
+                (2, 1, 2, "1".to_string()),
+                (3, 2, 1, "1".to_string())
+            ]
+        );
     }
 
     #[test]
@@ -96,13 +128,42 @@ mod tests {
             .done()
             .unwrap();
 
-        db.run(
-            "UPDATE products p \
-             INNER JOIN price_updates pu ON p.id = pu.product_id \
-             SET p.price = pu.new_price",
-        )
-        .unwrap()
-        .done()
-        .unwrap();
+        let mut iter = db
+            .run(
+                "UPDATE products p \
+                 INNER JOIN price_updates pu ON p.id = pu.product_id \
+                 SET p.price = pu.new_price",
+            )
+            .unwrap();
+        let count = iter
+            .next_tuple(|_, tuple| tuple[0].utf8().unwrap().parse::<i32>().unwrap())
+            .unwrap()
+            .unwrap();
+        iter.done().unwrap();
+        assert_eq!(count, 2, "Should update exactly 2 rows");
+
+        let mut iter = db.run("SELECT * FROM products ORDER BY id").unwrap();
+        let mut rows = Vec::new();
+        while let Some(row) = iter
+            .next_tuple(|_, tuple| {
+                (
+                    tuple[0].i32().unwrap(),
+                    tuple[1].utf8().unwrap().to_string(),
+                    tuple[2].i32().unwrap(),
+                )
+            })
+            .unwrap()
+        {
+            rows.push(row);
+        }
+        iter.done().unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (1, "apple".to_string(), 150),
+                (2, "banana".to_string(), 60),
+                (3, "cherry".to_string(), 75)
+            ]
+        );
     }
 }
