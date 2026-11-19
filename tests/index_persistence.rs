@@ -115,20 +115,6 @@ fn test_prefix_lengths_accepted() -> Result<(), DatabaseError> {
 
 #[test]
 fn test_named_single_column_unique() -> Result<(), DatabaseError> {
-    use kite_sql::db::{ConsumeMut, TransactionIter};
-    use kite_sql::planner::PlanArena;
-
-    struct Consume;
-    impl<S: kite_sql::storage::Storage> ConsumeMut<S> for Consume {
-        type Output = ();
-        fn consume<'a>(
-            self,
-            _iter: &mut TransactionIter<'a, 'a, S::TransactionType<'a>, PlanArena<'a>>,
-        ) -> Result<Self::Output, DatabaseError> {
-            Ok(())
-        }
-    }
-
     let temp_dir = TempDir::new().unwrap();
     let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
 
@@ -140,10 +126,16 @@ fn test_named_single_column_unique() -> Result<(), DatabaseError> {
 
     {
         let result = database.run_mut("INSERT INTO t VALUES (2, 100)", Consume);
-        assert!(
-            result.is_err(),
-            "Named single-column UNIQUE KEY should be enforced with run_mut"
-        );
+        match result {
+            Err(DatabaseError::DuplicateUniqueValue) => {}
+            Err(e) => panic!(
+                "Expected DuplicateUniqueValue for named single-column UNIQUE KEY, got error: {}",
+                e
+            ),
+            Ok(_) => {
+                panic!("Expected DuplicateUniqueValue for named single-column UNIQUE KEY, got Ok")
+            }
+        }
     }
 
     database.run_mut("DROP INDEX t.uk_val", Consume)?;

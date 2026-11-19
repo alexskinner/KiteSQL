@@ -905,6 +905,106 @@ where
             }
             columns.push(col);
         }
+        /// Extracts the column name from an index key part expression.
+        /// Accepts:
+        /// - Expr::Identifier
+        /// - Expr::Function where the name is a single identifier matching a column,
+        ///   args are exactly one unnamed positive integer literal, and no special clauses
+        /// Rejects functional/expression key parts like lower(col), substring(col,1,3), etc.
+        fn index_key_part_column(
+            expr: &Expr,
+            columns: &[ColumnCatalog],
+        ) -> Result<String, DatabaseError> {
+            match expr {
+                Expr::Identifier(ident) => Ok(lower_ident(ident).into_owned()),
+                Expr::Function(func) => {
+                    if func.name.0.len() != 1 {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "functional/expression key parts are not supported".to_string(),
+                        ));
+                    }
+                    let name_part = &func.name.0[0];
+                    let col_name = match name_part {
+                        ObjectNamePart::Identifier(ident) => lower_ident(ident).into_owned(),
+                        _ => {
+                            return Err(DatabaseError::UnsupportedStmt(
+                                "functional/expression key parts are not supported".to_string(),
+                            ))
+                        }
+                    };
+                    if !columns.iter().any(|c| c.name() == col_name) {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "functional/expression key parts are not supported".to_string(),
+                        ));
+                    }
+                    if func.filter.is_some()
+                        || func.over.is_some()
+                        || !func.within_group.is_empty()
+                        || func.null_treatment.is_some()
+                    {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "functional/expression key parts are not supported".to_string(),
+                        ));
+                    }
+                    let (args, duplicate_treatment) = match &func.args {
+                        FunctionArguments::List(list) => {
+                            (&list.args, list.duplicate_treatment.as_ref())
+                        }
+                        _ => {
+                            return Err(DatabaseError::UnsupportedStmt(
+                                "functional/expression key parts are not supported".to_string(),
+                            ))
+                        }
+                    };
+                    if duplicate_treatment.is_some() {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "functional/expression key parts are not supported".to_string(),
+                        ));
+                    }
+                    if args.len() != 1 {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "functional/expression key parts are not supported".to_string(),
+                        ));
+                    }
+                    match &args[0] {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(val))) => match &val
+                            .value
+                        {
+                            Value::Number(n, false) => {
+                                if let Ok(num) = n.parse::<i64>() {
+                                    if num <= 0 {
+                                        return Err(DatabaseError::UnsupportedStmt(
+                                            "functional/expression key parts are not supported"
+                                                .to_string(),
+                                        ));
+                                    }
+                                } else {
+                                    return Err(DatabaseError::UnsupportedStmt(
+                                        "functional/expression key parts are not supported"
+                                            .to_string(),
+                                    ));
+                                }
+                            }
+                            _ => {
+                                return Err(DatabaseError::UnsupportedStmt(
+                                    "functional/expression key parts are not supported".to_string(),
+                                ))
+                            }
+                        },
+                        _ => {
+                            return Err(DatabaseError::UnsupportedStmt(
+                                "functional/expression key parts are not supported".to_string(),
+                            ))
+                        }
+                    }
+                    Ok(col_name)
+                }
+                _ => Err(DatabaseError::UnsupportedStmt(
+                    "functional/expression key parts are not supported".to_string(),
+                )),
+            }
+        }
+
         let unique_constraints = Vec::new();
         let mut index_constraints = Vec::new();
         let mut used_index_names = std::collections::HashSet::new();
@@ -920,33 +1020,7 @@ where
                     let column_names: Result<Vec<String>, DatabaseError> = unique
                         .columns
                         .iter()
-                        .map(|index_col| match &index_col.column.expr {
-                            Expr::Identifier(ident) => Ok(lower_ident(ident).into_owned()),
-                            Expr::Function(func) if func.name.0.len() == 1 => {
-                                match &func.name.0[0] {
-                                    ObjectNamePart::Identifier(ident) => {
-                                        Ok(lower_ident(ident).into_owned())
-                                    }
-                                    _ => Err(DatabaseError::UnsupportedStmt(
-                                        "only identifier columns are supported in INDEX"
-                                            .to_string(),
-                                    )),
-                                }
-                            }
-                            Expr::Substring { expr, .. } => {
-                                if let Expr::Identifier(ident) = expr.as_ref() {
-                                    Ok(lower_ident(ident).into_owned())
-                                } else {
-                                    Err(DatabaseError::UnsupportedStmt(
-                                        "only identifier columns are supported in UNIQUE"
-                                            .to_string(),
-                                    ))
-                                }
-                            }
-                            _ => Err(DatabaseError::UnsupportedStmt(
-                                "only identifier columns are supported in UNIQUE".to_string(),
-                            )),
-                        })
+                        .map(|index_col| index_key_part_column(&index_col.column.expr, &columns))
                         .collect();
                     let cols = column_names?;
 
@@ -1166,17 +1240,112 @@ where
         exprs: Vec<IndexColumn>,
         fn_constraint: F,
     ) -> Result<(), DatabaseError> {
+        /// Extracts the column name from an index key part expression.
+        /// Accepts:
+        /// - Expr::Identifier
+        /// - Expr::Function where the name is a single identifier matching a column,
+        ///   args are exactly one unnamed positive integer literal, and no special clauses
+        /// Rejects functional/expression key parts like lower(col), substring(col,1,3), etc.
+        fn index_key_part_column(
+            expr: &Expr,
+            columns: &[ColumnCatalog],
+        ) -> Result<String, DatabaseError> {
+            match expr {
+                Expr::Identifier(ident) => Ok(lower_ident(ident).into_owned()),
+                Expr::Function(func) => {
+                    if func.name.0.len() != 1 {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "functional/expression key parts are not supported".to_string(),
+                        ));
+                    }
+                    let name_part = &func.name.0[0];
+                    let col_name = match name_part {
+                        ObjectNamePart::Identifier(ident) => lower_ident(ident).into_owned(),
+                        _ => {
+                            return Err(DatabaseError::UnsupportedStmt(
+                                "functional/expression key parts are not supported".to_string(),
+                            ))
+                        }
+                    };
+                    if !columns.iter().any(|c| c.name() == col_name) {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "functional/expression key parts are not supported".to_string(),
+                        ));
+                    }
+                    if func.filter.is_some()
+                        || func.over.is_some()
+                        || !func.within_group.is_empty()
+                        || func.null_treatment.is_some()
+                    {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "functional/expression key parts are not supported".to_string(),
+                        ));
+                    }
+                    let (args, duplicate_treatment) = match &func.args {
+                        FunctionArguments::List(list) => {
+                            (&list.args, list.duplicate_treatment.as_ref())
+                        }
+                        _ => {
+                            return Err(DatabaseError::UnsupportedStmt(
+                                "functional/expression key parts are not supported".to_string(),
+                            ))
+                        }
+                    };
+                    if duplicate_treatment.is_some() {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "functional/expression key parts are not supported".to_string(),
+                        ));
+                    }
+                    if args.len() != 1 {
+                        return Err(DatabaseError::UnsupportedStmt(
+                            "functional/expression key parts are not supported".to_string(),
+                        ));
+                    }
+                    match &args[0] {
+                        FunctionArg::Unnamed(FunctionArgExpr::Expr(Expr::Value(val))) => match &val
+                            .value
+                        {
+                            Value::Number(n, false) => {
+                                if let Ok(num) = n.parse::<i64>() {
+                                    if num <= 0 {
+                                        return Err(DatabaseError::UnsupportedStmt(
+                                            "functional/expression key parts are not supported"
+                                                .to_string(),
+                                        ));
+                                    }
+                                } else {
+                                    return Err(DatabaseError::UnsupportedStmt(
+                                        "functional/expression key parts are not supported"
+                                            .to_string(),
+                                    ));
+                                }
+                            }
+                            _ => {
+                                return Err(DatabaseError::UnsupportedStmt(
+                                    "functional/expression key parts are not supported".to_string(),
+                                ))
+                            }
+                        },
+                        _ => {
+                            return Err(DatabaseError::UnsupportedStmt(
+                                "functional/expression key parts are not supported".to_string(),
+                            ))
+                        }
+                    }
+                    Ok(col_name)
+                }
+                _ => Err(DatabaseError::UnsupportedStmt(
+                    "functional/expression key parts are not supported".to_string(),
+                )),
+            }
+        }
+
         for (i, index_column) in exprs.into_iter().enumerate() {
-            let Expr::Identifier(ident) = index_column.column.expr else {
-                return Err(DatabaseError::UnsupportedStmt(
-                    "only identifier columns are supported in `PRIMARY KEY/UNIQUE`".to_string(),
-                ));
-            };
-            let column_name = lower_ident(&ident);
+            let column_name = index_key_part_column(&index_column.column.expr, table_columns)?;
 
             if let Some(column) = table_columns
                 .iter_mut()
-                .find(|column| column.name() == column_name.as_ref())
+                .find(|column| column.name() == column_name)
             {
                 fn_constraint(i, column.desc_mut())
             }

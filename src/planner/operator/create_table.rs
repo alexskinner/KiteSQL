@@ -36,6 +36,11 @@ pub struct CreateTableOperator {
     pub display_types: BTreeMap<String, Arc<str>>,
 }
 
+/// Inline index definition from CREATE TABLE.
+///
+/// Note: Prefix-length unique keys (e.g., `UNIQUE KEY uk (col(10))`) enforce
+/// uniqueness on the entire column value, not just the prefix. The prefix length
+/// is accepted for MySQL compatibility but not used for enforcement.
 #[derive(Debug, PartialEq, Eq, Clone, Hash, ReferenceSerialization)]
 pub struct IndexConstraint {
     pub name: Option<String>,
