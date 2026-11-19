@@ -260,6 +260,10 @@ impl ScalarExpression {
 
                 match (pattern.utf8(), string.utf8()) {
                     (Some(needle), Some(haystack)) => {
+                        if needle.is_empty() {
+                            return Ok(Cow::Owned(DataValue::Int32(1)));
+                        }
+
                         let fold_char = |c: char| -> char {
                             let mut lower = c.to_lowercase();
                             match (lower.next(), lower.next()) {

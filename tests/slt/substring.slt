@@ -153,3 +153,13 @@ query I
 select position('x' in 'İİİx')
 ----
 4
+
+query I
+select position('' in 'abc')
+----
+1
+
+query I
+select position('' in '')
+----
+1
