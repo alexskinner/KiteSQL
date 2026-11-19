@@ -31,4 +31,8 @@ pub struct FunctionSummary {
     pub name: Arc<str>,
     pub arg_types: Vec<LogicalType>,
     pub persistence: PersistencePolicy,
+    /// If true, the function accepts any argument types and any argument count that matches
+    /// the arg_types length. The resolver will skip type checking and let the function
+    /// implementation handle type conversions.
+    pub accepts_any_args: bool,
 }

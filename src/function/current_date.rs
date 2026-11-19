@@ -39,6 +39,7 @@ impl CurrentDate {
                 name: function_name.into(),
                 arg_types: Vec::new(),
                 persistence: crate::expression::function::PersistencePolicy::Durable,
+                accepts_any_args: false,
             },
         })
     }
