@@ -51,6 +51,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         Ok((table, sources))
     }
 
+    #[allow(clippy::too_many_arguments)]
     pub(crate) fn bind_insert_values(
         &mut self,
         table_name: &str,

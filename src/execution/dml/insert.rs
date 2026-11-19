@@ -120,12 +120,9 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
                 let mut state = arena.local_state(plan_arena);
                 let (transaction, table_codec) = state.transaction_codec_mut();
                 table_codec
-                    .with_tuple(
-                        table.table_id,
-                        tuple_id,
-                        None,
-                        async |key, _| transaction.exists(key),
-                    )
+                    .with_tuple(table.table_id, tuple_id, None, async |key, _| -> Result<bool, DatabaseError> {
+                        transaction.exists(key).await
+                    })
                     .await?
             } else {
                 false
