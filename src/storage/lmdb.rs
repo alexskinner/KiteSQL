@@ -20,9 +20,7 @@ use crate::storage::{
 };
 use crate::types::mapped::MappedScope;
 use crate::types::serialize::BytesPool;
-use lmdb::{
-    Database, DatabaseFlags, Environment, EnvironmentFlags,
-};
+use lmdb::{Database, DatabaseFlags, Environment, EnvironmentFlags};
 use std::collections::Bound;
 use std::fmt::{self, Display, Formatter};
 use std::fs;
@@ -278,13 +276,12 @@ impl LmdbTxn {
         }
     }
 
-    unsafe fn open_ro_cursor_raw(&self, db: Database) -> Result<*mut lmdb_sys::MDB_cursor, lmdb::Error> {
+    unsafe fn open_ro_cursor_raw(
+        &self,
+        db: Database,
+    ) -> Result<*mut lmdb_sys::MDB_cursor, lmdb::Error> {
         let mut cursor: *mut lmdb_sys::MDB_cursor = std::ptr::null_mut();
-        mdb_result(lmdb_sys::mdb_cursor_open(
-            self.raw(),
-            db.dbi(),
-            &mut cursor,
-        ))?;
+        mdb_result(lmdb_sys::mdb_cursor_open(self.raw(), db.dbi(), &mut cursor))?;
         Ok(cursor)
     }
 
@@ -339,7 +336,6 @@ impl Scan {
         }
     }
 
-
     fn before_start(&self, key: &[u8]) -> bool {
         let start = if self.reverse {
             bytes_bound_as_slice(&self.range.1)
@@ -370,14 +366,18 @@ impl Scan {
                 let start_bound = if matches!(self.step, Step::Seek) {
                     let min = bytes_bound_as_slice(&self.range.0);
                     let max = bytes_bound_as_slice(&self.range.1);
-                    if self.reverse { max } else { min }
+                    if self.reverse {
+                        max
+                    } else {
+                        min
+                    }
                 } else {
                     Bound::Unbounded
                 };
                 let positioning = !matches!(self.step, Step::Move);
                 let is_seek = matches!(self.step, Step::Seek);
                 let is_reverse = self.reverse;
-                
+
                 let (key, op) = match self.step {
                     Step::Seek => match start_bound {
                         Bound::Included(key) | Bound::Excluded(key) => {
@@ -393,7 +393,7 @@ impl Scan {
                 };
                 (key, op, positioning, is_seek, is_reverse)
             };
-            
+
             let Some(entry) = cursor_get(cursor, key, op)? else {
                 self.step = if is_reverse && key.is_some() && is_seek {
                     Step::Last
@@ -452,7 +452,11 @@ fn cursor_get(
     unsafe {
         let rc = lmdb_sys::mdb_cursor_get(
             cursor,
-            if key.is_some() { &mut key_val } else { &mut key_val },
+            if key.is_some() {
+                &mut key_val
+            } else {
+                &mut key_val
+            },
             &mut data,
             op,
         );
@@ -460,14 +464,8 @@ fn cursor_get(
             return Ok(None);
         }
         mdb_result(rc)?;
-        let key_slice = std::slice::from_raw_parts(
-            key_val.mv_data as *const u8,
-            key_val.mv_size,
-        );
-        let value_slice = std::slice::from_raw_parts(
-            data.mv_data as *const u8,
-            data.mv_size,
-        );
+        let key_slice = std::slice::from_raw_parts(key_val.mv_data as *const u8, key_val.mv_size);
+        let value_slice = std::slice::from_raw_parts(data.mv_data as *const u8, data.mv_size);
         Ok(Some((key_slice, value_slice)))
     }
 }
@@ -529,7 +527,11 @@ impl StorageTransaction for LmdbTransaction {
     }
 
     fn point_cursor(&self) -> Result<Self::PointCursor<'_>, DatabaseError> {
-        unsafe { Ok(PointCur(self.tx.as_ref().unwrap().open_ro_cursor_raw(self.db)?)) }
+        unsafe {
+            Ok(PointCur(
+                self.tx.as_ref().unwrap().open_ro_cursor_raw(self.db)?,
+            ))
+        }
     }
 
     async fn get_at<'a>(
@@ -538,11 +540,9 @@ impl StorageTransaction for LmdbTransaction {
         key: &[u8],
     ) -> Result<Option<Self::BorrowedBytes<'a>>, DatabaseError> {
         match cursor_get(cursor.0, Some(key), lmdb_sys::MDB_SET) {
-            Ok(Some((_, value))) => {
-                unsafe {
-                    Ok(Some(std::mem::transmute::<&[u8], &'a [u8]>(value)))
-                }
-            }
+            Ok(Some((_, value))) => unsafe {
+                Ok(Some(std::mem::transmute::<&[u8], &'a [u8]>(value)))
+            },
             Ok(None) => Ok(None),
             Err(err) => Err(err.into()),
         }
