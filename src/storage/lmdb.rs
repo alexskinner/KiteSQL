@@ -660,6 +660,7 @@ impl StorageTransaction for LmdbTransaction {
 
 // GRCOV_EXCL_START
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[maybe_async]
 mod tests {
     use super::{LmdbConfig, LmdbStorage};
     use crate::catalog::{ColumnCatalog, ColumnDesc};
@@ -920,28 +921,28 @@ mod tests {
     }
 
     #[test]
-    fn lmdb_remove_range() {
+    async fn lmdb_remove_range() {
         use crate::storage::Storage;
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let storage = LmdbStorage::new(temp_dir.path().join("kite_sql.lmdb")).unwrap();
         let mut transaction = storage.transaction().unwrap();
-        crate::storage::check_remove_range(&mut transaction).unwrap();
+        crate::storage::check_remove_range(&mut transaction).await.unwrap();
     }
 
     #[test]
-    fn lmdb_range_rev_matches_range() {
+    async fn lmdb_range_rev_matches_range() {
         use crate::storage::Storage;
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let storage = LmdbStorage::new(temp_dir.path().join("kite_sql.lmdb")).unwrap();
         let mut transaction = storage.transaction().unwrap();
-        crate::storage::check_range_rev_matches_range(&mut transaction).unwrap();
+        crate::storage::check_range_rev_matches_range(&mut transaction).await.unwrap();
     }
 
     #[test]
-    fn explicit_transaction_does_not_rescan_own_writes() {
+    async fn explicit_transaction_does_not_rescan_own_writes() {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let db = DataBaseBuilder::path(temp_dir.path()).build_lmdb().unwrap();
-        crate::storage::check_explicit_transaction_does_not_rescan_own_writes(db).unwrap();
+        crate::storage::check_explicit_transaction_does_not_rescan_own_writes(db).await.unwrap();
     }
 
     #[test]
