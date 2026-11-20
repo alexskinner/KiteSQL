@@ -172,6 +172,12 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
     fn supports_set_autocommit(&self) -> bool {
         false
     }
+
+    /// Whether this dialect supports prefix length in index key parts (`col(n)`).
+    /// A dialect may accept and ignore the length. The default is `false`.
+    fn supports_index_prefix_length(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone)]

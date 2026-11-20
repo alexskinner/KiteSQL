@@ -84,10 +84,34 @@ fn test_inline_indexes_persist_after_reopen() -> Result<(), DatabaseError> {
     }
 }
 
+#[derive(Debug, Clone)]
+struct PrefixTestDialect {
+    inner: kite_sql::dialect::GenericSqlDialect,
+}
+
+impl kite_sql::dialect::SqlDialect for PrefixTestDialect {
+    fn name(&self) -> &'static str {
+        "test_prefix"
+    }
+
+    fn parser_dialect(&self) -> &dyn sqlparser::dialect::Dialect {
+        self.inner.parser_dialect()
+    }
+
+    fn supports_index_prefix_length(&self) -> bool {
+        true
+    }
+}
+
 #[test]
 fn test_prefix_lengths_accepted() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
-    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+    let mut database = DataBaseBuilder::path(temp_dir.path())
+        .register_dialect(std::sync::Arc::new(PrefixTestDialect {
+            inner: kite_sql::dialect::GenericSqlDialect::new(),
+        }))
+        .default_dialect("test_prefix")?
+        .build_lmdb()?;
 
     database.ddl(
         "CREATE TABLE t (
