@@ -318,11 +318,12 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
         arena: &mut PlanArena,
     ) -> Result<ScalarExpression, DatabaseError> {
         if table_name.is_none() {
-            // SELECT expressions and WHERE read input columns, not a same-named output alias.
+            // SELECT expressions, WHERE and GROUP BY read input columns before a
+            // same-named output alias.
             if bind_table_name.is_none()
                 && matches!(
                     self.context.step_now(),
-                    QueryBindStep::Project | QueryBindStep::Where
+                    QueryBindStep::Project | QueryBindStep::Where | QueryBindStep::Agg
                 )
             {
                 let input = match self.context.using.get(column_name) {

@@ -95,45 +95,45 @@ select fd_page.id, fd_page.title, fd_pair.a, fd_pair.b, fd_pair.v from fd_page j
 2 a 2 1 z
 
 # Only part of a composite key is grouped.
-statement error must appear in the GROUP BY clause
+statement error is not in GROUP BY clause
 select a, v from fd_pair group by a
 
 # The other side of the self-join is not determined by `page.id`.
-statement error must appear in the GROUP BY clause
+statement error is not in GROUP BY clause
 select page.id, child_pages.title from fd_page page left join fd_page child_pages on child_pages.parent_page = page.id group by page.id
 
-statement error must appear in the GROUP BY clause
+statement error is not in GROUP BY clause
 select page.id, count(*) from fd_page page left join fd_page child_pages on child_pages.parent_page = page.id group by page.id order by child_pages.sort_order
 
 statement error must appear in the GROUP BY clause
 select page.id, count(*) from fd_page page left join fd_page child_pages on child_pages.parent_page = page.id group by page.id having child_pages.sort_order > 1
 
 # Another table's columns are not determined by this table's key.
-statement error must appear in the GROUP BY clause
+statement error is not in GROUP BY clause
 select fd_page.id, fd_pair.v from fd_page join fd_pair on fd_pair.a = fd_page.id group by fd_page.id
 
 # An expression over the key is not the key.
-statement error must appear in the GROUP BY clause
+statement error is not in GROUP BY clause
 select id + 0 as x, title from fd_page group by x
 
 # No key grouped: HAVING and ORDER BY on an ungrouped column are rejected.
-statement error must appear in the GROUP BY clause
+statement error is not in GROUP BY clause
 select title from fd_page group by title order by sort_order
 
 statement error must appear in the GROUP BY clause
 select title, count(*) from fd_page group by title having sort_order > 1
 
 # Derived tables, views and CTEs carry no key.
-statement error must appear in the GROUP BY clause
+statement error is not in GROUP BY clause
 select d.id, d.title from (select id, title from fd_page) d group by d.id
 
 statement ok
 create view fd_view as select * from fd_page
 
-statement error must appear in the GROUP BY clause
+statement error is not in GROUP BY clause
 select id, title from fd_view group by id
 
-statement error must appear in the GROUP BY clause
+statement error is not in GROUP BY clause
 with c as (select * from fd_page) select id, title from c group by id
 
 statement ok

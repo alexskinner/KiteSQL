@@ -119,6 +119,54 @@ impl ExprVisitor<dyn MetaArena + '_> for UngroupedColumnValidator<'_> {
     }
 }
 
+/// Rejects, as MySQL's ONLY_FULL_GROUP_BY does, a column of the query's own sources used
+/// outside aggregate calls in an expression that is not a GROUP BY expression, unless it is
+/// functionally dependent on the GROUP BY list.
+struct GroupedExprValidator<'a> {
+    group_by_exprs: &'a [ExprRef],
+    functional_columns: &'a [ColumnRef],
+    local_columns: &'a [ColumnRef],
+    position: usize,
+    clause: &'a str,
+}
+
+impl ExprVisitor<dyn MetaArena + '_> for GroupedExprValidator<'_> {
+    fn visit(&mut self, expr: ExprRef, arena: &(dyn MetaArena + '_)) -> Result<(), DatabaseError> {
+        let grouped = self.group_by_exprs.iter().any(|group_expr| {
+            group_expr.eq_ignore_colref_pos(expr, arena)
+                || group_expr
+                    .unpack_alias(arena)
+                    .eq_ignore_colref_pos(expr.unpack_alias(arena), arena)
+        });
+        if grouped {
+            return Ok(());
+        }
+        match arena.expression(expr) {
+            ScalarExpression::AggCall { .. } => Ok(()),
+            ScalarExpression::ColumnRef { column, .. } => {
+                let column = *column;
+                let same = |columns: &[ColumnRef]| {
+                    columns
+                        .iter()
+                        .any(|candidate| arena.same_column(*candidate, column))
+                };
+                if same(self.local_columns) && !same(self.functional_columns) {
+                    Err(DatabaseError::AggMiss(format!(
+                        "Expression #{} of {} is not in GROUP BY clause and contains nonaggregated column '{}' which is not functionally dependent on columns in GROUP BY clause",
+                        self.position,
+                        self.clause,
+                        expr.output_name(arena)
+                    )))
+                } else {
+                    Ok(())
+                }
+            }
+            ScalarExpression::Empty | ScalarExpression::TableFunction(_) => Ok(()),
+            _ => walk_expr(self, expr, arena),
+        }
+    }
+}
+
 impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, A> {
     /// An aggregate query without GROUP BY has one group, the whole input, so like a grouped
     /// query it may only output aggregates and expressions over them. A bare column such as
@@ -129,10 +177,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         exprs: impl IntoIterator<Item = &'e ExprRef>,
         arena: &PlanArena<'_>,
     ) -> Result<(), DatabaseError> {
-        let local_columns = self.context.bind_table[self.context.source_scope_start..]
-            .iter()
-            .flat_map(|bound_source| bound_source.source.schema().iter().copied())
-            .collect::<Vec<_>>();
+        let local_columns = self.local_columns();
         let mut validator = UngroupedColumnValidator {
             group_by_exprs: &self.context.group_by_exprs,
             local_columns: &local_columns,
@@ -178,11 +223,11 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
     ) -> Result<(), DatabaseError> {
         self.context.functional_columns =
             self.functionally_determined_columns(select_list, &group_by_exprs, arena);
-        self.validate_groupby_illegal_column(select_list, &group_by_exprs, arena)?;
 
         for expr in group_by_exprs.iter_mut() {
             self.visit_group_by_expr(select_list, *expr, arena)?;
         }
+        self.validate_grouped_select_list(select_list, arena)?;
         for expr in select_list.iter() {
             self.append_functional_group_by_exprs(*expr, arena)?;
         }
@@ -236,23 +281,6 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         functional_columns
     }
 
-    /// Whether every column `expr` references is functionally dependent on the GROUP BY list.
-    fn is_functionally_dependent(
-        &self,
-        expr: ExprRef,
-        arena: &PlanArena<'_>,
-    ) -> Result<bool, DatabaseError> {
-        let functional_columns = &self.context.functional_columns;
-        if functional_columns.is_empty() {
-            return Ok(false);
-        }
-        Ok(!expr.any_referenced_column(arena, |arena, column| {
-            !functional_columns
-                .iter()
-                .any(|functional| arena.same_column(*functional, *column))
-        })?)
-    }
-
     /// Appends the functionally dependent columns `expr` references to the GROUP BY list. They
     /// do not change the groups, and let the aggregate output them like any grouped column.
     fn append_functional_group_by_exprs(
@@ -295,11 +323,21 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         let mut return_orderby = None;
         if let Some(orderby) = orderby {
             let mut fields = Vec::new();
-            for orderby in orderby {
+            let local_columns = self.local_columns();
+            for (i, orderby) in orderby.into_iter().enumerate() {
                 let field = bind_sort_field(self, orderby, arena)?;
                 self.collect_aggregate_calls(field.expr, arena)?;
                 self.append_functional_group_by_exprs(field.expr, arena)?;
-                self.validate_having_orderby(field.expr, arena)?;
+                if !self.context.group_by_exprs.is_empty() {
+                    GroupedExprValidator {
+                        group_by_exprs: &self.context.group_by_exprs,
+                        functional_columns: &self.context.functional_columns,
+                        local_columns: &local_columns,
+                        position: i + 1,
+                        clause: "ORDER BY clause",
+                    }
+                    .visit(field.expr, arena)?;
+                }
                 fields.push(field);
             }
             return_orderby = Some(fields);
@@ -345,84 +383,41 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         .visit(expr, arena)
     }
 
-    /// Validate select exprs must appear in the GROUP BY clause or be used in
-    /// an aggregate function.
-    /// e.g. SELECT a,count(b) FROM t GROUP BY a. it's ok.
-    ///      SELECT a,b FROM t GROUP BY a.        it's error.
-    ///      SELECT a,count(b) FROM t GROUP BY b. it's error.
-    fn validate_groupby_illegal_column(
+    /// The columns of the query's own sources (outer-query columns are constants here).
+    fn local_columns(&self) -> Vec<ColumnRef> {
+        self.context.bind_table[self.context.source_scope_start..]
+            .iter()
+            .flat_map(|bound_source| bound_source.source.schema().iter().copied())
+            .collect()
+    }
+
+    /// Under GROUP BY every select item must be computable per group: a GROUP BY expression,
+    /// an expression over GROUP BY expressions, aggregates, constants, columns functionally
+    /// dependent on the GROUP BY list, or outer-query columns.
+    /// e.g. `SELECT a, COUNT(b) FROM t GROUP BY a`, `SELECT a * 2 FROM t GROUP BY a` and
+    ///      `SELECT COUNT(*) FROM t GROUP BY a` are fine; `SELECT a, b FROM t GROUP BY a` and
+    ///      `SELECT a FROM t GROUP BY a + 1` are errors.
+    fn validate_grouped_select_list(
         &mut self,
         select_items: &[ExprRef],
-        groupby: &[ExprRef],
         arena: &PlanArena<'_>,
     ) -> Result<(), DatabaseError> {
-        let mut unmatched_group_exprs = Vec::with_capacity(groupby.len());
-        for expr in groupby {
-            if let ScalarExpression::Alias { alias, .. } = arena.expression(*expr) {
-                let alias_expr = select_items.iter().find(|column| {
-                    if let ScalarExpression::Alias {
-                        alias: inner_alias, ..
-                    } = arena.expression(**column)
-                    {
-                        alias == inner_alias
-                    } else {
-                        false
-                    }
-                });
-
-                if let Some(inner_expr) = alias_expr {
-                    unmatched_group_exprs.push(*inner_expr);
-                }
-            } else {
-                unmatched_group_exprs.push(*expr);
-            }
-        }
-
-        for expr in select_items {
+        let local_columns = self.local_columns();
+        for (i, expr) in select_items.iter().enumerate() {
             if expr.has_window_call(arena)? {
-                HavingOrderByValidator::new(groupby, &self.context.agg_calls)
+                HavingOrderByValidator::new(&self.context.group_by_exprs, &self.context.agg_calls)
                     .visit(*expr, arena)?;
                 continue;
             }
-            if expr.has_agg_call(arena)? {
-                continue;
+            GroupedExprValidator {
+                group_by_exprs: &self.context.group_by_exprs,
+                functional_columns: &self.context.functional_columns,
+                local_columns: &local_columns,
+                position: i + 1,
+                clause: "SELECT list",
             }
-            if !expr.any_referenced_column(arena, |_, _| true)? {
-                if let Some(position) = unmatched_group_exprs
-                    .iter()
-                    .position(|group_expr| expr.eq_ignore_colref_pos(*group_expr, arena))
-                {
-                    unmatched_group_exprs.remove(position);
-                }
-                continue;
-            }
-            let Some(position) = unmatched_group_exprs
-                .iter()
-                .position(|group_expr| expr.eq_ignore_colref_pos(*group_expr, arena))
-            else {
-                if self.is_functionally_dependent(*expr, arena)? {
-                    continue;
-                }
-                return Err(DatabaseError::AggMiss(format!(
-                    "`{}` must appear in the GROUP BY clause or be used in an aggregate function",
-                    expr.output_name(arena)
-                )));
-            };
-            unmatched_group_exprs.remove(position);
+            .visit(*expr, arena)?;
         }
-
-        unmatched_group_exprs.retain(|expr| {
-            !matches!(
-                arena.expression(expr.unpack_alias(arena)),
-                ScalarExpression::InitValue { .. }
-            )
-        });
-        if !unmatched_group_exprs.is_empty() {
-            return Err(DatabaseError::AggMiss(
-                "in the GROUP BY clause the field must be in the select clause".to_string(),
-            ));
-        }
-
         Ok(())
     }
 
@@ -443,6 +438,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                     false
                 }
             }) {
+                Self::check_groupable(select_list[i], arena)?;
                 // GROUP BY evaluates against the aggregate input, while the select
                 // expression is later rewritten against aggregate output.
                 self.context
@@ -451,6 +447,7 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
                 return Ok(());
             }
         }
+        Self::check_groupable(expr, arena)?;
 
         if let Some(i) = select_list
             .iter()
@@ -459,6 +456,20 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
             self.context
                 .group_by_exprs
                 .push(select_list[i].clone_expression(arena)?);
+        } else {
+            // Grouped but not selected, e.g. `SELECT COUNT(*) FROM t GROUP BY a`.
+            self.context.group_by_exprs.push(expr);
+        }
+        Ok(())
+    }
+
+    /// An aggregate cannot be grouped on (`GROUP BY 2` naming `COUNT(*)`, or its alias).
+    fn check_groupable(expr: ExprRef, arena: &(dyn MetaArena + '_)) -> Result<(), DatabaseError> {
+        if expr.has_agg_call(arena)? {
+            return Err(DatabaseError::AggMiss(format!(
+                "Can't group on '{}'",
+                expr.output_name(arena)
+            )));
         }
         Ok(())
     }
