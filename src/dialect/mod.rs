@@ -160,6 +160,18 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
     fn upsert_affected_rows(&self, _inserted: bool, _updated: bool) -> u64 {
         1
     }
+
+    /// Whether BEGIN while a transaction is open commits the active transaction first.
+    /// A dialect may return `true` (implicit commit), generic returns `false` (error).
+    fn begin_commits_active_transaction(&self) -> bool {
+        false
+    }
+
+    /// Whether this dialect supports `SET autocommit` syntax.
+    /// The default is `false`.
+    fn supports_set_autocommit(&self) -> bool {
+        false
+    }
 }
 
 #[derive(Debug, Clone)]

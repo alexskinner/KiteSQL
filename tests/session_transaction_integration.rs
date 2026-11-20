@@ -9,6 +9,29 @@ use kite_sql::errors::DatabaseError;
 use tempfile::TempDir;
 
 #[derive(Debug, Clone)]
+struct TxTestDialect {
+    inner: kite_sql::dialect::GenericSqlDialect,
+}
+
+impl kite_sql::dialect::SqlDialect for TxTestDialect {
+    fn name(&self) -> &'static str {
+        "test_tx"
+    }
+
+    fn parser_dialect(&self) -> &dyn sqlparser::dialect::Dialect {
+        self.inner.parser_dialect()
+    }
+
+    fn begin_commits_active_transaction(&self) -> bool {
+        true
+    }
+
+    fn supports_set_autocommit(&self) -> bool {
+        true
+    }
+}
+
+#[derive(Debug, Clone)]
 struct OdkuTestDialect {
     inner: kite_sql::dialect::GenericSqlDialect,
 }
@@ -39,7 +62,12 @@ impl kite_sql::dialect::SqlDialect for OdkuTestDialect {
 #[test]
 fn test_session_transaction_control_integration() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
-    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+    let mut database = DataBaseBuilder::path(temp_dir.path())
+        .register_dialect(std::sync::Arc::new(TxTestDialect {
+            inner: kite_sql::dialect::GenericSqlDialect::new(),
+        }))
+        .default_dialect("test_tx")?
+        .build_lmdb()?;
 
     database.ddl("CREATE TABLE tx_test (id INT PRIMARY KEY, val INT)")?;
 
