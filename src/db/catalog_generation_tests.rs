@@ -21,14 +21,31 @@ use tempfile::TempDir;
 /// The newest generation plus the placeholder parked for `&mut` swaps.
 const BASELINE: usize = 2;
 
-fn exec<S: Storage>(session: &mut Session<'_, S>, sql: &str) -> Result<(), DatabaseError> {
-    session.run(sql)?.done()
+/// LMDB when the build has it; otherwise the build's unit-test storage.
+#[cfg(feature = "lmdb")]
+type GenerationTestStorage = crate::storage::lmdb::LmdbStorage;
+#[cfg(not(feature = "lmdb"))]
+type GenerationTestStorage = crate::storage::TestStorage;
+
+#[maybe_async]
+async fn open_test_db(dir: &TempDir) -> Result<Database<GenerationTestStorage>, DatabaseError> {
+    #[cfg(feature = "lmdb")]
+    let database = DataBaseBuilder::path(dir.path()).build_lmdb();
+    #[cfg(not(feature = "lmdb"))]
+    let database = DataBaseBuilder::path(dir.path()).build_in_memory().await;
+    database
 }
 
+#[maybe_async]
+async fn exec<S: Storage>(session: &mut Session<'_, S>, sql: &str) -> Result<(), DatabaseError> {
+    session.run(sql).await?.done().await
+}
+
+#[maybe_async]
 #[test]
-fn session_ddl_commits_keep_live_catalogs_bounded() -> Result<(), DatabaseError> {
+async fn session_ddl_commits_keep_live_catalogs_bounded() -> Result<(), DatabaseError> {
     let dir = TempDir::new().unwrap();
-    let db = DataBaseBuilder::path(dir.path()).build_lmdb()?;
+    let db = open_test_db(&dir).await?;
     let live = db.state.live_catalogs.clone();
     assert_eq!(live.count(), BASELINE);
 
@@ -36,19 +53,20 @@ fn session_ddl_commits_keep_live_catalogs_bounded() -> Result<(), DatabaseError>
     let mut max_live = 0;
     for i in 0..2000 {
         let mut session = db.session();
-        exec(&mut session, "BEGIN")?;
+        exec(&mut session, "BEGIN").await?;
         if i % 2 == 0 {
             exec(
                 &mut session,
                 &format!("CREATE TABLE t{i} (id INT PRIMARY KEY)"),
-            )?;
+            )
+            .await?;
         } else {
-            exec(&mut session, &format!("DROP TABLE t{}", i - 1))?;
+            exec(&mut session, &format!("DROP TABLE t{}", i - 1)).await?;
         }
-        exec(&mut session, "COMMIT")?;
+        exec(&mut session, "COMMIT").await?;
         if i % 100 == 0 {
             // Autocommit statements pin a generation only while their iterator lives.
-            exec(&mut session, &format!("SELECT * FROM t{i}"))?;
+            exec(&mut session, &format!("SELECT * FROM t{i}")).await?;
         }
         drop(session);
 
@@ -65,41 +83,45 @@ fn session_ddl_commits_keep_live_catalogs_bounded() -> Result<(), DatabaseError>
     Ok(())
 }
 
+#[maybe_async]
 #[test]
-fn pinned_generation_lives_until_its_transaction_ends() -> Result<(), DatabaseError> {
+async fn pinned_generation_lives_until_its_transaction_ends() -> Result<(), DatabaseError> {
     let dir = TempDir::new().unwrap();
-    let mut db = DataBaseBuilder::path(dir.path()).build_lmdb()?;
-    db.ddl("CREATE TABLE t (id INT PRIMARY KEY)")?;
+    let mut db = open_test_db(&dir).await?;
+    db.ddl("CREATE TABLE t (id INT PRIMARY KEY)").await?;
     let db = db;
     let live = db.state.live_catalogs.clone();
 
     let tx = db.new_transaction(true)?;
-    let iter = db.run("SELECT * FROM t")?;
+    let iter = db.run("SELECT * FROM t").await?;
     for i in 0..50 {
         let mut session = db.session();
-        exec(&mut session, "BEGIN")?;
+        exec(&mut session, "BEGIN").await?;
         exec(
             &mut session,
             &format!("CREATE TABLE u{i} (id INT PRIMARY KEY)"),
-        )?;
-        exec(&mut session, "COMMIT")?;
+        )
+        .await?;
+        exec(&mut session, "COMMIT").await?;
     }
     // The transaction and the iterator share the one generation they pinned.
     assert_eq!(live.count(), BASELINE + 1);
-    iter.done()?;
+    iter.done().await?;
     assert_eq!(live.count(), BASELINE + 1);
-    tx.commit()?;
+    tx.commit().await?;
     assert_eq!(live.count(), BASELINE);
     Ok(())
 }
 
+#[maybe_async]
 #[test]
-fn mut_ddl_and_programs_do_not_accumulate_generations() -> Result<(), DatabaseError> {
+async fn mut_ddl_and_programs_do_not_accumulate_generations() -> Result<(), DatabaseError> {
     let dir = TempDir::new().unwrap();
-    let mut db = DataBaseBuilder::path(dir.path()).build_lmdb()?;
+    let mut db = open_test_db(&dir).await?;
     let live = db.state.live_catalogs.clone();
     for i in 0..300 {
-        db.ddl(format!("CREATE TABLE m{i} (id INT PRIMARY KEY)"))?;
+        db.ddl(format!("CREATE TABLE m{i} (id INT PRIMARY KEY)"))
+            .await?;
     }
     assert_eq!(live.count(), BASELINE);
 
@@ -117,16 +139,18 @@ fn mut_ddl_and_programs_do_not_accumulate_generations() -> Result<(), DatabaseEr
                 &[(1, LogicalType::Integer)],
             )?);
             let mut session = db.session();
-            exec(&mut session, "BEGIN")?;
+            exec(&mut session, "BEGIN").await?;
             exec(
                 &mut session,
                 &format!("CREATE TABLE p{i} (id INT PRIMARY KEY)"),
-            )?;
-            exec(&mut session, "COMMIT")?;
+            )
+            .await?;
+            exec(&mut session, "COMMIT").await?;
         }
         assert_eq!(live.count(), BASELINE + 20);
     }
-    db.ddl("CREATE TABLE after_programs (id INT PRIMARY KEY)")?;
+    db.ddl("CREATE TABLE after_programs (id INT PRIMARY KEY)")
+        .await?;
     assert_eq!(live.count(), BASELINE);
     Ok(())
 }

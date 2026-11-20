@@ -13,6 +13,7 @@
 // limitations under the License.
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[maybe_async]
 mod tests {
     use crate::db::DataBaseBuilder;
     use crate::errors::DatabaseError;
@@ -129,171 +130,186 @@ mod tests {
         }
     }
 
-    fn next_tuple_owned(
+    async fn next_tuple_owned(
         iter: &mut impl crate::db::ResultIter,
     ) -> Result<Option<crate::types::tuple::TupleImpl>, DatabaseError> {
-        iter.next_tuple(|_, tuple| tuple.clone())
+        iter.next_tuple(|_, tuple| tuple.clone()).await
     }
 
     // Simplified UDAF test using VALUES clause instead of tables
     #[test]
-    fn test_register_and_call_udaf() -> Result<(), DatabaseError> {
+    async fn test_register_and_call_udaf() -> Result<(), DatabaseError> {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
             .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
         // Test aggregate on VALUES clause
         let mut iter = database
-            .run("select sum_times_10(value) from (values (10), (20), (15)) as t(value)")?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+            .run("select sum_times_10(value) from (values (10), (20), (15)) as t(value)")
+            .await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple[0], DataValue::Int32(450));
-        iter.done()?;
+        iter.done().await?;
 
         Ok(())
     }
 
     #[test]
-    fn test_udaf_with_group_by() -> Result<(), DatabaseError> {
+    async fn test_udaf_with_group_by() -> Result<(), DatabaseError> {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
             .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
         // Test aggregate with GROUP BY on VALUES clause
-        let mut iter = database.run("select category, sum_times_10(value) from (values ('A', 10), ('A', 20), ('B', 15), ('B', 25)) as t(category, value) group by category order by category")?;
+        let mut iter = database.run("select category, sum_times_10(value) from (values ('A', 10), ('A', 20), ('B', 15), ('B', 25)) as t(category, value) group by category order by category").await?;
 
-        let tuple_a = next_tuple_owned(&mut iter)?.unwrap();
+        let tuple_a = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple_a[1], DataValue::Int32(300));
 
-        let tuple_b = next_tuple_owned(&mut iter)?.unwrap();
+        let tuple_b = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple_b[1], DataValue::Int32(400));
 
-        iter.done()?;
+        iter.done().await?;
         Ok(())
     }
 
     #[test]
-    fn test_udaf_null_handling() -> Result<(), DatabaseError> {
+    async fn test_udaf_null_handling() -> Result<(), DatabaseError> {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
             .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
         // Test NULL handling in aggregate
         let mut iter = database
-            .run("select sum_times_10(value) from (values (10), (NULL), (20)) as t(value)")?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+            .run("select sum_times_10(value) from (values (10), (NULL), (20)) as t(value)")
+            .await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple[0], DataValue::Int32(300));
-        iter.done()?;
+        iter.done().await?;
 
         Ok(())
     }
 
     #[test]
-    fn test_udaf_with_builtin_aggregates() -> Result<(), DatabaseError> {
+    async fn test_udaf_with_builtin_aggregates() -> Result<(), DatabaseError> {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
             .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
         let mut iter = database.run(
             "select sum_times_10(value), sum(value), count(value) from (values (10), (20), (15)) as t(value)"
-        )?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        ).await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple[0], DataValue::Int32(450));
         assert_eq!(tuple[1], DataValue::Int32(45));
         assert_eq!(tuple[2], DataValue::Int32(3));
-        iter.done()?;
+        iter.done().await?;
 
         Ok(())
     }
 
     #[test]
-    fn test_udaf_with_having() -> Result<(), DatabaseError> {
+    async fn test_udaf_with_having() -> Result<(), DatabaseError> {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
             .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
         let mut iter = database.run(
             "select category, sum_times_10(value) from (values ('A', 10), ('A', 20), ('B', 5), ('B', 5)) as t(category, value) group by category having sum_times_10(value) > 200 order by category"
-        )?;
+        ).await?;
 
-        let tuple_a = next_tuple_owned(&mut iter)?.unwrap();
+        let tuple_a = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple_a[1], DataValue::Int32(300));
 
-        assert!(next_tuple_owned(&mut iter)?.is_none());
-        iter.done()?;
+        assert!(next_tuple_owned(&mut iter).await?.is_none());
+        iter.done().await?;
 
         Ok(())
     }
 
     #[test]
-    fn test_udaf_empty_result() -> Result<(), DatabaseError> {
+    async fn test_udaf_empty_result() -> Result<(), DatabaseError> {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
             .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
         let mut iter = database
-            .run("select sum_times_10(value) from (values (1)) as t(value) where value > 100")?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+            .run("select sum_times_10(value) from (values (1)) as t(value) where value > 100")
+            .await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple[0], DataValue::Null);
-        iter.done()?;
+        iter.done().await?;
 
         Ok(())
     }
 
     #[test]
-    fn test_udaf_empty_table() -> Result<(), DatabaseError> {
+    async fn test_udaf_empty_table() -> Result<(), DatabaseError> {
         use tempfile::TempDir;
 
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let mut database = DataBaseBuilder::path(temp_dir.path())
             .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
-        database.ddl("CREATE TABLE empty_table_test (id INT PRIMARY KEY, value INT)")?;
+        database
+            .ddl("CREATE TABLE empty_table_test (id INT PRIMARY KEY, value INT)")
+            .await?;
 
-        let mut iter = database.run("select sum_times_10(value) from empty_table_test")?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        let mut iter = database
+            .run("select sum_times_10(value) from empty_table_test")
+            .await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple[0], DataValue::Null);
-        iter.done()?;
+        iter.done().await?;
 
         Ok(())
     }
 
     #[test]
-    fn test_udaf_all_null_group() -> Result<(), DatabaseError> {
+    async fn test_udaf_all_null_group() -> Result<(), DatabaseError> {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
             .register_aggregate_function(Arc::new(SumTimes10Aggregate::new(LogicalType::Integer)))
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
         let mut iter = database.run(
             "select category, sum_times_10(value) from (values ('A', 10), ('B', NULL)) as t(category, value) group by category order by category"
-        )?;
+        ).await?;
 
-        let tuple_a = next_tuple_owned(&mut iter)?.unwrap();
+        let tuple_a = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple_a[1], DataValue::Int32(100));
 
-        let tuple_b = next_tuple_owned(&mut iter)?.unwrap();
+        let tuple_b = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple_b[1], DataValue::Null);
 
-        iter.done()?;
+        iter.done().await?;
         Ok(())
     }
 
     #[test]
-    fn test_udaf_name_clash_with_builtin() -> Result<(), DatabaseError> {
+    async fn test_udaf_name_clash_with_builtin() -> Result<(), DatabaseError> {
         use tempfile::TempDir;
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
 
@@ -338,12 +354,15 @@ mod tests {
             .register_aggregate_function(Arc::new(SumOverride {
                 input_type: LogicalType::Integer,
             }))
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
-        let mut iter = database.run("select sum(value) from (values (10), (20)) as t(value)")?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        let mut iter = database
+            .run("select sum(value) from (values (10), (20)) as t(value)")
+            .await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple[0], DataValue::Int32(300));
-        iter.done()?;
+        iter.done().await?;
 
         Ok(())
     }

@@ -50,9 +50,10 @@ COVERAGE_REPORT_ARGS ?= --llvm --ignore-not-existing --keep-only 'src/**' --igno
 test:
 	$(CARGO) test --all --features spill
 
-## Run the same unit tests through the async path (`async` feature, SlateDB on an in-memory object store).
+## Run the unit and integration tests through the async path (`async` feature, SlateDB on an
+## in-memory object store).
 test-async:
-	$(CARGO) test -p kite_sql --lib --no-default-features --features $(ASYNC_FEATURES),slatedb
+	$(CARGO) test -p kite_sql --lib --tests --no-default-features --features $(ASYNC_FEATURES),slatedb
 
 ## Run the SlateDB storage unit tests (async path, in-memory object store, S3 config).
 test-slatedb:

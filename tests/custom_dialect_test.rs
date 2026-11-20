@@ -14,14 +14,22 @@
 
 //! Test that custom dialects defined in external crates can map types and change parsing.
 
-#![cfg(all(feature = "lmdb", not(feature = "async")))]
+#![cfg(any(feature = "lmdb", feature = "slatedb"))]
 
+mod common;
+// `#[maybe_async]` tests run on `crate::maybe_async::block_on`.
+#[allow(unused_imports)]
+use common as maybe_async;
+#[cfg(any(feature = "lmdb", feature = "slatedb"))]
+#[allow(unused_imports)]
+use common::TestDatabaseBuilder as _;
 use kite_sql::db::DataBaseBuilder;
 use kite_sql::dialect::SqlDialect;
 use kite_sql::errors::DatabaseError;
 use kite_sql::expression::BinaryOperator;
 use kite_sql::types::value::DataValue;
 use kite_sql::types::{CharLengthUnits, LogicalType};
+use kite_sql_serde_macros::maybe_async;
 use sqlparser::ast::{DataType, Ident, ObjectName, Statement};
 use sqlparser::dialect::{Dialect as SqlParserDialect, GenericDialect};
 use std::sync::Arc;
@@ -147,21 +155,22 @@ impl SqlDialect for ToyDialect {
     }
 }
 
+#[maybe_async]
 #[test]
 #[cfg(feature = "parser")]
-fn test_custom_dialect_type_mapping() -> Result<(), Box<dyn std::error::Error>> {
-    use kite_sql::storage::lmdb::LmdbStorage;
-
+async fn test_custom_dialect_type_mapping() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
     let toy_dialect = Arc::new(ToyDialect::new());
-    let storage = LmdbStorage::new(temp_dir.path())?;
+    let storage = common::test_storage(temp_dir.path()).await?;
     let mut database = DataBaseBuilder::path(".")
         .register_dialect(toy_dialect)
         .default_dialect("toy")?
         .build_with_storage(storage)?;
 
     // Verify custom type mapping works (CUSTOMTEXT should map to VARCHAR)
-    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, text CUSTOMTEXT)")?;
+    database
+        .ddl("CREATE TABLE test (id INT PRIMARY KEY, text CUSTOMTEXT)")
+        .await?;
 
     // If we got here, the custom type was successfully mapped
     // This proves that external dialects can map types through the SqlDialect trait
@@ -169,15 +178,14 @@ fn test_custom_dialect_type_mapping() -> Result<(), Box<dyn std::error::Error>> 
     Ok(())
 }
 
+#[maybe_async]
 #[test]
 #[cfg(feature = "parser")]
-fn test_custom_dialect_parsing_and_rewrite() -> Result<(), Box<dyn std::error::Error>> {
+async fn test_custom_dialect_parsing_and_rewrite() -> Result<(), Box<dyn std::error::Error>> {
     use kite_sql::parser::parse_sql_with_dialect;
-    use kite_sql::storage::lmdb::LmdbStorage;
-
     let temp_dir = tempfile::tempdir()?;
     let toy_dialect = Arc::new(ToyDialect::new());
-    let storage = LmdbStorage::new(temp_dir.path())?;
+    let storage = common::test_storage(temp_dir.path()).await?;
     let mut database = DataBaseBuilder::path(".")
         .register_dialect(toy_dialect.clone())
         .default_dialect("toy")?
@@ -204,21 +212,25 @@ fn test_custom_dialect_parsing_and_rewrite() -> Result<(), Box<dyn std::error::E
 
     // Demonstrate the rewrite hook: CUSTOMTABLE gets rewritten to rewritten_table
     // The CREATE TABLE statement with "CUSTOMTABLE" will be rewritten to "rewritten_table"
-    database.ddl("CREATE TABLE CUSTOMTABLE (val INT PRIMARY KEY)")?;
+    database
+        .ddl("CREATE TABLE CUSTOMTABLE (val INT PRIMARY KEY)")
+        .await?;
 
     // The rewrite hook should have transformed CUSTOMTABLE -> rewritten_table
     // So we can insert and query using the rewritten name
     database
-        .run("INSERT INTO rewritten_table VALUES (42)")?
-        .done()?;
+        .run("INSERT INTO rewritten_table VALUES (42)")
+        .await?
+        .done()
+        .await?;
 
-    let mut result = database.run("SELECT val FROM rewritten_table")?;
-    let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    let mut result = database.run("SELECT val FROM rewritten_table").await?;
+    let row = result.next_tuple(|_, row| row.clone()).await?.unwrap();
     assert_eq!(row[0], kite_sql::types::value::DataValue::Int32(42));
-    result.done()?;
+    result.done().await?;
 
     // Verify that trying to use "CUSTOMTABLE" directly fails (it was rewritten)
-    let result = database.run("SELECT val FROM CUSTOMTABLE");
+    let result = database.run("SELECT val FROM CUSTOMTABLE").await;
     assert!(
         result.is_err(),
         "CUSTOMTABLE should not exist; it was rewritten to rewritten_table"
@@ -232,20 +244,21 @@ fn test_custom_dialect_parsing_and_rewrite() -> Result<(), Box<dyn std::error::E
     Ok(())
 }
 
+#[maybe_async]
 #[test]
 #[cfg(feature = "parser")]
-fn test_generic_dialect_unchanged() -> Result<(), Box<dyn std::error::Error>> {
-    use kite_sql::storage::lmdb::LmdbStorage;
-
+async fn test_generic_dialect_unchanged() -> Result<(), Box<dyn std::error::Error>> {
     let temp_dir = tempfile::tempdir()?;
-    let storage = LmdbStorage::new(temp_dir.path())?;
+    let storage = common::test_storage(temp_dir.path()).await?;
     let mut database = kite_sql::db::DataBaseBuilder::path(".").build_with_storage(storage)?;
 
-    database.ddl("CREATE TABLE test (id INT PRIMARY KEY, name VARCHAR(50))")?;
+    database
+        .ddl("CREATE TABLE test (id INT PRIMARY KEY, name VARCHAR(50))")
+        .await?;
 
-    let mut result = database.run("DESCRIBE test")?;
+    let mut result = database.run("DESCRIBE test").await?;
 
-    let id_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    let id_row = result.next_tuple(|_, row| row.clone()).await?.unwrap();
     assert_eq!(
         id_row[0],
         kite_sql::types::value::DataValue::from("id".to_string())
@@ -255,7 +268,7 @@ fn test_generic_dialect_unchanged() -> Result<(), Box<dyn std::error::Error>> {
         kite_sql::types::value::DataValue::from("Integer".to_string())
     );
 
-    let name_row = result.next_tuple(|_, row| row.clone())?.unwrap();
+    let name_row = result.next_tuple(|_, row| row.clone()).await?.unwrap();
     assert_eq!(
         name_row[0],
         kite_sql::types::value::DataValue::from("name".to_string())
@@ -265,25 +278,25 @@ fn test_generic_dialect_unchanged() -> Result<(), Box<dyn std::error::Error>> {
         kite_sql::types::value::DataValue::from("Varchar(Some(50), CHARACTERS)".to_string())
     );
 
-    result.done()?;
+    result.done().await?;
 
     Ok(())
 }
 
+#[maybe_async]
 #[test]
 #[cfg(feature = "parser")]
-fn test_custom_dialect_avg_return_type() -> Result<(), Box<dyn std::error::Error>> {
-    use kite_sql::storage::lmdb::LmdbStorage;
-
-    let avg = |database: &kite_sql::db::Database<LmdbStorage>,
-               sql: &str|
-     -> Result<(LogicalType, DataValue), DatabaseError> {
-        let mut result = database.run(sql)?;
+async fn test_custom_dialect_avg_return_type() -> Result<(), Box<dyn std::error::Error>> {
+    async fn avg(
+        database: &kite_sql::db::Database<common::TestStorage>,
+        sql: &str,
+    ) -> Result<(LogicalType, DataValue), DatabaseError> {
+        let mut result = database.run(sql).await?;
         let ty = result.schema(|schema| schema.get(0).unwrap().datatype().clone());
-        let row = result.next_tuple(|_, row| row[0].clone())?.unwrap();
-        result.done()?;
+        let row = result.next_tuple(|_, row| row[0].clone()).await?.unwrap();
+        result.done().await?;
         Ok((ty, row))
-    };
+    }
     let setup = "CREATE TABLE a (id INT PRIMARY KEY, n INT, f DOUBLE)";
     let rows = "INSERT INTO a VALUES (1, 1, 1.0), (2, 2, 2.0), (3, 4, 4.0), (4, NULL, NULL)";
 
@@ -292,44 +305,44 @@ fn test_custom_dialect_avg_return_type() -> Result<(), Box<dyn std::error::Error
     let mut toy = DataBaseBuilder::path(".")
         .register_dialect(Arc::new(ToyDialect::new()))
         .default_dialect("toy")?
-        .build_with_storage(LmdbStorage::new(temp_dir.path())?)?;
-    toy.ddl(setup)?;
-    toy.run(rows)?.done()?;
-    let (ty, value) = avg(&toy, "SELECT AVG(n) FROM a")?;
+        .build_with_storage(common::test_storage(temp_dir.path()).await?)?;
+    toy.ddl(setup).await?;
+    toy.run(rows).await?.done().await?;
+    let (ty, value) = avg(&toy, "SELECT AVG(n) FROM a").await?;
     assert_eq!(ty, LogicalType::Decimal(None, Some(2)));
     assert_eq!(value.to_string(), "2.33");
     // Arguments the dialect leaves alone keep DOUBLE.
-    let (ty, value) = avg(&toy, "SELECT AVG(f) FROM a")?;
+    let (ty, value) = avg(&toy, "SELECT AVG(f) FROM a").await?;
     assert_eq!(ty, LogicalType::Double);
     assert!(matches!(value, DataValue::Float64(_)));
 
     // The generic dialect keeps AVG DOUBLE.
     let temp_dir = tempfile::tempdir()?;
-    let mut generic =
-        DataBaseBuilder::path(".").build_with_storage(LmdbStorage::new(temp_dir.path())?)?;
-    generic.ddl(setup)?;
-    generic.run(rows)?.done()?;
-    let (ty, value) = avg(&generic, "SELECT AVG(n) FROM a")?;
+    let mut generic = DataBaseBuilder::path(".")
+        .build_with_storage(common::test_storage(temp_dir.path()).await?)?;
+    generic.ddl(setup).await?;
+    generic.run(rows).await?.done().await?;
+    let (ty, value) = avg(&generic, "SELECT AVG(n) FROM a").await?;
     assert_eq!(ty, LogicalType::Double);
     assert!(matches!(value, DataValue::Float64(_)));
     Ok(())
 }
 
+#[maybe_async]
 #[test]
 #[cfg(all(feature = "parser", feature = "decimal"))]
-fn test_custom_dialect_number_literal_and_arithmetic_type() -> Result<(), Box<dyn std::error::Error>>
-{
-    use kite_sql::storage::lmdb::LmdbStorage;
-
-    let first = |database: &kite_sql::db::Database<LmdbStorage>,
-                 sql: &str|
-     -> Result<(LogicalType, DataValue), DatabaseError> {
-        let mut result = database.run(sql)?;
+async fn test_custom_dialect_number_literal_and_arithmetic_type(
+) -> Result<(), Box<dyn std::error::Error>> {
+    async fn first(
+        database: &kite_sql::db::Database<common::TestStorage>,
+        sql: &str,
+    ) -> Result<(LogicalType, DataValue), DatabaseError> {
+        let mut result = database.run(sql).await?;
         let ty = result.schema(|schema| schema.get(0).unwrap().datatype().clone());
-        let row = result.next_tuple(|_, row| row[0].clone())?.unwrap();
-        result.done()?;
+        let row = result.next_tuple(|_, row| row[0].clone()).await?.unwrap();
+        result.done().await?;
         Ok((ty, row))
-    };
+    }
     let setup = "CREATE TABLE a (id INT PRIMARY KEY, n INT)";
     let rows = "INSERT INTO a VALUES (1, 7), (2, 1)";
 
@@ -337,57 +350,57 @@ fn test_custom_dialect_number_literal_and_arithmetic_type() -> Result<(), Box<dy
     let mut toy = DataBaseBuilder::path(".")
         .register_dialect(Arc::new(ToyDialect::new()))
         .default_dialect("toy")?
-        .build_with_storage(LmdbStorage::new(temp_dir.path())?)?;
-    toy.ddl(setup)?;
-    toy.run(rows)?.done()?;
+        .build_with_storage(common::test_storage(temp_dir.path()).await?)?;
+    toy.ddl(setup).await?;
+    toy.run(rows).await?.done().await?;
     // Decimal literals are exact, also negated.
-    let (ty, value) = first(&toy, "SELECT 0.1 + 0.2")?;
+    let (ty, value) = first(&toy, "SELECT 0.1 + 0.2").await?;
     assert!(matches!(ty, LogicalType::Decimal(..)));
     assert_eq!(value.to_string(), "0.3");
-    let (_, value) = first(&toy, "SELECT -1.50")?;
+    let (_, value) = first(&toy, "SELECT -1.50").await?;
     assert_eq!(value.to_string(), "-1.50");
     // INT / INT is computed in DECIMAL and rounded half away from zero to the dialect scale.
-    let (ty, value) = first(&toy, "SELECT n / 3 FROM a WHERE id = 1")?;
+    let (ty, value) = first(&toy, "SELECT n / 3 FROM a WHERE id = 1").await?;
     assert_eq!(ty, LogicalType::Decimal(None, Some(2)));
     assert_eq!(value.to_string(), "2.33");
-    let (_, value) = first(&toy, "SELECT 2 / 3")?;
+    let (_, value) = first(&toy, "SELECT 2 / 3").await?;
     assert_eq!(value.to_string(), "0.67");
     // Chained arithmetic rounds once, at the end.
-    let (_, value) = first(&toy, "SELECT n / 3 * 3 FROM a WHERE id = 2")?;
+    let (_, value) = first(&toy, "SELECT n / 3 * 3 FROM a WHERE id = 2").await?;
     assert_eq!(value.to_string(), "1.00");
     // Literals with an exponent keep the engine's DOUBLE.
-    let (ty, _) = first(&toy, "SELECT 1e2")?;
+    let (ty, _) = first(&toy, "SELECT 1e2").await?;
     assert_eq!(ty, LogicalType::Double);
 
     // The generic dialect keeps DOUBLE literals and its own integer division.
     let temp_dir = tempfile::tempdir()?;
-    let mut generic =
-        DataBaseBuilder::path(".").build_with_storage(LmdbStorage::new(temp_dir.path())?)?;
-    generic.ddl(setup)?;
-    generic.run(rows)?.done()?;
-    let (ty, _) = first(&generic, "SELECT 0.1 + 0.2")?;
+    let mut generic = DataBaseBuilder::path(".")
+        .build_with_storage(common::test_storage(temp_dir.path()).await?)?;
+    generic.ddl(setup).await?;
+    generic.run(rows).await?.done().await?;
+    let (ty, _) = first(&generic, "SELECT 0.1 + 0.2").await?;
     assert_eq!(ty, LogicalType::Double);
-    let (ty, _) = first(&generic, "SELECT n / 3 FROM a WHERE id = 1")?;
+    let (ty, _) = first(&generic, "SELECT n / 3 FROM a WHERE id = 1").await?;
     assert!(!matches!(ty, LogicalType::Decimal(..)));
     Ok(())
 }
 
+#[maybe_async]
 #[test]
 #[cfg(feature = "parser")]
-fn test_custom_dialect_nulls_first() -> Result<(), Box<dyn std::error::Error>> {
-    use kite_sql::storage::lmdb::LmdbStorage;
-
-    let column = |database: &kite_sql::db::Database<LmdbStorage>,
-                  sql: &str|
-     -> Result<Vec<String>, DatabaseError> {
-        let mut result = database.run(sql)?;
+async fn test_custom_dialect_nulls_first() -> Result<(), Box<dyn std::error::Error>> {
+    async fn column(
+        database: &kite_sql::db::Database<common::TestStorage>,
+        sql: &str,
+    ) -> Result<Vec<String>, DatabaseError> {
+        let mut result = database.run(sql).await?;
         let mut values = Vec::new();
-        while let Some(value) = result.next_tuple(|_, row| row[0].to_string())? {
+        while let Some(value) = result.next_tuple(|_, row| row[0].to_string()).await? {
             values.push(value);
         }
-        result.done()?;
+        result.done().await?;
         Ok(values)
-    };
+    }
     let setup = "CREATE TABLE s (id INT PRIMARY KEY, n INT)";
     let index = "CREATE INDEX s_n ON s (n)";
     let rows = "INSERT INTO s VALUES (1, 2), (2, NULL), (3, 1), (4, NULL)";
@@ -404,14 +417,14 @@ fn test_custom_dialect_nulls_first() -> Result<(), Box<dyn std::error::Error>> {
     let mut toy = DataBaseBuilder::path(".")
         .register_dialect(Arc::new(ToyDialect::new()))
         .default_dialect("toy")?
-        .build_with_storage(LmdbStorage::new(temp_dir.path())?)?;
-    toy.ddl(setup)?;
-    toy.ddl(index)?;
-    toy.run(rows)?.done()?;
-    let toy_results = queries
-        .iter()
-        .map(|sql| column(&toy, sql))
-        .collect::<Result<Vec<_>, _>>()?;
+        .build_with_storage(common::test_storage(temp_dir.path()).await?)?;
+    toy.ddl(setup).await?;
+    toy.ddl(index).await?;
+    toy.run(rows).await?.done().await?;
+    let mut toy_results = Vec::with_capacity(queries.len());
+    for sql in queries.iter() {
+        toy_results.push(column(&toy, sql).await?);
+    }
     assert_eq!(
         toy_results,
         vec![
@@ -426,15 +439,15 @@ fn test_custom_dialect_nulls_first() -> Result<(), Box<dyn std::error::Error>> {
 
     // The generic dialect keeps NULLs last in both directions.
     let temp_dir = tempfile::tempdir()?;
-    let mut generic =
-        DataBaseBuilder::path(".").build_with_storage(LmdbStorage::new(temp_dir.path())?)?;
-    generic.ddl(setup)?;
-    generic.ddl(index)?;
-    generic.run(rows)?.done()?;
-    let generic_results = queries
-        .iter()
-        .map(|sql| column(&generic, sql))
-        .collect::<Result<Vec<_>, _>>()?;
+    let mut generic = DataBaseBuilder::path(".")
+        .build_with_storage(common::test_storage(temp_dir.path()).await?)?;
+    generic.ddl(setup).await?;
+    generic.ddl(index).await?;
+    generic.run(rows).await?.done().await?;
+    let mut generic_results = Vec::with_capacity(queries.len());
+    for sql in queries.iter() {
+        generic_results.push(column(&generic, sql).await?);
+    }
     assert_eq!(
         generic_results,
         vec![

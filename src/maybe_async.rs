@@ -47,9 +47,19 @@ mod bounds {
 
 pub use bounds::{MaybeSend, MaybeStatic, MaybeSync};
 
+/// Runs a test future to completion; on the sync path `#[maybe_async]` has already turned the
+/// `async` block into its value, so this is the identity.
+#[cfg(all(test, not(feature = "async")))]
+pub(crate) fn block_on<T>(value: T) -> T {
+    value
+}
+
 #[cfg(all(test, feature = "async"))]
 pub(crate) fn block_on<F: std::future::Future>(future: F) -> F::Output {
-    tokio::runtime::Builder::new_current_thread()
+    // The future runs on this thread; the storage's background tasks get worker threads, so
+    // they keep going while a test blocks this thread (e.g. joining a connection thread).
+    tokio::runtime::Builder::new_multi_thread()
+        .worker_threads(2)
         .enable_all()
         .build()
         .expect("failed to start a tokio runtime")

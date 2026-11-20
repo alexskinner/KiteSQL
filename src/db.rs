@@ -12,13 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(all(
-    test,
-    not(feature = "async"),
-    feature = "lmdb",
-    feature = "parser",
-    not(target_arch = "wasm32")
-))]
+#[cfg(all(test, feature = "parser", not(target_arch = "wasm32")))]
 mod catalog_generation_tests;
 mod program;
 #[cfg(feature = "parser")]
@@ -4200,7 +4194,7 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn test_udf_default_ddl_operations() -> Result<(), DatabaseError> {
+    async fn test_udf_default_ddl_operations() -> Result<(), DatabaseError> {
         use crate::expression::function::scala::ScalarFunctionImpl;
         use crate::expression::function::FunctionSummary;
         use crate::planner::{ExprRef, MetaArena};
@@ -4253,19 +4247,23 @@ pub(crate) mod test {
 
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let mut kite_sql = DataBaseBuilder::path(temp_dir.path())
-            .build_with_storage(crate::storage::new_test_storage())?;
+            .build_with_storage(crate::storage::new_test_storage().await)?;
 
-        kite_sql.load(CatalogKind::ScalarFunction(my_udf))?;
-
-        kite_sql.ddl("CREATE TABLE t_udf (id int primary key, val int default my_udf(), v int)")?;
+        kite_sql.load(CatalogKind::ScalarFunction(my_udf)).await?;
 
         kite_sql
-            .run("INSERT INTO t_udf (id, v) VALUES (1, 10)")?
-            .done()?;
+            .ddl("CREATE TABLE t_udf (id int primary key, val int default my_udf(), v int)")
+            .await?;
+
+        kite_sql
+            .run("INSERT INTO t_udf (id, v) VALUES (1, 10)")
+            .await?
+            .done()
+            .await?;
 
         let mut found_val = None;
         {
-            let mut iter = kite_sql.run("SELECT val FROM t_udf WHERE id = 1")?;
+            let mut iter = kite_sql.run("SELECT val FROM t_udf WHERE id = 1").await?;
             while let Some(val) = iter.next_tuple(|_, row| row.get(0).cloned()).await? {
                 found_val = val;
             }
@@ -4273,44 +4271,59 @@ pub(crate) mod test {
         }
         assert_eq!(found_val, Some(DataValue::Int32(42)));
 
-        kite_sql.ddl("CREATE INDEX ix_v ON t_udf (v)")?;
-        kite_sql.ddl("DROP INDEX ix_v ON t_udf")?;
-        kite_sql.ddl("ALTER TABLE t_udf ADD COLUMN val2 int default my_udf()")?;
-        kite_sql.ddl("ALTER TABLE t_udf DROP COLUMN val2")?;
-        kite_sql.ddl("ALTER TABLE t_udf ALTER COLUMN val SET DEFAULT my_udf()")?;
-        kite_sql.ddl("ALTER TABLE t_udf ALTER COLUMN val DROP DEFAULT")?;
+        kite_sql.ddl("CREATE INDEX ix_v ON t_udf (v)").await?;
+        kite_sql.ddl("DROP INDEX ix_v ON t_udf").await?;
+        kite_sql
+            .ddl("ALTER TABLE t_udf ADD COLUMN val2 int default my_udf()")
+            .await?;
+        kite_sql.ddl("ALTER TABLE t_udf DROP COLUMN val2").await?;
+        kite_sql
+            .ddl("ALTER TABLE t_udf ALTER COLUMN val SET DEFAULT my_udf()")
+            .await?;
+        kite_sql
+            .ddl("ALTER TABLE t_udf ALTER COLUMN val DROP DEFAULT")
+            .await?;
 
         Ok(())
     }
 
     #[cfg(feature = "lmdb")]
     #[test]
-    fn test_lmdb_function_default_persistence() -> Result<(), DatabaseError> {
+    async fn test_lmdb_function_default_persistence() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let db_path = temp_dir.path();
 
         {
             let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
-            kite_sql.ddl("CREATE TABLE t_persist (id int primary key, d timestamp default current_timestamp, v int)")?;
+            kite_sql.ddl("CREATE TABLE t_persist (id int primary key, d timestamp default current_timestamp, v int)").await?;
             kite_sql
-                .run("INSERT INTO t_persist (id, v) VALUES (1, 100)")?
-                .done()?;
+                .run("INSERT INTO t_persist (id, v) VALUES (1, 100)")
+                .await?
+                .done()
+                .await?;
         }
 
         {
             let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
-            kite_sql.load(CatalogKind::Table("t_persist".to_string()))?;
-            kite_sql.ddl("CREATE INDEX ix_v ON t_persist (v)")?;
             kite_sql
-                .ddl("ALTER TABLE t_persist ADD COLUMN d2 timestamp default current_timestamp")?;
+                .load(CatalogKind::Table("t_persist".to_string()))
+                .await?;
+            kite_sql.ddl("CREATE INDEX ix_v ON t_persist (v)").await?;
+            kite_sql
+                .ddl("ALTER TABLE t_persist ADD COLUMN d2 timestamp default current_timestamp")
+                .await?;
 
             kite_sql
-                .run("INSERT INTO t_persist (id, v) VALUES (2, 200)")?
-                .done()?;
+                .run("INSERT INTO t_persist (id, v) VALUES (2, 200)")
+                .await?
+                .done()
+                .await?;
 
             let mut found_rows = Vec::new();
             {
-                let mut iter = kite_sql.run("SELECT id, v, d, d2 FROM t_persist ORDER BY id")?;
+                let mut iter = kite_sql
+                    .run("SELECT id, v, d, d2 FROM t_persist ORDER BY id")
+                    .await?;
                 while let Some(row) = iter
                     .next_tuple(|_, row| {
                         (
@@ -4356,7 +4369,7 @@ pub(crate) mod test {
 
     #[cfg(feature = "lmdb")]
     #[test]
-    fn test_function_default_cold_cache() -> Result<(), DatabaseError> {
+    async fn test_function_default_cold_cache() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let db_path = temp_dir.path();
 
@@ -4364,19 +4377,23 @@ pub(crate) mod test {
             let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
             kite_sql.ddl(
                 "CREATE TABLE t_cold (id int primary key, d timestamp default current_timestamp, v int)",
-            )?;
+            ).await?;
             kite_sql
-                .run("INSERT INTO t_cold (id, v) VALUES (1, 10)")?
-                .done()?;
+                .run("INSERT INTO t_cold (id, v) VALUES (1, 10)")
+                .await?
+                .done()
+                .await?;
         }
 
         {
             let mut kite_sql = DataBaseBuilder::path(db_path).build_lmdb()?;
-            kite_sql.load(CatalogKind::Table("t_cold".to_string()))?;
+            kite_sql
+                .load(CatalogKind::Table("t_cold".to_string()))
+                .await?;
 
             let mut found_val = None;
             {
-                let mut iter = kite_sql.run("SELECT v FROM t_cold WHERE id = 1")?;
+                let mut iter = kite_sql.run("SELECT v FROM t_cold WHERE id = 1").await?;
                 while let Some(val) = iter.next_tuple(|_, row| row.get(0).cloned()).await? {
                     found_val = val;
                 }
@@ -4421,8 +4438,8 @@ pub(crate) mod test {
 
     #[cfg(feature = "parser")]
     #[test]
-    fn test_generic_dialect_rejects_mysql_comment_syntax() -> Result<(), DatabaseError> {
-        let database_generic = DataBaseBuilder::path(".").build_in_memory()?;
+    async fn test_generic_dialect_rejects_mysql_comment_syntax() -> Result<(), DatabaseError> {
+        let database_generic = DataBaseBuilder::path(".").build_in_memory().await?;
 
         // Generic dialect should reject MySQL's `#` comment syntax
         let generic_result = database_generic
@@ -4445,7 +4462,7 @@ pub(crate) mod test {
 
     #[cfg(feature = "parser")]
     #[test]
-    fn test_dialect_rewrite_hook() -> Result<(), DatabaseError> {
+    async fn test_dialect_rewrite_hook() -> Result<(), DatabaseError> {
         use crate::dialect::SqlDialect;
         use sqlparser::ast::Statement;
         use std::sync::Arc;
@@ -4491,19 +4508,20 @@ pub(crate) mod test {
                 inner: crate::dialect::GenericSqlDialect::new(),
             }))
             .default_dialect("rewriting_test")?
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
-        let mut result = database.run("SELECT 42")?;
-        let row = result.next_tuple(|_, row| row.clone())?.unwrap();
+        let mut result = database.run("SELECT 42").await?;
+        let row = result.next_tuple(|_, row| row.clone()).await?.unwrap();
         assert_eq!(row[0], DataValue::Int32(99));
-        result.done()?;
+        result.done().await?;
 
         Ok(())
     }
 
     #[cfg(all(feature = "parser", feature = "lmdb"))]
     #[test]
-    fn test_dialect_text_collation() -> Result<(), DatabaseError> {
+    async fn test_dialect_text_collation() -> Result<(), DatabaseError> {
         use crate::dialect::SqlDialect;
         use crate::types::collation::TextCollation;
         use std::borrow::Cow;
@@ -4540,18 +4558,19 @@ pub(crate) mod test {
             }
         }
 
-        fn rows<S: Storage>(
+        async fn rows<S: Storage>(
             database: &crate::db::Database<S>,
             sql: &str,
         ) -> Result<Vec<Vec<DataValue>>, DatabaseError> {
             let mut iter = database
                 .run(sql)
+                .await
                 .inspect_err(|err| eprintln!("{sql}: {err}"))?;
             let mut rows = Vec::new();
-            while let Some(row) = iter.next_tuple(|_, row| row.take_values())? {
+            while let Some(row) = iter.next_tuple(|_, row| row.take_values()).await? {
                 rows.push(row);
             }
-            iter.done()?;
+            iter.done().await?;
             Ok(rows)
         }
         fn texts(rows: Vec<Vec<DataValue>>) -> Vec<String> {
@@ -4582,89 +4601,110 @@ pub(crate) mod test {
         // A table created byte-wise, before the collation.
         {
             let mut database = open(temp_dir.path(), false)?;
-            database.ddl("create table legacy(id varchar(10) primary key, n int)")?;
             database
-                .run("insert into legacy values ('Smith', 1), ('smith', 2)")?
-                .done()?;
+                .ddl("create table legacy(id varchar(10) primary key, n int)")
+                .await?;
+            database
+                .run("insert into legacy values ('Smith', 1), ('smith', 2)")
+                .await?
+                .done()
+                .await?;
         }
 
         let mut database = open(temp_dir.path(), true)?;
-        database.load(CatalogKind::Table("legacy".to_string()))?;
         database
-            .ddl("create table people(id int primary key, name varchar(20) unique, tag varchar(10) collate bytes)")?;
+            .load(CatalogKind::Table("legacy".to_string()))
+            .await?;
         database
-            .run("insert into people values (1, 'Smith', 'a'), (2, 'jones', 'A')")?
-            .done()?;
+            .ddl("create table people(id int primary key, name varchar(20) unique, tag varchar(10) collate bytes)").await?;
+        database
+            .run("insert into people values (1, 'Smith', 'a'), (2, 'jones', 'A')")
+            .await?
+            .done()
+            .await?;
         // The unique key holds the folded name.
-        let err = database
-            .run("insert into people values (3, 'SMITH', 'b')")
-            .and_then(|iter| iter.done())
-            .unwrap_err();
+        let err = async {
+            database
+                .run("insert into people values (3, 'SMITH', 'b')")
+                .await?
+                .done()
+                .await
+        }
+        .await
+        .unwrap_err();
         assert!(matches!(err, DatabaseError::DuplicateUniqueValue), "{err}");
         assert_eq!(
-            texts(rows(
-                &database,
-                "select id from people where name = 'SMITH'"
-            )?),
+            texts(rows(&database, "select id from people where name = 'SMITH'").await?),
             ["1"]
         );
         assert_eq!(
-            texts(rows(
-                &database,
-                "select id from people where name in ('JONES', 'x')"
-            )?),
+            texts(
+                rows(
+                    &database,
+                    "select id from people where name in ('JONES', 'x')"
+                )
+                .await?
+            ),
             ["2"]
         );
         assert_eq!(
-            texts(rows(&database, "select 'a' = 'A', 'B' > 'a'")?),
+            texts(rows(&database, "select 'a' = 'A', 'B' > 'a'").await?),
             ["true,true"]
         );
         assert_eq!(
-            texts(rows(&database, "select name from people order by name")?),
+            texts(rows(&database, "select name from people order by name").await?),
             ["jones", "Smith"]
         );
         // A byte-wise column compares and sorts by bytes.
         assert_eq!(
-            texts(rows(&database, "select id from people where tag = 'a'")?),
+            texts(rows(&database, "select id from people where tag = 'a'").await?),
             ["1"]
         );
         assert_eq!(
-            texts(rows(&database, "select tag from people order by tag")?),
+            texts(rows(&database, "select tag from people order by tag").await?),
             ["A", "a"]
         );
         assert_eq!(
-            texts(rows(
-                &database,
-                "select upper(name), count(*) from people group by upper(name) order by 1"
-            )?),
+            texts(
+                rows(
+                    &database,
+                    "select upper(name), count(*) from people group by upper(name) order by 1"
+                )
+                .await?
+            ),
             ["JONES,1", "SMITH,1"]
         );
-        database.ddl("create table dup(id int primary key, t varchar(10))")?;
         database
-            .run("insert into dup values (1, 'x'), (2, 'X'), (3, 'y')")?
-            .done()?;
+            .ddl("create table dup(id int primary key, t varchar(10))")
+            .await?;
+        database
+            .run("insert into dup values (1, 'x'), (2, 'X'), (3, 'y')")
+            .await?
+            .done()
+            .await?;
         assert_eq!(
-            texts(rows(&database, "select count(distinct t) from dup")?),
+            texts(rows(&database, "select count(distinct t) from dup").await?),
             ["2"]
         );
         // The byte-wise table keeps both keys and still finds each row.
         assert_eq!(
-            texts(rows(&database, "select n from legacy order by n")?),
+            texts(rows(&database, "select n from legacy order by n").await?),
             ["1", "2"]
         );
         // Its key lookups stay byte-wise until the table is recreated.
         assert_eq!(
-            texts(rows(&database, "select n from legacy where id = 'smith'")?),
+            texts(rows(&database, "select n from legacy where id = 'smith'").await?),
             ["2"]
         );
         drop(database);
 
         // A table created under the collation is refused without it.
         let mut database = open(temp_dir.path(), false)?;
-        database.load(CatalogKind::Table("people".to_string()))?;
-        let err = database
-            .run("select * from people")
-            .and_then(|iter| iter.done())
+        database
+            .load(CatalogKind::Table("people".to_string()))
+            .await?;
+        let err = async { database.run("select * from people").await?.done().await }
+            .await
             .unwrap_err();
         assert!(err.to_string().contains("lower"), "{err}");
 
@@ -4672,19 +4712,25 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn test_update_rejects_null_in_not_null_column() -> Result<(), DatabaseError> {
-        let mut database = DataBaseBuilder::path(".").build_in_memory()?;
-        database.ddl("create table t_upd_nn(id int primary key, b int not null, c int)")?;
+    async fn test_update_rejects_null_in_not_null_column() -> Result<(), DatabaseError> {
+        let mut database = DataBaseBuilder::path(".").build_in_memory().await?;
         database
-            .run("insert into t_upd_nn values (1, 1, 1), (2, 2, null)")?
-            .done()?;
+            .ddl("create table t_upd_nn(id int primary key, b int not null, c int)")
+            .await?;
+        database
+            .run("insert into t_upd_nn values (1, 1, 1), (2, 2, null)")
+            .await?
+            .done()
+            .await?;
 
         for sql in [
             "update t_upd_nn set b = null where id = 1",
             "update t_upd_nn set b = c where id = 2",
             "update t_upd_nn set b = c + null",
         ] {
-            let err = database.run(sql).and_then(|iter| iter.done()).unwrap_err();
+            let err = async { database.run(sql).await?.done().await }
+                .await
+                .unwrap_err();
             assert!(
                 matches!(&err, DatabaseError::NotNull { column: Some(c), .. } if c == "b"),
                 "{sql}: {err}"
@@ -4692,14 +4738,18 @@ pub(crate) mod test {
         }
         // The failed statements changed nothing; a nullable column still takes NULL.
         database
-            .run("update t_upd_nn set c = null where id = 1")?
-            .done()?;
-        let mut iter = database.run("select id, b, c from t_upd_nn order by id")?;
+            .run("update t_upd_nn set c = null where id = 1")
+            .await?
+            .done()
+            .await?;
+        let mut iter = database
+            .run("select id, b, c from t_upd_nn order by id")
+            .await?;
         let mut rows = Vec::new();
-        while let Some(row) = iter.next_tuple(|_, row| row.take_values())? {
+        while let Some(row) = iter.next_tuple(|_, row| row.take_values()).await? {
             rows.push(row);
         }
-        iter.done()?;
+        iter.done().await?;
         assert_eq!(
             rows,
             vec![
@@ -4712,24 +4762,28 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn test_insert_rejects_duplicate_target_column() -> Result<(), DatabaseError> {
-        let mut database = DataBaseBuilder::path(".").build_in_memory()?;
-        database.ddl("create table t_ins_dup(id int primary key, a int, b int)")?;
+    async fn test_insert_rejects_duplicate_target_column() -> Result<(), DatabaseError> {
+        let mut database = DataBaseBuilder::path(".").build_in_memory().await?;
+        database
+            .ddl("create table t_ins_dup(id int primary key, a int, b int)")
+            .await?;
 
         for sql in [
             "insert into t_ins_dup (id, a, a) values (1, 1, 2)",
             "insert into t_ins_dup (id, a, b, b) values (1, 1, 2, 3)",
             "insert into t_ins_dup (id, a, a) select 1, 2, 3",
         ] {
-            let err = database.run(sql).and_then(|iter| iter.done()).unwrap_err();
+            let err = async { database.run(sql).await?.done().await }
+                .await
+                .unwrap_err();
             assert!(
                 matches!(&err, DatabaseError::DuplicateTargetColumn(c) if c == "a" || c == "b"),
                 "{sql}: {err}"
             );
         }
-        let mut iter = database.run("select count(*) from t_ins_dup")?;
-        let row = iter.next_tuple(|_, row| row.take_values())?.unwrap();
-        iter.done()?;
+        let mut iter = database.run("select count(*) from t_ins_dup").await?;
+        let row = iter.next_tuple(|_, row| row.take_values()).await?.unwrap();
+        iter.done().await?;
         assert_eq!(row, vec![DataValue::Int32(0)]);
 
         Ok(())

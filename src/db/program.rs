@@ -802,7 +802,6 @@ mod tests {
             .done()
             .await?;
         db.analyze("t").await?;
-        let mut tx = db.new_transaction(false)?;
         let mut plan = db.program_sql(
             "select k from t where w=$1 and k >= $2 and k < $3 order by k",
             &[
@@ -811,6 +810,8 @@ mod tests {
                 (3, LogicalType::Integer),
             ],
         )?;
+        // Opened after planning: a single-writer storage cannot plan beside an open writer.
+        let mut tx = db.new_transaction(false)?;
         assert!(index_range(plan.executor.plan()).is_some());
         let mut iter = plan
             .execute(
@@ -846,6 +847,7 @@ mod tests {
         );
         assert!(iter.next_tuple(|_, _| ()).await?.is_none());
         iter.done().await?;
+        drop(tx);
 
         // The lower bound is computed only after binding; it must still be
         // intersected with the prepared upper bound instead of scanning the
@@ -1020,9 +1022,12 @@ mod tests {
         tx.commit().await?;
         {
             let mut s = db.session();
-            s.run("BEGIN")?.done()?;
-            s.run("ALTER TABLE t ADD COLUMN age INT")?.done()?;
-            s.run("COMMIT")?;
+            s.run("BEGIN").await?.done().await?;
+            s.run("ALTER TABLE t ADD COLUMN age INT")
+                .await?
+                .done()
+                .await?;
+            s.run("COMMIT").await?;
         }
         let mut tx = db.new_transaction(false)?;
         match program.execute(&mut tx, [(1, "a".into())]).await {

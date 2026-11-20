@@ -3,12 +3,20 @@
 // The tests use `tempfile`, a native-only dev-dependency.
 #![cfg(all(not(target_arch = "wasm32"), not(feature = "async")))]
 
+mod common;
+// `#[maybe_async]` tests run on `crate::maybe_async::block_on`.
+#[allow(unused_imports)]
+use common as maybe_async;
+#[cfg(any(feature = "lmdb", feature = "slatedb"))]
+#[allow(unused_imports)]
+use common::TestDatabaseBuilder as _;
 use kite_sql::db::DataBaseBuilder;
 use kite_sql::errors::DatabaseError;
 use kite_sql::expression::agg::{AggFnId, AggKind};
 use kite_sql::expression::agg_function::{Accumulator, AggregateFunctionImpl};
 use kite_sql::types::value::DataValue;
 use kite_sql::types::LogicalType;
+use kite_sql_serde_macros::maybe_async;
 use std::fmt;
 use std::sync::Arc;
 use tempfile::TempDir;
@@ -107,84 +115,92 @@ impl fmt::Display for ProductAccumulator {
     }
 }
 
-fn next_tuple_owned(
+#[maybe_async]
+async fn next_tuple_owned(
     iter: &mut impl kite_sql::db::ResultIter,
 ) -> Result<Option<kite_sql::types::tuple::TupleImpl>, DatabaseError> {
-    iter.next_tuple(|_, tuple| tuple.clone())
+    iter.next_tuple(|_, tuple| tuple.clone()).await
 }
 
+#[maybe_async]
 #[test]
-fn test_external_udaf_group_by_having_order_by() -> Result<(), DatabaseError> {
+async fn test_external_udaf_group_by_having_order_by() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let database = DataBaseBuilder::path(temp_dir.path())
         .register_aggregate_function(ProductAggregate::new(LogicalType::Integer))
-        .build_in_memory()?;
+        .build_in_memory()
+        .await?;
 
     let mut iter = database.run(
         "SELECT category, product(value) FROM (VALUES ('A', 2), ('A', 3), ('B', 4), ('B', 5), ('C', 1)) AS t(category, value) GROUP BY category HAVING product(value) > 5 ORDER BY category",
-    )?;
+    ).await?;
 
-    let tuple_a = next_tuple_owned(&mut iter)?.unwrap();
+    let tuple_a = next_tuple_owned(&mut iter).await?.unwrap();
     assert_eq!(tuple_a[1], DataValue::Int32(6));
 
-    let tuple_b = next_tuple_owned(&mut iter)?.unwrap();
+    let tuple_b = next_tuple_owned(&mut iter).await?.unwrap();
     assert_eq!(tuple_b[1], DataValue::Int32(20));
 
-    assert!(next_tuple_owned(&mut iter)?.is_none());
-    iter.done()?;
+    assert!(next_tuple_owned(&mut iter).await?.is_none());
+    iter.done().await?;
 
     Ok(())
 }
 
+#[maybe_async]
 #[test]
-fn test_external_udaf_mixed_with_builtins() -> Result<(), DatabaseError> {
+async fn test_external_udaf_mixed_with_builtins() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let database = DataBaseBuilder::path(temp_dir.path())
         .register_aggregate_function(ProductAggregate::new(LogicalType::Integer))
-        .build_in_memory()?;
+        .build_in_memory()
+        .await?;
 
     let mut iter = database.run(
         "SELECT category, product(value), sum(value), count(value) FROM (VALUES ('X', 2), ('X', 3), ('Y', 5)) AS t(category, value) GROUP BY category ORDER BY category",
-    )?;
+    ).await?;
 
-    let tuple_x = next_tuple_owned(&mut iter)?.unwrap();
+    let tuple_x = next_tuple_owned(&mut iter).await?.unwrap();
     assert_eq!(tuple_x[1], DataValue::Int32(6));
     assert_eq!(tuple_x[2], DataValue::Int32(5));
     assert_eq!(tuple_x[3], DataValue::Int32(2));
 
-    let tuple_y = next_tuple_owned(&mut iter)?.unwrap();
+    let tuple_y = next_tuple_owned(&mut iter).await?.unwrap();
     assert_eq!(tuple_y[1], DataValue::Int32(5));
     assert_eq!(tuple_y[2], DataValue::Int32(5));
     assert_eq!(tuple_y[3], DataValue::Int32(1));
 
-    iter.done()?;
+    iter.done().await?;
     Ok(())
 }
 
+#[maybe_async]
 #[test]
-fn test_external_udaf_null_handling() -> Result<(), DatabaseError> {
+async fn test_external_udaf_null_handling() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let database = DataBaseBuilder::path(temp_dir.path())
         .register_aggregate_function(ProductAggregate::new(LogicalType::Integer))
-        .build_in_memory()?;
+        .build_in_memory()
+        .await?;
 
     let mut iter = database.run(
         "SELECT category, product(value) FROM (VALUES ('A', 2), ('A', NULL), ('A', 3), ('B', NULL)) AS t(category, value) GROUP BY category ORDER BY category",
-    )?;
-    let tuple_a = next_tuple_owned(&mut iter)?.unwrap();
+    ).await?;
+    let tuple_a = next_tuple_owned(&mut iter).await?.unwrap();
     assert_eq!(tuple_a[1], DataValue::Int32(6));
 
-    let tuple_b = next_tuple_owned(&mut iter)?.unwrap();
+    let tuple_b = next_tuple_owned(&mut iter).await?.unwrap();
     assert_eq!(tuple_b[1], DataValue::Null);
 
-    iter.done()?;
+    iter.done().await?;
 
     Ok(())
 }
 
 #[cfg(feature = "orm")]
+#[maybe_async]
 #[test]
-fn test_external_udaf_in_view() -> Result<(), DatabaseError> {
+async fn test_external_udaf_in_view() -> Result<(), DatabaseError> {
     use kite_sql::Model;
 
     #[derive(Debug, Clone, Model)]
@@ -199,43 +215,54 @@ fn test_external_udaf_in_view() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let mut database = DataBaseBuilder::path(temp_dir.path())
         .register_aggregate_function(ProductAggregate::new(LogicalType::Integer))
-        .build_in_memory()?;
+        .build_in_memory()
+        .await?;
 
-    database.create_table_if_not_exists::<ProductData>()?;
-    database.insert(&ProductData {
-        id: 1,
-        category: "X".to_string(),
-        multiplier: 2,
-    })?;
-    database.insert(&ProductData {
-        id: 2,
-        category: "X".to_string(),
-        multiplier: 3,
-    })?;
-    database.insert(&ProductData {
-        id: 3,
-        category: "Y".to_string(),
-        multiplier: 5,
-    })?;
+    database.create_table_if_not_exists::<ProductData>().await?;
+    database
+        .insert(&ProductData {
+            id: 1,
+            category: "X".to_string(),
+            multiplier: 2,
+        })
+        .await?;
+    database
+        .insert(&ProductData {
+            id: 2,
+            category: "X".to_string(),
+            multiplier: 3,
+        })
+        .await?;
+    database
+        .insert(&ProductData {
+            id: 3,
+            category: "Y".to_string(),
+            multiplier: 5,
+        })
+        .await?;
 
     database
-        .ddl("CREATE VIEW product_view AS SELECT category, product(multiplier) as total FROM product_data GROUP BY category")?;
+        .ddl("CREATE VIEW product_view AS SELECT category, product(multiplier) as total FROM product_data GROUP BY category").await?;
 
-    let mut iter = database.run("SELECT category, total FROM product_view ORDER BY category")?;
+    let mut iter = database
+        .run("SELECT category, total FROM product_view ORDER BY category")
+        .await?;
 
-    let tuple_x = next_tuple_owned(&mut iter)?.unwrap();
+    let tuple_x = next_tuple_owned(&mut iter).await?.unwrap();
     assert_eq!(tuple_x[1], DataValue::Int32(6));
 
-    let tuple_y = next_tuple_owned(&mut iter)?.unwrap();
+    let tuple_y = next_tuple_owned(&mut iter).await?.unwrap();
     assert_eq!(tuple_y[1], DataValue::Int32(5));
 
-    iter.done()?;
+    iter.done().await?;
     Ok(())
 }
 
+// Reopens the same directory, so it needs a persistent storage.
+#[maybe_async]
 #[cfg(feature = "lmdb")]
 #[test]
-fn test_external_udaf_lmdb_persist_with_view() -> Result<(), DatabaseError> {
+async fn test_external_udaf_lmdb_persist_with_view() -> Result<(), DatabaseError> {
     use kite_sql::db::CatalogKind;
 
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
@@ -243,52 +270,64 @@ fn test_external_udaf_lmdb_persist_with_view() -> Result<(), DatabaseError> {
     {
         let mut database = DataBaseBuilder::path(temp_dir.path())
             .register_aggregate_function(ProductAggregate::new(LogicalType::Integer))
-            .build_lmdb()?;
-
-        database.ddl("CREATE TABLE test_data (id INT PRIMARY KEY, val INT)")?;
-        database
-            .run("INSERT INTO test_data (id, val) VALUES (1, 3), (2, 4)")?
-            .done()?;
+            .build_test_db()
+            .await?;
 
         database
-            .ddl("CREATE VIEW product_summary AS SELECT product(val) as total FROM test_data")?;
+            .ddl("CREATE TABLE test_data (id INT PRIMARY KEY, val INT)")
+            .await?;
+        database
+            .run("INSERT INTO test_data (id, val) VALUES (1, 3), (2, 4)")
+            .await?
+            .done()
+            .await?;
 
-        let mut iter = database.run("SELECT product(val) FROM test_data")?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        database
+            .ddl("CREATE VIEW product_summary AS SELECT product(val) as total FROM test_data")
+            .await?;
+
+        let mut iter = database.run("SELECT product(val) FROM test_data").await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple[0], DataValue::Int32(12));
-        iter.done()?;
+        iter.done().await?;
 
-        let mut iter2 = database.run("SELECT total FROM product_summary")?;
-        let tuple2 = next_tuple_owned(&mut iter2)?.unwrap();
+        let mut iter2 = database.run("SELECT total FROM product_summary").await?;
+        let tuple2 = next_tuple_owned(&mut iter2).await?.unwrap();
         assert_eq!(tuple2[0], DataValue::Int32(12));
-        iter2.done()?;
+        iter2.done().await?;
     }
 
     {
         let mut database = DataBaseBuilder::path(temp_dir.path())
             .register_aggregate_function(ProductAggregate::new(LogicalType::Integer))
-            .build_lmdb()?;
+            .build_test_db()
+            .await?;
 
-        database.load(CatalogKind::Table("test_data".into()))?;
-        database.load(CatalogKind::View("product_summary".into()))?;
+        database
+            .load(CatalogKind::Table("test_data".into()))
+            .await?;
+        database
+            .load(CatalogKind::View("product_summary".into()))
+            .await?;
 
-        let mut iter = database.run("SELECT product(val) FROM test_data")?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        let mut iter = database.run("SELECT product(val) FROM test_data").await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple[0], DataValue::Int32(12));
-        iter.done()?;
+        iter.done().await?;
 
-        let mut iter2 = database.run("SELECT total FROM product_summary")?;
-        let tuple2 = next_tuple_owned(&mut iter2)?.unwrap();
+        let mut iter2 = database.run("SELECT total FROM product_summary").await?;
+        let tuple2 = next_tuple_owned(&mut iter2).await?.unwrap();
         assert_eq!(tuple2[0], DataValue::Int32(12));
-        iter2.done()?;
+        iter2.done().await?;
     }
 
     Ok(())
 }
 
 #[cfg(feature = "orm")]
+#[maybe_async]
 #[test]
-fn test_external_udaf_empty_table() -> Result<(), DatabaseError> {
+async fn test_external_udaf_empty_table() -> Result<(), DatabaseError> {
     use kite_sql::Model;
 
     #[derive(Debug, Clone, Model)]
@@ -302,14 +341,17 @@ fn test_external_udaf_empty_table() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().expect("unable to create temporary working directory");
     let mut database = DataBaseBuilder::path(temp_dir.path())
         .register_aggregate_function(ProductAggregate::new(LogicalType::Integer))
-        .build_in_memory()?;
+        .build_in_memory()
+        .await?;
 
-    database.create_table_if_not_exists::<EmptyTest>()?;
+    database.create_table_if_not_exists::<EmptyTest>().await?;
 
-    let mut iter = database.run("SELECT product(value) FROM empty_test")?;
-    let tuple = next_tuple_owned(&mut iter)?.unwrap();
+    let mut iter = database
+        .run("SELECT product(value) FROM empty_test")
+        .await?;
+    let tuple = next_tuple_owned(&mut iter).await?.unwrap();
     assert_eq!(tuple[0], DataValue::Null);
-    iter.done()?;
+    iter.done().await?;
 
     Ok(())
 }
