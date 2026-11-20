@@ -1,0 +1,67 @@
+# Test that boolean operators properly reject non-boolean operands
+# Regression test for fuzz-discovered UB in boolean_not_unary_eval
+
+# NOT operator should work on boolean values
+query B
+SELECT NOT true
+----
+false
+
+query B
+SELECT NOT false
+----
+true
+
+query B
+SELECT NOT NULL
+----
+NULL
+
+# NOT operator should reject integer values
+query error
+SELECT NOT 42
+
+query error
+SELECT NOT 0
+
+# NOT operator should reject string values
+query error
+SELECT NOT 'test'
+
+query error
+SELECT NOT 'false'
+
+# NOT operator should reject other non-boolean types
+query error
+SELECT NOT 1.5
+
+query error
+SELECT NOT CURRENT_TIMESTAMP
+
+# Complex expressions with type mismatches should also fail
+query error
+SELECT NOT (1 + 1)
+
+query error
+SELECT NOT ('a' || 'b')
+
+# Boolean operators should work correctly when properly typed
+query B
+SELECT NOT (1 = 1)
+----
+false
+
+query B
+SELECT NOT (1 <> 1)
+----
+true
+
+query B
+SELECT NOT (NULL IS NULL)
+----
+false
+
+query B
+SELECT NOT (1 IS NULL)
+----
+true
