@@ -217,6 +217,69 @@ fn mysql_number_literal(text: &str) -> Option<Result<(DataValue, LogicalType), D
     )))
 }
 
+/// MySQL's comparison type: boolean vs text, boolean vs numeric, temporal vs numeric.
+fn mysql_comparison_type(left: &LogicalType, right: &LogicalType) -> Option<LogicalType> {
+    if matches!(
+        (left, right),
+        (
+            LogicalType::Boolean,
+            LogicalType::Char(_, _) | LogicalType::Varchar(_, _)
+        ) | (
+            LogicalType::Char(_, _) | LogicalType::Varchar(_, _),
+            LogicalType::Boolean
+        )
+    ) {
+        return Some(LogicalType::Boolean);
+    }
+    if matches!(left, LogicalType::Boolean) && right.is_numeric() {
+        return if right.is_signed_numeric() {
+            let upcasted = LogicalType::Smallint;
+            Some(
+                LogicalType::combine_numeric_types(&upcasted, right)
+                    .ok()?
+                    .into_owned(),
+            )
+        } else {
+            Some(right.clone())
+        };
+    }
+    if left.is_numeric() && matches!(right, LogicalType::Boolean) {
+        return if left.is_signed_numeric() {
+            let upcasted = LogicalType::Smallint;
+            Some(
+                LogicalType::combine_numeric_types(left, &upcasted)
+                    .ok()?
+                    .into_owned(),
+            )
+        } else {
+            Some(left.clone())
+        };
+    }
+    let is_temporal = |ty: &LogicalType| {
+        matches!(
+            ty,
+            LogicalType::Date | LogicalType::DateTime | LogicalType::TimeStamp(_, _)
+        )
+    };
+    let numeric = if is_temporal(left) && right.is_numeric() {
+        Some(right)
+    } else if left.is_numeric() && is_temporal(right) {
+        Some(left)
+    } else {
+        None
+    };
+    if let Some(numeric) = numeric {
+        return Some(
+            if numeric.is_signed_numeric() || numeric.is_unsigned_numeric() {
+                LogicalType::Bigint
+            } else {
+                LogicalType::Double
+            },
+        );
+    }
+    None
+}
+
 /// MySQL dialect implementation for KiteSQL.
 #[derive(Debug)]
 pub struct MySqlDialect {
@@ -359,6 +422,16 @@ impl SqlDialect for MySqlDialect {
     /// MySQL treats NULL as lower than every value: first for ASC, last for DESC.
     fn nulls_first(&self, asc: bool) -> bool {
         asc
+    }
+
+    /// MySQL renders BOOLEAN as '1'/'0' (BOOLEAN is TINYINT(1)).
+    fn boolean_text(&self, value: bool) -> Option<&'static str> {
+        Some(if value { "1" } else { "0" })
+    }
+
+    /// MySQL's comparison type rules: boolean vs text/number, temporal vs number.
+    fn comparison_type(&self, left: &LogicalType, right: &LogicalType) -> Option<LogicalType> {
+        mysql_comparison_type(left, right)
     }
 
     /// MySQL's level, code and text for each core diagnostic.
