@@ -14,6 +14,8 @@
 
 //! Test that custom dialects defined in external crates can map types and change parsing.
 
+#![cfg(all(feature = "lmdb", not(feature = "async")))]
+
 use kite_sql::db::DataBaseBuilder;
 use kite_sql::dialect::SqlDialect;
 use kite_sql::errors::DatabaseError;

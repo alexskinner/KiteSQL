@@ -1,5 +1,8 @@
 // Integration test to verify FunctionPack can be implemented from outside the kite_sql crate
 
+// The tests use `tempfile`, a native-only dev-dependency.
+#![cfg(all(not(target_arch = "wasm32"), not(feature = "async")))]
+
 use kite_sql::db::DataBaseBuilder;
 use kite_sql::errors::DatabaseError;
 use kite_sql::expression::function::scala::ScalarFunctionImpl;

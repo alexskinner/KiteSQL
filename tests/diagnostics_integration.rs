@@ -14,6 +14,8 @@
 
 //! The statement diagnostics channel: a dialect's policy and code mapping, end to end.
 
+#![cfg(all(feature = "lmdb", not(feature = "async")))]
+
 use kite_sql::db::DataBaseBuilder;
 use kite_sql::diagnostics::{
     Diagnostic, DiagnosticKind, DiagnosticLevel, DivisionByZero, StatementPolicy,

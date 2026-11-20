@@ -206,6 +206,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "decimal")]
     #[test]
     fn decimal_typed_avg_is_exact_and_rounded_to_its_scale() -> Result<(), DatabaseError> {
         let decimal = |s: &str| DataValue::Decimal(s.parse().unwrap());

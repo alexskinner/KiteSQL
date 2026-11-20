@@ -435,6 +435,8 @@ impl DataBaseBuilder {
                 hll_precision: self.hll_precision,
                 statistics_relative_error: self.statistics_relative_error,
                 parser_recursion_limit: self.parser_recursion_limit,
+                #[cfg(feature = "parser")]
+                dialect_registry: self.dialect_registry,
                 transaction_isolation: self.transaction_isolation,
                 scalar_functions: self.scalar_functions,
                 table_functions: self.table_functions,

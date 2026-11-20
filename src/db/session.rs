@@ -364,20 +364,33 @@ impl<'a, 'db, S: Storage + 'db> ResultIter for SessionIter<'a, 'db, S> {
 }
 
 #[maybe_async]
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 mod tests {
     use super::*;
     use crate::db::DataBaseBuilder;
     use crate::errors::DatabaseError;
-    use std::sync::mpsc::channel;
-    use std::sync::Arc;
-    use std::thread;
     use tempfile::TempDir;
+
+    /// LMDB when the build has it; otherwise the build's unit-test storage.
+    #[cfg(feature = "lmdb")]
+    type SessionTestStorage = crate::storage::lmdb::LmdbStorage;
+    #[cfg(not(feature = "lmdb"))]
+    type SessionTestStorage = crate::storage::TestStorage;
+
+    async fn open_test_db(
+        path: &std::path::Path,
+    ) -> Result<Database<SessionTestStorage>, DatabaseError> {
+        #[cfg(feature = "lmdb")]
+        let database = DataBaseBuilder::path(path).build_lmdb();
+        #[cfg(not(feature = "lmdb"))]
+        let database = DataBaseBuilder::path(path).build_in_memory().await;
+        database
+    }
 
     #[test]
     async fn test_session_basic_transaction() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
-        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        let mut database = open_test_db(temp_dir.path()).await?;
         database
             .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
             .await?;
@@ -406,7 +419,7 @@ mod tests {
     #[test]
     async fn test_session_rollback() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
-        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        let mut database = open_test_db(temp_dir.path()).await?;
         database
             .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
             .await?;
@@ -435,7 +448,7 @@ mod tests {
     #[test]
     async fn test_session_begin_implicitly_commits_lmdb() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
-        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        let mut database = open_test_db(temp_dir.path()).await?;
         database
             .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
             .await?;
@@ -466,7 +479,7 @@ mod tests {
     #[test]
     async fn test_session_all_access_through_session() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
-        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        let mut database = open_test_db(temp_dir.path()).await?;
         database
             .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
             .await?;
@@ -509,10 +522,16 @@ mod tests {
         Ok(())
     }
 
+    // Moves the database to another thread: the memory storage is not `Send`.
+    #[cfg(feature = "lmdb")]
     #[test]
     fn test_per_connection_thread_pattern() -> Result<(), DatabaseError> {
+        use std::sync::mpsc::channel;
+        use std::sync::Arc;
+        use std::thread;
+
         let temp_dir = TempDir::new().unwrap();
-        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        let mut database = open_test_db(temp_dir.path()).await?;
         database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
 
         let database = Arc::new(database);
@@ -603,10 +622,9 @@ mod tests {
         Ok(rows)
     }
 
-    async fn odku_database(
-    ) -> Result<(TempDir, Database<crate::storage::lmdb::LmdbStorage>), DatabaseError> {
+    async fn odku_database() -> Result<(TempDir, Database<SessionTestStorage>), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
-        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        let mut database = open_test_db(temp_dir.path()).await?;
         database
             .ddl("CREATE TABLE t (id INT PRIMARY KEY, v INT, c INT)")
             .await?;
@@ -621,7 +639,7 @@ mod tests {
     #[test]
     async fn test_unique_index_allows_many_nulls_on_insert() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
-        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        let mut database = open_test_db(temp_dir.path()).await?;
         database
             .ddl("CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(50) UNIQUE)")
             .await?;
@@ -654,7 +672,7 @@ mod tests {
     #[test]
     async fn test_unique_index_update_into_null() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
-        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        let mut database = open_test_db(temp_dir.path()).await?;
         database
             .ddl("CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(50) UNIQUE)")
             .await?;
@@ -689,7 +707,7 @@ mod tests {
     #[test]
     async fn test_composite_unique_index_partial_null() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
-        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        let mut database = open_test_db(temp_dir.path()).await?;
         database
             .ddl("CREATE TABLE cu (id INT PRIMARY KEY, a INT, b INT, UNIQUE KEY k (a, b))")
             .await?;
@@ -724,6 +742,8 @@ mod tests {
         Ok(())
     }
 
+    // Reopens the same directory, so it needs a persistent storage.
+    #[cfg(feature = "lmdb")]
     #[test]
     async fn test_unique_index_nulls_survive_reopen() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
@@ -853,7 +873,7 @@ mod tests {
     #[test]
     async fn test_odku_null_unique_key_is_not_a_conflict() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
-        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        let mut database = open_test_db(temp_dir.path()).await?;
         database
             .ddl("CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(50) UNIQUE, n INT)")
             .await?;
