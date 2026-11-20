@@ -112,6 +112,14 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
         false
     }
 
+    /// Whether NULLs sort before every other value for a sort key that has no explicit
+    /// `NULLS FIRST`/`NULLS LAST` (ORDER BY, window PARTITION BY/ORDER BY, GROUP_CONCAT
+    /// ORDER BY); `asc` is the key's direction. The default sorts NULLs last in both
+    /// directions, as an index scan returns them.
+    fn nulls_first(&self, _asc: bool) -> bool {
+        false
+    }
+
     /// Maps a core diagnostic to this dialect's level, code and wording; `None` drops it.
     /// The default keeps it as raised (code 0).
     fn map_diagnostic(

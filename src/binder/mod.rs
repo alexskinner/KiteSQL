@@ -792,6 +792,20 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
         Ok(())
     }
 
+    /// NULL placement for a sort key without `NULLS FIRST`/`NULLS LAST`
+    /// (see `SqlDialect::nulls_first`).
+    pub(crate) fn default_nulls_first(&self, asc: bool) -> bool {
+        #[cfg(feature = "parser")]
+        {
+            self.dialect.nulls_first(asc)
+        }
+        #[cfg(not(feature = "parser"))]
+        {
+            let _ = asc;
+            false
+        }
+    }
+
     pub fn add_alias(&mut self, alias_table: Option<String>, alias_column: String, expr: ExprRef) {
         self.expr_aliases.insert((alias_table, alias_column), expr);
     }

@@ -210,10 +210,12 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
 
         for group in groups {
             let partition_by_len = group.partition_by.len();
+            // Partitions come out in ascending key order, NULLs placed as the dialect sorts them.
+            let partition_nulls_first = self.context.default_nulls_first(true);
             let sort_fields: Vec<_> = group
                 .partition_by
                 .into_iter()
-                .map(SortField::from)
+                .map(|expr| SortField::new(expr, true, partition_nulls_first))
                 .chain(group.order_by)
                 .collect();
             if !sort_fields.is_empty() {
