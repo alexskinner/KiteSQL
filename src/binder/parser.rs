@@ -2647,6 +2647,35 @@ fn data_type_to_logical_type_inner(data_type: DataType) -> Result<LogicalType, D
                 ))
             }
         }
+        DataType::Custom(name, args) => {
+            if name.0.len() == 1 {
+                if let ObjectNamePart::Identifier(ident) = &name.0[0] {
+                    if ident.value.eq_ignore_ascii_case("vector") {
+                        if args.len() != 1 {
+                            return Err(DatabaseError::UnsupportedStmt(
+                                "VECTOR type requires exactly one dimension argument".to_string(),
+                            ));
+                        }
+                        let dim = args[0].parse::<u32>().map_err(|_| {
+                            DatabaseError::UnsupportedStmt(format!(
+                                "VECTOR dimension must be a positive integer, got: {}",
+                                args[0]
+                            ))
+                        })?;
+                        if dim == 0 {
+                            return Err(DatabaseError::UnsupportedStmt(
+                                "VECTOR dimension must be greater than 0".to_string(),
+                            ));
+                        }
+                        return Ok(LogicalType::Vector(dim));
+                    }
+                }
+            }
+            Err(DatabaseError::UnsupportedStmt(format!(
+                "unsupported custom data type: {}",
+                name
+            )))
+        }
         other => Err(DatabaseError::UnsupportedStmt(format!(
             "unsupported data type: {other}"
         ))),

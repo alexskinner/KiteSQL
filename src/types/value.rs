@@ -171,6 +171,10 @@ pub enum DataValue {
         value: BinaryBytes,
         len: Option<u32>,
     },
+    Vector {
+        value: BinaryBytes,
+        dim: u32,
+    },
 }
 
 impl Clone for DataValue {
@@ -212,6 +216,10 @@ impl Clone for DataValue {
                 value: value.clone(),
                 len: *len,
             },
+            DataValue::Vector { value, dim } => DataValue::Vector {
+                value: value.clone(),
+                dim: *dim,
+            },
         }
     }
 
@@ -238,6 +246,16 @@ impl Clone for DataValue {
             ) => {
                 value.clone_from(source_value);
                 *len = *source_len;
+            }
+            (
+                DataValue::Vector { value, dim },
+                DataValue::Vector {
+                    value: source_value,
+                    dim: source_dim,
+                },
+            ) => {
+                value.clone_from(source_value);
+                *dim = *source_dim;
             }
             (DataValue::Tuple(values), DataValue::Tuple(source_values)) => {
                 values.clone_from(source_values)
@@ -505,6 +523,8 @@ impl PartialEq for DataValue {
             (Decimal(_), _) => false,
             (Tuple(values_1), Tuple(values_2)) => values_1.eq(values_2),
             (Tuple(..), _) => false,
+            (Vector { value: v1, dim: d1 }, Vector { value: v2, dim: d2 }) => d1 == d2 && v1.eq(v2),
+            (Vector { .. }, _) => false,
         }
     }
 }
@@ -601,6 +621,14 @@ impl PartialOrd for DataValue {
             (Decimal(_), _) => None,
             (Tuple(v1), Tuple(v2)) => tuple_partial_cmp(v1, v2, false, false),
             (Tuple(..), _) => None,
+            (Vector { value: v1, dim: d1 }, Vector { value: v2, dim: d2 }) => {
+                if d1 == d2 {
+                    v1.partial_cmp(v2)
+                } else {
+                    None
+                }
+            }
+            (Vector { .. }, _) => None,
         }
     }
 }
@@ -712,6 +740,11 @@ impl Hash for DataValue {
             Tuple(values) => {
                 18u8.hash(state);
                 values.hash(state);
+            }
+            Vector { value, dim } => {
+                19u8.hash(state);
+                dim.hash(state);
+                value.hash(state);
             }
         }
     }
@@ -827,6 +860,7 @@ impl DataValue {
             #[cfg(feature = "decimal")]
             DataValue::Decimal(_) => 16,
             DataValue::Tuple(values) => values.iter().map(DataValue::serialized_len_hint).sum(),
+            DataValue::Vector { value, .. } => std::mem::size_of::<u32>() + value.len(),
         }
     }
 
@@ -1138,6 +1172,10 @@ impl DataValue {
             LogicalType::Decimal(_, _) => DataValue::Decimal(Decimal::new(0, 0)),
             #[cfg(not(feature = "decimal"))]
             LogicalType::Decimal(_, _) => unreachable!("DECIMAL requires the `decimal` feature"),
+            LogicalType::Vector(dim) => DataValue::Binary {
+                value: vec![0u8; (*dim as usize) * 4].into(),
+                len: Some(*dim),
+            },
             LogicalType::Tuple(types) => {
                 let values = types.iter().map(DataValue::init).collect_vec();
 
@@ -1173,6 +1211,7 @@ impl DataValue {
                 ..
             } => LogicalType::Char(*len, *unit),
             DataValue::Binary { len, .. } => LogicalType::Varbinary(*len),
+            DataValue::Vector { dim, .. } => LogicalType::Vector(*dim),
             DataValue::Date32(_) => LogicalType::Date,
             DataValue::Date64(_) => LogicalType::DateTime,
             DataValue::Time32(..) => LogicalType::Time(None),
@@ -1372,6 +1411,7 @@ impl DataValue {
             }
             #[cfg(feature = "decimal")]
             DataValue::Decimal(v) => Self::serialize_decimal(*v, b)?,
+            DataValue::Vector { value, .. } => Self::encode_string(b, value),
             DataValue::Tuple(values) => {
                 for v in values {
                     v.memcomparable_encode(b)?;
@@ -1412,6 +1452,7 @@ impl DataValue {
             DataValue::Utf8 { value, .. } => Self::encoded_string_len(value.len()),
             DataValue::Binary { value, .. } => Self::encoded_string_len(value.len()),
             DataValue::Tuple(values) => values.iter().map(Self::memcomparable_len_hint).sum(),
+            DataValue::Vector { value, .. } => Self::encoded_string_len(value.len()),
         }
     }
 
@@ -1445,6 +1486,12 @@ impl DataValue {
                 return Ok(());
             }
             LogicalType::Decimal(..) => return Self::skip_memcomparable_decimal(reader),
+            LogicalType::Vector(dim) => {
+                let size = (*dim as usize) * 4;
+                let mut discard = vec![0u8; size];
+                reader.read_exact(&mut discard)?;
+                return Ok(());
+            }
             LogicalType::Tuple(types) => {
                 for ty in types {
                     Self::memcomparable_skip(reader, ty)?;
@@ -1554,6 +1601,15 @@ impl DataValue {
             LogicalType::Decimal(..) => Err(DatabaseError::UnsupportedStmt(
                 "DECIMAL requires the `decimal` feature".to_string(),
             )),
+            LogicalType::Vector(dim) => {
+                let size = (*dim as usize) * 4;
+                let mut bytes = vec![0u8; size];
+                reader.read_exact(&mut bytes)?;
+                Ok(DataValue::Binary {
+                    value: bytes.into(),
+                    len: Some(*dim),
+                })
+            }
             LogicalType::Tuple(tys) => {
                 let mut values = Vec::with_capacity(tys.len());
                 for ty in tys {
@@ -2120,6 +2176,19 @@ impl fmt::Display for DataValue {
                 }
                 write!(f, "'")?;
             }
+            DataValue::Vector { value, dim } => {
+                write!(f, "[")?;
+                for i in 0..*dim {
+                    if i > 0 {
+                        write!(f, ",")?;
+                    }
+                    let start = (i as usize) * 4;
+                    let float_bytes: [u8; 4] = value[start..start + 4].try_into().unwrap();
+                    let val = f32::from_le_bytes(float_bytes);
+                    write!(f, "{val}")?;
+                }
+                write!(f, "]")?;
+            }
             DataValue::Utf8 { value: e, .. } => write!(f, "{e}")?,
             DataValue::Null => write!(f, "NULL")?,
             DataValue::Date32(e) => {
@@ -2201,6 +2270,7 @@ impl fmt::Debug for DataValue {
             #[cfg(feature = "decimal")]
             DataValue::Decimal(_) => write!(f, "Decimal({self})"),
             DataValue::Tuple(..) => write!(f, "Tuple({self})"),
+            DataValue::Vector { .. } => write!(f, "Vector({self})"),
         }
     }
 }
