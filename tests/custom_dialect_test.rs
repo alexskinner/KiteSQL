@@ -120,6 +120,11 @@ impl SqlDialect for ToyDialect {
         .then_some(LogicalType::Decimal(None, Some(2)))
     }
 
+    /// NULLs sort as the lowest value in this dialect: first for ASC, last for DESC.
+    fn nulls_first(&self, asc: bool) -> bool {
+        asc
+    }
+
     fn rewrite(&self, statement: &mut Statement) -> Result<(), DatabaseError> {
         // Rewrite table names that are exactly "customtable" to "rewritten_table"
         match statement {
@@ -362,5 +367,82 @@ fn test_custom_dialect_number_literal_and_arithmetic_type() -> Result<(), Box<dy
     assert_eq!(ty, LogicalType::Double);
     let (ty, _) = first(&generic, "SELECT n / 3 FROM a WHERE id = 1")?;
     assert!(!matches!(ty, LogicalType::Decimal(..)));
+    Ok(())
+}
+
+#[test]
+#[cfg(feature = "parser")]
+fn test_custom_dialect_nulls_first() -> Result<(), Box<dyn std::error::Error>> {
+    use kite_sql::storage::lmdb::LmdbStorage;
+
+    let column = |database: &kite_sql::db::Database<LmdbStorage>,
+                  sql: &str|
+     -> Result<Vec<String>, DatabaseError> {
+        let mut result = database.run(sql)?;
+        let mut values = Vec::new();
+        while let Some(value) = result.next_tuple(|_, row| row[0].to_string())? {
+            values.push(value);
+        }
+        result.done()?;
+        Ok(values)
+    };
+    let setup = "CREATE TABLE s (id INT PRIMARY KEY, n INT)";
+    let index = "CREATE INDEX s_n ON s (n)";
+    let rows = "INSERT INTO s VALUES (1, 2), (2, NULL), (3, 1), (4, NULL)";
+    let queries = [
+        "SELECT n FROM s ORDER BY n, id",
+        "SELECT n FROM s ORDER BY n DESC, id",
+        "SELECT n FROM s ORDER BY n NULLS LAST, id",
+        "SELECT n FROM s ORDER BY n DESC NULLS FIRST, id",
+        "SELECT id FROM s ORDER BY row_number() OVER (ORDER BY n, id)",
+        "SELECT n FROM s ORDER BY id DESC",
+    ];
+
+    let temp_dir = tempfile::tempdir()?;
+    let mut toy = DataBaseBuilder::path(".")
+        .register_dialect(Arc::new(ToyDialect::new()))
+        .default_dialect("toy")?
+        .build_with_storage(LmdbStorage::new(temp_dir.path())?)?;
+    toy.ddl(setup)?;
+    toy.ddl(index)?;
+    toy.run(rows)?.done()?;
+    let toy_results = queries
+        .iter()
+        .map(|sql| column(&toy, sql))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        toy_results,
+        vec![
+            vec!["NULL", "NULL", "1", "2"],
+            vec!["2", "1", "NULL", "NULL"],
+            vec!["1", "2", "NULL", "NULL"],
+            vec!["NULL", "NULL", "2", "1"],
+            vec!["2", "4", "3", "1"],
+            vec!["NULL", "1", "NULL", "2"],
+        ]
+    );
+
+    // The generic dialect keeps NULLs last in both directions.
+    let temp_dir = tempfile::tempdir()?;
+    let mut generic =
+        DataBaseBuilder::path(".").build_with_storage(LmdbStorage::new(temp_dir.path())?)?;
+    generic.ddl(setup)?;
+    generic.ddl(index)?;
+    generic.run(rows)?.done()?;
+    let generic_results = queries
+        .iter()
+        .map(|sql| column(&generic, sql))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert_eq!(
+        generic_results,
+        vec![
+            vec!["1", "2", "NULL", "NULL"],
+            vec!["2", "1", "NULL", "NULL"],
+            vec!["1", "2", "NULL", "NULL"],
+            vec!["NULL", "NULL", "2", "1"],
+            vec!["3", "1", "2", "4"],
+            vec!["NULL", "1", "NULL", "2"],
+        ]
+    );
     Ok(())
 }

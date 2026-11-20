@@ -2168,10 +2168,13 @@ where
                             arena.alloc_expression(expr)
                         }
                     };
+                    let asc = options.asc.is_none_or(|asc| asc);
                     SortField::new(
                         expr,
-                        options.asc.is_none_or(|asc| asc),
-                        options.nulls_first.unwrap_or(false),
+                        asc,
+                        options
+                            .nulls_first
+                            .unwrap_or_else(|| binder.context.default_nulls_first(asc)),
                     )
                 })
             },
@@ -3679,9 +3682,12 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                             }
                         };
                         keys.push(key);
+                        let asc = order.asc.unwrap_or(true);
                         options.order_by.push(GroupConcatOrder {
-                            asc: order.asc.unwrap_or(true),
-                            nulls_first: order.nulls_first.unwrap_or(false),
+                            asc,
+                            nulls_first: order
+                                .nulls_first
+                                .unwrap_or_else(|| self.context.default_nulls_first(asc)),
                         });
                     }
                 }
@@ -3758,10 +3764,13 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
             .iter()
             .map(|OrderByExpr { expr, options, .. }| {
                 let expr = self.bind_expr(expr, arena)?;
+                let asc = options.asc.unwrap_or(true);
                 Ok(SortField::new(
                     arena.alloc_expression(expr),
-                    options.asc.unwrap_or(true),
-                    options.nulls_first.unwrap_or(false),
+                    asc,
+                    options
+                        .nulls_first
+                        .unwrap_or_else(|| self.context.default_nulls_first(asc)),
                 ))
             })
             .collect::<Result<Vec<_>, DatabaseError>>()?;
@@ -3973,10 +3982,13 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                 |binder, orderby, arena| {
                     let OrderByExpr { expr, options, .. } = orderby;
                     let expr = binder.bind_expr(expr, arena)?;
+                    let asc = options.asc.is_none_or(|asc| asc);
                     Ok(SortField::new(
                         arena.alloc_expression(expr),
-                        options.asc.is_none_or(|asc| asc),
-                        options.nulls_first.unwrap_or(false),
+                        asc,
+                        options
+                            .nulls_first
+                            .unwrap_or_else(|| binder.context.default_nulls_first(asc)),
                     ))
                 },
                 arena,

@@ -777,8 +777,9 @@ fn sort_field_matches(
     provided: &SortField,
     arena: &crate::planner::PlanArena,
 ) -> bool {
+    // NULL placement only matters for an expression that can be NULL.
     required.asc == provided.asc
-        && required.nulls_first == provided.nulls_first
+        && (required.nulls_first == provided.nulls_first || !expr_nullable(required.expr, arena))
         && required.expr.eq_ignore_colref_pos(provided.expr, arena)
 }
 
@@ -1707,6 +1708,45 @@ mod tests {
         assert!(!EliminateRedundantSort.apply(&mut plan, &mut arena, None)?);
         assert!(matches!(plan.operator, Operator::TopK(_)));
         assert!(!scan_is_reverse(&plan));
+        Ok(())
+    }
+
+    /// An ascending NULLS FIRST sort over an index that stores NULLs last.
+    fn asc_nulls_first_sort_plan(
+        arena: &mut crate::planner::PlanArena,
+        nullable: bool,
+    ) -> LogicalPlan {
+        let mut column = ColumnCatalog::new_dummy("c1".to_string());
+        column.set_nullable(nullable);
+        let column = arena.alloc_column(column);
+        let index_field = SortField::new(
+            arena.alloc_expression(ScalarExpression::column_expr(column, 0)),
+            true,
+            false,
+        );
+        let required = SortField::new(index_field.expr, true, true);
+        build_plan(arena, vec![required], vec![index_field], 0)
+    }
+
+    #[test]
+    fn remove_nulls_first_sort_on_non_null_index() -> Result<(), DatabaseError> {
+        let table_arena = crate::planner::TableArenaCell::default();
+        let mut arena = crate::planner::PlanArena::new(&table_arena);
+        let mut plan = asc_nulls_first_sort_plan(&mut arena, false);
+
+        assert!(EliminateRedundantSort.apply(&mut plan, &mut arena, None)?);
+        assert!(!matches!(plan.operator, Operator::Sort(_)));
+        Ok(())
+    }
+
+    #[test]
+    fn keep_nulls_first_sort_on_nullable_index() -> Result<(), DatabaseError> {
+        let table_arena = crate::planner::TableArenaCell::default();
+        let mut arena = crate::planner::PlanArena::new(&table_arena);
+        let mut plan = asc_nulls_first_sort_plan(&mut arena, true);
+
+        assert!(!EliminateRedundantSort.apply(&mut plan, &mut arena, None)?);
+        assert!(matches!(plan.operator, Operator::Sort(_)));
         Ok(())
     }
 
