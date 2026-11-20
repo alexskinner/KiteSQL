@@ -188,6 +188,10 @@ impl SpillCodec for DataValue {
                 let _: u32 = value.len().try_into()?;
                 4 + value.len() + 1 + if len.is_some() { 4 } else { 0 }
             }
+            DataValue::Vector { value, .. } => {
+                let _: u32 = value.len().try_into()?;
+                4 + value.len() + 4
+            }
             DataValue::Utf8 { value, ty, .. } => {
                 let _: u32 = value.len().try_into()?;
                 4 + value.len()
