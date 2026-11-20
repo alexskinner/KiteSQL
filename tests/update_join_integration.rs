@@ -12,29 +12,48 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(all(not(target_arch = "wasm32"), feature = "lmdb"))]
+mod common;
+// `#[maybe_async]` tests run on `crate::maybe_async::block_on`.
+#[allow(unused_imports)]
+use common as maybe_async;
+use kite_sql_serde_macros::maybe_async;
+
+#[cfg(all(
+    not(target_arch = "wasm32"),
+    any(feature = "lmdb", feature = "slatedb")
+))]
+#[maybe_async]
 mod tests {
+    use crate::common::TestDatabaseBuilder as _;
     use kite_sql::db::DataBaseBuilder;
     use tempfile::TempDir;
 
     #[test]
-    fn test_update_with_self_join_alias() {
+    async fn test_update_with_self_join_alias() {
         let temp_dir = TempDir::new().unwrap();
-        let mut db = DataBaseBuilder::path(temp_dir.path()).build_lmdb().unwrap();
+        let mut db = DataBaseBuilder::path(temp_dir.path())
+            .build_test_db()
+            .await
+            .unwrap();
 
         db.ddl("CREATE TABLE t (id INTEGER PRIMARY KEY, x INTEGER, y INTEGER)")
+            .await
             .unwrap();
         db.run("INSERT INTO t VALUES (1, 10, 20), (2, 30, 40)")
+            .await
             .unwrap()
             .done()
+            .await
             .unwrap();
 
         db.run("UPDATE t latest SET latest.x = 99 WHERE latest.id = 1")
+            .await
             .unwrap()
             .done()
+            .await
             .unwrap();
 
-        let mut iter = db.run("SELECT * FROM t ORDER BY id").unwrap();
+        let mut iter = db.run("SELECT * FROM t ORDER BY id").await.unwrap();
         let mut rows = Vec::new();
         while let Some(row) = iter
             .next_tuple(|_, tuple| {
@@ -44,24 +63,30 @@ mod tests {
                     tuple[2].i32().unwrap(),
                 )
             })
+            .await
             .unwrap()
         {
             rows.push(row);
         }
-        iter.done().unwrap();
+        iter.done().await.unwrap();
         assert_eq!(rows, vec![(1, 99, 20), (2, 30, 40)]);
     }
 
     #[test]
-    fn test_update_with_left_join() {
+    async fn test_update_with_left_join() {
         let temp_dir = TempDir::new().unwrap();
-        let mut db = DataBaseBuilder::path(temp_dir.path()).build_lmdb().unwrap();
+        let mut db = DataBaseBuilder::path(temp_dir.path())
+            .build_test_db()
+            .await
+            .unwrap();
 
         db.ddl("CREATE TABLE _rev_records (record_id INTEGER PRIMARY KEY, id INTEGER, _rev_number INTEGER, _rev_is_latest_draft VARCHAR(1))")
-            .unwrap();
+            .await.unwrap();
         db.run("INSERT INTO _rev_records VALUES (1, 1, 1, '0'), (2, 1, 2, '0'), (3, 2, 1, '0')")
+            .await
             .unwrap()
             .done()
+            .await
             .unwrap();
 
         let mut iter = db
@@ -72,16 +97,19 @@ mod tests {
                  SET `latest`._rev_is_latest_draft = '1' \
                  WHERE `older`.id IS NULL",
             )
+            .await
             .unwrap();
         let count = iter
             .next_tuple(|_, tuple| tuple[0].utf8().unwrap().parse::<i32>().unwrap())
+            .await
             .unwrap()
             .unwrap();
-        iter.done().unwrap();
+        iter.done().await.unwrap();
         assert_eq!(count, 2, "Should update exactly 2 rows");
 
         let mut iter = db
             .run("SELECT * FROM _rev_records ORDER BY record_id")
+            .await
             .unwrap();
         let mut rows = Vec::new();
         while let Some(row) = iter
@@ -93,11 +121,12 @@ mod tests {
                     tuple[3].utf8().unwrap().to_string(),
                 )
             })
+            .await
             .unwrap()
         {
             rows.push(row);
         }
-        iter.done().unwrap();
+        iter.done().await.unwrap();
         assert_eq!(
             rows,
             vec![
@@ -109,23 +138,32 @@ mod tests {
     }
 
     #[test]
-    fn test_update_with_inner_join() {
+    async fn test_update_with_inner_join() {
         let temp_dir = TempDir::new().unwrap();
-        let mut db = DataBaseBuilder::path(temp_dir.path()).build_lmdb().unwrap();
+        let mut db = DataBaseBuilder::path(temp_dir.path())
+            .build_test_db()
+            .await
+            .unwrap();
 
         db.ddl("CREATE TABLE products (id INTEGER PRIMARY KEY, name VARCHAR(100), price INTEGER)")
+            .await
             .unwrap();
         db.ddl("CREATE TABLE price_updates (product_id INTEGER PRIMARY KEY, new_price INTEGER)")
+            .await
             .unwrap();
         db.run(
             "INSERT INTO products VALUES (1, 'apple', 100), (2, 'banana', 50), (3, 'cherry', 75)",
         )
+        .await
         .unwrap()
         .done()
+        .await
         .unwrap();
         db.run("INSERT INTO price_updates VALUES (1, 150), (2, 60)")
+            .await
             .unwrap()
             .done()
+            .await
             .unwrap();
 
         let mut iter = db
@@ -134,15 +172,17 @@ mod tests {
                  INNER JOIN price_updates pu ON p.id = pu.product_id \
                  SET p.price = pu.new_price",
             )
+            .await
             .unwrap();
         let count = iter
             .next_tuple(|_, tuple| tuple[0].utf8().unwrap().parse::<i32>().unwrap())
+            .await
             .unwrap()
             .unwrap();
-        iter.done().unwrap();
+        iter.done().await.unwrap();
         assert_eq!(count, 2, "Should update exactly 2 rows");
 
-        let mut iter = db.run("SELECT * FROM products ORDER BY id").unwrap();
+        let mut iter = db.run("SELECT * FROM products ORDER BY id").await.unwrap();
         let mut rows = Vec::new();
         while let Some(row) = iter
             .next_tuple(|_, tuple| {
@@ -152,11 +192,12 @@ mod tests {
                     tuple[2].i32().unwrap(),
                 )
             })
+            .await
             .unwrap()
         {
             rows.push(row);
         }
-        iter.done().unwrap();
+        iter.done().await.unwrap();
         assert_eq!(
             rows,
             vec![

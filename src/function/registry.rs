@@ -300,9 +300,12 @@ impl FunctionRegistry {
 }
 
 #[cfg(all(test, not(target_arch = "wasm32")))]
+#[maybe_async]
 mod tests {
     use super::*;
-    use crate::db::{CatalogKind, DataBaseBuilder};
+    #[cfg(feature = "lmdb")]
+    use crate::db::CatalogKind;
+    use crate::db::DataBaseBuilder;
     use crate::errors::DatabaseError;
     use crate::expression::function::scala::ScalarFunctionImpl;
     use crate::expression::function::{FunctionSummary, PersistencePolicy};
@@ -497,63 +500,68 @@ mod tests {
         }
     }
 
-    fn next_tuple_owned(
+    async fn next_tuple_owned(
         iter: &mut impl crate::db::ResultIter,
     ) -> Result<Option<crate::types::tuple::TupleImpl>, DatabaseError> {
-        iter.next_tuple(|_, tuple| tuple.clone())
+        iter.next_tuple(|_, tuple| tuple.clone()).await
     }
 
     #[test]
-    fn test_register_and_call_scalar_udf() -> Result<(), DatabaseError> {
+    async fn test_register_and_call_scalar_udf() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
             .register_scalar_function(AddOneFunction::new())
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
-        let mut iter = database.run("select add_one(41)")?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        let mut iter = database.run("select add_one(41)").await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple[0], DataValue::Int32(42));
-        iter.done()?;
+        iter.done().await?;
 
         Ok(())
     }
 
     #[test]
-    fn test_builtin_abs_works() -> Result<(), DatabaseError> {
+    async fn test_builtin_abs_works() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
-        let database = DataBaseBuilder::path(temp_dir.path()).build_in_memory()?;
+        let database = DataBaseBuilder::path(temp_dir.path())
+            .build_in_memory()
+            .await?;
 
-        let mut iter = database.run("select abs(CAST(-5 AS INTEGER))")?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        let mut iter = database.run("select abs(CAST(-5 AS INTEGER))").await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple[0], DataValue::Int32(5));
-        iter.done()?;
+        iter.done().await?;
         Ok(())
     }
 
     #[test]
-    fn test_override_builtin_function() -> Result<(), DatabaseError> {
+    async fn test_override_builtin_function() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
             .register_scalar_function(CustomAbsFunction::new())
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
         // Verify the custom abs function is called (returns 1000 + abs(value))
         // Use explicit INTEGER cast to ensure we hit the Integer overload
-        let mut iter = database.run("select abs(CAST(-5 AS INTEGER))")?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        let mut iter = database.run("select abs(CAST(-5 AS INTEGER))").await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple[0], DataValue::Int32(1005));
-        iter.done()?;
+        iter.done().await?;
 
         Ok(())
     }
 
     #[test]
-    fn test_duplicate_function_error() -> Result<(), DatabaseError> {
+    async fn test_duplicate_function_error() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let result = DataBaseBuilder::path(temp_dir.path())
             .register_scalar_function(AddOneFunction::new())
             .register_scalar_function(AddOneFunction::new())
-            .build_in_memory();
+            .build_in_memory()
+            .await;
 
         assert!(result.is_err());
         match result {
@@ -567,70 +575,74 @@ mod tests {
     }
 
     #[test]
-    fn test_overload_resolution_with_widening() -> Result<(), DatabaseError> {
+    async fn test_overload_resolution_with_widening() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
             .register_scalar_function(DoubleArgFunction::new())
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
-        let mut iter = database.run("select double_arg(21)")?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        let mut iter = database.run("select double_arg(21)").await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         use ordered_float::OrderedFloat;
         assert_eq!(tuple[0], DataValue::Float64(OrderedFloat(42.0)));
-        iter.done()?;
+        iter.done().await?;
 
         Ok(())
     }
 
     #[test]
-    fn test_null_literal_resolution() -> Result<(), DatabaseError> {
+    async fn test_null_literal_resolution() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
             .register_scalar_function(AddOneFunction::new())
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
-        let mut iter = database.run("select add_one(NULL)")?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        let mut iter = database.run("select add_one(NULL)").await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple[0], DataValue::Null);
-        iter.done()?;
+        iter.done().await?;
 
         Ok(())
     }
 
     #[test]
-    fn test_two_overloads_work() -> Result<(), DatabaseError> {
+    async fn test_two_overloads_work() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
             .register_scalar_function(AddOneFunction::new())
             .register_scalar_function(AddOneInt64Function::new())
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
         // Test Integer overload
-        let mut iter = database.run("select add_one(CAST(41 AS INTEGER))")?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        let mut iter = database.run("select add_one(CAST(41 AS INTEGER))").await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple[0], DataValue::Int32(42));
-        iter.done()?;
+        iter.done().await?;
 
         // Test Bigint overload
-        let mut iter = database.run("select add_one(CAST(41 AS BIGINT))")?;
-        let tuple = next_tuple_owned(&mut iter)?.unwrap();
+        let mut iter = database.run("select add_one(CAST(41 AS BIGINT))").await?;
+        let tuple = next_tuple_owned(&mut iter).await?.unwrap();
         assert_eq!(tuple[0], DataValue::Int64(42));
-        iter.done()?;
+        iter.done().await?;
 
         Ok(())
     }
 
     #[test]
-    fn test_ambiguous_overload_error() -> Result<(), DatabaseError> {
+    async fn test_ambiguous_overload_error() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
             .register_scalar_function(AddOneFunction::new())
             .register_scalar_function(AddOneInt64Function::new())
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
         // NULL literal creates a genuine tie: both Integer and Bigint overloads
         // match with NullLiteral quality, so we should get AmbiguousFunction
-        let result = database.run("select add_one(NULL)");
+        let result = database.run("select add_one(NULL)").await;
         assert!(result.is_err());
         match result {
             Err(DatabaseError::AmbiguousFunction { name, candidates }) => {
@@ -695,38 +707,39 @@ mod tests {
     }
 
     #[test]
-    fn test_table_function() -> Result<(), DatabaseError> {
+    async fn test_table_function() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let database = DataBaseBuilder::path(temp_dir.path())
             .register_table_function(RangeTableFunction::new())
-            .build_in_memory()?;
+            .build_in_memory()
+            .await?;
 
         // Test with TABLE keyword
-        let mut iter = database.run("select * from table(range())")?;
+        let mut iter = database.run("select * from table(range())").await?;
         let mut count = 0;
-        while let Some(tuple) = next_tuple_owned(&mut iter)? {
+        while let Some(tuple) = next_tuple_owned(&mut iter).await? {
             assert_eq!(tuple[0], DataValue::Int32(count));
             count += 1;
         }
         assert_eq!(count, 5);
-        iter.done()?;
+        iter.done().await?;
 
         // Test bare form without TABLE keyword
-        let mut iter = database.run("select * from range()")?;
+        let mut iter = database.run("select * from range()").await?;
         let mut count = 0;
-        while let Some(tuple) = next_tuple_owned(&mut iter)? {
+        while let Some(tuple) = next_tuple_owned(&mut iter).await? {
             assert_eq!(tuple[0], DataValue::Int32(count));
             count += 1;
         }
         assert_eq!(count, 5);
-        iter.done()?;
+        iter.done().await?;
 
         Ok(())
     }
 
     #[test]
     #[cfg(feature = "lmdb")]
-    fn test_durable_function_persistence() -> Result<(), DatabaseError> {
+    async fn test_durable_function_persistence() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let db_path = temp_dir.path();
 
@@ -774,7 +787,9 @@ mod tests {
                 .register_scalar_function(durable_add.clone())
                 .build_lmdb()?;
 
-            database.ddl("CREATE VIEW v AS SELECT add_one(41) AS x")?;
+            database
+                .ddl("CREATE VIEW v AS SELECT add_one(41) AS x")
+                .await?;
         }
 
         {
@@ -782,18 +797,18 @@ mod tests {
                 .register_scalar_function(durable_add.clone())
                 .build_lmdb()?;
 
-            database.load(CatalogKind::View("v".into()))?;
+            database.load(CatalogKind::View("v".into())).await?;
 
-            let mut iter = database.run("SELECT * FROM v")?;
-            let tuple = next_tuple_owned(&mut iter)?.unwrap();
+            let mut iter = database.run("SELECT * FROM v").await?;
+            let tuple = next_tuple_owned(&mut iter).await?.unwrap();
             assert_eq!(tuple[0], DataValue::Int32(42));
-            iter.done()?;
+            iter.done().await?;
         }
 
         {
             let mut database = DataBaseBuilder::path(db_path).build_lmdb()?;
 
-            let result = database.load(CatalogKind::View("v".into()));
+            let result = database.load(CatalogKind::View("v".into())).await;
             assert!(result.is_err());
             match result {
                 Err(DatabaseError::InvalidValue(msg)) => {

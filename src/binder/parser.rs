@@ -4649,29 +4649,32 @@ mod tests {
             if_exists: false,
             drop_behavior: None,
         }];
-        let function_registry = crate::function::registry::FunctionRegistry::new();
-        let transaction = tables.storage.transaction()?;
-        let arena = tables.table_arena.borrow();
-        #[cfg(feature = "parser")]
-        let generic_dialect = crate::dialect::GenericSqlDialect::new();
-        let mut binder = Binder::new(
-            BinderContext::new(
-                &arena.names,
-                &arena.tables,
-                &arena.views,
-                &transaction,
-                &function_registry,
-                #[cfg(feature = "parser")]
-                &generic_dialect,
-            ),
-            &[],
-            None,
-        );
-        let mut plan_arena = PlanArena::new(&tables.table_arena);
-        assert_unsupported(
-            binder.bind(&stmt, &mut plan_arena).unwrap_err(),
-            "only dropping a single column",
-        );
+        // Scoped: the binder's write transaction must end before `plan` opens the next one.
+        {
+            let function_registry = crate::function::registry::FunctionRegistry::new();
+            let transaction = tables.storage.transaction()?;
+            let arena = tables.table_arena.borrow();
+            #[cfg(feature = "parser")]
+            let generic_dialect = crate::dialect::GenericSqlDialect::new();
+            let mut binder = Binder::new(
+                BinderContext::new(
+                    &arena.names,
+                    &arena.tables,
+                    &arena.views,
+                    &transaction,
+                    &function_registry,
+                    #[cfg(feature = "parser")]
+                    &generic_dialect,
+                ),
+                &[],
+                None,
+            );
+            let mut plan_arena = PlanArena::new(&tables.table_arena);
+            assert_unsupported(
+                binder.bind(&stmt, &mut plan_arena).unwrap_err(),
+                "only dropping a single column",
+            );
+        }
 
         assert!(matches!(
             tables

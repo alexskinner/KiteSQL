@@ -522,17 +522,21 @@ mod tests {
         Ok(())
     }
 
-    // Moves the database to another thread: the memory storage is not `Send`.
-    #[cfg(feature = "lmdb")]
+    // Moves the database to another thread: the sync path's memory storage is not `Send`.
+    #[cfg(any(feature = "lmdb", feature = "async"))]
+    // The sync `block_on` is the identity, so the worker passes it a unit value.
+    #[allow(clippy::unit_arg)]
     #[test]
-    fn test_per_connection_thread_pattern() -> Result<(), DatabaseError> {
+    async fn test_per_connection_thread_pattern() -> Result<(), DatabaseError> {
         use std::sync::mpsc::channel;
         use std::sync::Arc;
         use std::thread;
 
         let temp_dir = TempDir::new().unwrap();
         let mut database = open_test_db(temp_dir.path()).await?;
-        database.ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")?;
+        database
+            .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
+            .await?;
 
         let database = Arc::new(database);
         let (tx, rx) = channel::<String>();
@@ -540,14 +544,16 @@ mod tests {
         // Connection worker thread owns Arc<Database> and Session
         let db_clone = database.clone();
         let handle = thread::spawn(move || {
-            let mut session = db_clone.session();
+            crate::maybe_async::block_on(async move {
+                let mut session = db_clone.session();
 
-            for command in rx {
-                if command == "DONE" {
-                    break;
+                for command in rx {
+                    if command == "DONE" {
+                        break;
+                    }
+                    session.run(&command).await.unwrap().done().await.unwrap();
                 }
-                session.run(&command).unwrap().done().unwrap();
-            }
+            })
         });
 
         // Send commands to the worker
@@ -560,12 +566,12 @@ mod tests {
         handle.join().unwrap();
 
         // Verify results
-        let mut iter = database.run("SELECT * FROM test")?;
+        let mut iter = database.run("SELECT * FROM test").await?;
         let mut count = 0;
-        while iter.next_tuple(|_, _| ())?.is_some() {
+        while iter.next_tuple(|_, _| ()).await?.is_some() {
             count += 1;
         }
-        iter.done()?;
+        iter.done().await?;
         assert_eq!(count, 1);
 
         Ok(())

@@ -289,39 +289,56 @@ mod test {
 
         // Test empty table: should succeed with zero buckets
         kite_sql.analyze("t1").await?;
-        let count = |db: &mut Database<_>, sql: &str| -> Result<usize, DatabaseError> {
+        async fn count<S: Storage>(
+            db: &mut Database<S>,
+            sql: &str,
+        ) -> Result<usize, DatabaseError> {
             let mut n = 0;
-            let mut it = db.run(sql)?;
-            while it.next_tuple(|_, _| ())?.is_some() {
+            let mut it = db.run(sql).await?;
+            while it.next_tuple(|_, _| ()).await?.is_some() {
                 n += 1;
             }
-            it.done()?;
+            it.done().await?;
             Ok(n)
-        };
+        }
 
         // Verify optimizer works with zero-bucket histograms (no divide-by-zero)
         assert_eq!(
-            count(&mut kite_sql, "select * from t1 where a = 1 and b > 0")?,
+            count(&mut kite_sql, "select * from t1 where a = 1 and b > 0").await?,
             0
         );
-        assert_eq!(count(&mut kite_sql, "select * from t1 where b is null")?, 0);
+        assert_eq!(
+            count(&mut kite_sql, "select * from t1 where b is null").await?,
+            0
+        );
 
         // Test 3-row table: should succeed with 3 buckets
         kite_sql
-            .run("insert into t1 values (1, 10), (2, 20), (3, 30)")?
-            .done()?;
+            .run("insert into t1 values (1, 10), (2, 20), (3, 30)")
+            .await?
+            .done()
+            .await?;
         kite_sql.analyze("t1").await?;
-        assert_eq!(count(&mut kite_sql, "select * from t1 where b >= 20")?, 2);
-        assert_eq!(count(&mut kite_sql, "select * from t1 where a = 2")?, 1);
+        assert_eq!(
+            count(&mut kite_sql, "select * from t1 where b >= 20").await?,
+            2
+        );
+        assert_eq!(
+            count(&mut kite_sql, "select * from t1 where a = 2").await?,
+            1
+        );
 
         // Test 10-row table: should succeed with 10 buckets (at the boundary)
         kite_sql
-            .run("insert into t1 values (4, 40), (5, 50), (6, 60), (7, 70), (8, 80), (9, 90), (10, 100)")?
-            .done()?;
+            .run("insert into t1 values (4, 40), (5, 50), (6, 60), (7, 70), (8, 80), (9, 90), (10, 100)").await?
+            .done().await?;
         kite_sql.analyze("t1").await?;
-        assert_eq!(count(&mut kite_sql, "select * from t1 where b > 50")?, 5);
         assert_eq!(
-            count(&mut kite_sql, "select * from t1 where a >= 5 and a <= 8")?,
+            count(&mut kite_sql, "select * from t1 where b > 50").await?,
+            5
+        );
+        assert_eq!(
+            count(&mut kite_sql, "select * from t1 where a >= 5 and a <= 8").await?,
             4
         );
 

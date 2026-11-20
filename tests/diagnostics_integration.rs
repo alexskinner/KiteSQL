@@ -14,8 +14,15 @@
 
 //! The statement diagnostics channel: a dialect's policy and code mapping, end to end.
 
-#![cfg(all(feature = "lmdb", not(feature = "async")))]
+#![cfg(any(feature = "lmdb", feature = "slatedb"))]
 
+mod common;
+// `#[maybe_async]` tests run on `crate::maybe_async::block_on`.
+#[allow(unused_imports)]
+use common as maybe_async;
+#[cfg(any(feature = "lmdb", feature = "slatedb"))]
+#[allow(unused_imports)]
+use common::TestDatabaseBuilder as _;
 use kite_sql::db::DataBaseBuilder;
 use kite_sql::diagnostics::{
     Diagnostic, DiagnosticKind, DiagnosticLevel, DivisionByZero, StatementPolicy,
@@ -23,6 +30,7 @@ use kite_sql::diagnostics::{
 use kite_sql::dialect::SqlDialect;
 use kite_sql::errors::DatabaseError;
 use kite_sql::types::value::DataValue;
+use kite_sql_serde_macros::maybe_async;
 use sqlparser::ast::Statement;
 use sqlparser::dialect::{Dialect as SqlParserDialect, GenericDialect};
 use std::sync::Arc;
@@ -65,14 +73,26 @@ impl SqlDialect for LenientDialect {
     }
 }
 
-fn scalar<S: kite_sql::storage::Storage>(
+#[maybe_async]
+async fn scalar<S: kite_sql::storage::Storage>(
     db: &kite_sql::db::Database<S>,
     sql: &str,
 ) -> Result<DataValue, DatabaseError> {
-    let mut iter = db.run(sql)?;
-    let row = iter.next_tuple(|_, t| t[0].clone())?.expect("one row");
-    iter.done()?;
+    let mut iter = db.run(sql).await?;
+    let row = iter
+        .next_tuple(|_, t| t[0].clone())
+        .await?
+        .expect("one row");
+    iter.done().await?;
     Ok(row)
+}
+
+#[maybe_async]
+async fn exec<S: kite_sql::storage::Storage>(
+    db: &kite_sql::db::Database<S>,
+    sql: &str,
+) -> Result<(), DatabaseError> {
+    db.run(sql).await?.done().await
 }
 
 fn codes<S: kite_sql::storage::Storage>(
@@ -84,26 +104,29 @@ fn codes<S: kite_sql::storage::Storage>(
         .collect()
 }
 
+#[maybe_async]
 #[test]
-fn dialect_policy_and_mapping() -> Result<(), DatabaseError> {
+async fn dialect_policy_and_mapping() -> Result<(), DatabaseError> {
     let dir = TempDir::new().unwrap();
     let mut db = DataBaseBuilder::path(dir.path())
         .register_dialect(Arc::new(LenientDialect {
             parser: GenericDialect {},
         }))
         .default_dialect("lenient")?
-        .build_lmdb()?;
-    db.ddl("CREATE TABLE t (id INT PRIMARY KEY, d DECIMAL(5, 2), n INT)")?;
+        .build_test_db()
+        .await?;
+    db.ddl("CREATE TABLE t (id INT PRIMARY KEY, d DECIMAL(5, 2), n INT)")
+        .await?;
 
-    assert_eq!(scalar(&db, "SELECT 1 / 0")?, DataValue::Null);
+    assert_eq!(scalar(&db, "SELECT 1 / 0").await?, DataValue::Null);
     assert_eq!(
         codes(&db),
         vec![(DiagnosticLevel::Warning, 9001, "division by zero".into())]
     );
-    assert_eq!(scalar(&db, "SELECT 7 % 0")?, DataValue::Null);
+    assert_eq!(scalar(&db, "SELECT 7 % 0").await?, DataValue::Null);
     assert_eq!(codes(&db).len(), 1);
     assert_eq!(
-        scalar(&db, "SELECT CAST('12abc' AS BIGINT)")?,
+        scalar(&db, "SELECT CAST('12abc' AS BIGINT)").await?,
         DataValue::Int64(12)
     );
     assert_eq!(
@@ -116,24 +139,24 @@ fn dialect_policy_and_mapping() -> Result<(), DatabaseError> {
     );
     // a clean statement starts with an empty diagnostics list
     assert_eq!(
-        scalar(&db, "SELECT CAST(' 5 ' AS BIGINT)")?,
+        scalar(&db, "SELECT CAST(' 5 ' AS BIGINT)").await?,
         DataValue::Int64(5)
     );
     assert!(codes(&db).is_empty());
 
     // writes keep the errors
-    assert!(db
-        .run("INSERT INTO t VALUES (1, 1, 1 / 0)")
-        .and_then(|i| i.done())
+    assert!(exec(&db, "INSERT INTO t VALUES (1, 1, 1 / 0)")
+        .await
         .is_err());
-    assert!(db
-        .run("INSERT INTO t VALUES (1, 1, '12abc')")
-        .and_then(|i| i.done())
+    assert!(exec(&db, "INSERT INTO t VALUES (1, 1, '12abc')")
+        .await
         .is_err());
 
     // storing into DECIMAL(5, 2) rounds away digits: a Note per affected row
-    db.run("INSERT INTO t VALUES (1, 1.234, 0), (2, 1.5, 0), (3, '2.001', 0)")?
-        .done()?;
+    db.run("INSERT INTO t VALUES (1, 1.234, 0), (2, 1.5, 0), (3, '2.001', 0)")
+        .await?
+        .done()
+        .await?;
     assert_eq!(
         codes(&db),
         vec![
@@ -152,19 +175,18 @@ fn dialect_policy_and_mapping() -> Result<(), DatabaseError> {
     Ok(())
 }
 
+#[maybe_async]
 #[test]
-fn generic_dialect_keeps_errors() -> Result<(), DatabaseError> {
+async fn generic_dialect_keeps_errors() -> Result<(), DatabaseError> {
     let dir = TempDir::new().unwrap();
-    let db = DataBaseBuilder::path(dir.path()).build_lmdb()?;
-    assert!(db.run("SELECT 1 / 0").and_then(|i| i.done()).is_err());
-    assert!(db
-        .run("SELECT CAST(1.0 AS DECIMAL) / CAST(0 AS DECIMAL)")
-        .and_then(|i| i.done())
-        .is_err());
-    assert!(db
-        .run("SELECT CAST('12abc' AS BIGINT)")
-        .and_then(|i| i.done())
-        .is_err());
+    let db = DataBaseBuilder::path(dir.path()).build_test_db().await?;
+    assert!(exec(&db, "SELECT 1 / 0").await.is_err());
+    assert!(
+        exec(&db, "SELECT CAST(1.0 AS DECIMAL) / CAST(0 AS DECIMAL)")
+            .await
+            .is_err()
+    );
+    assert!(exec(&db, "SELECT CAST('12abc' AS BIGINT)").await.is_err());
     assert!(db.take_diagnostics().is_empty());
     Ok(())
 }
