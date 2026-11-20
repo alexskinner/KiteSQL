@@ -54,6 +54,11 @@ test:
 test-async:
 	$(CARGO) test -p kite_sql --lib --no-default-features --features $(ASYNC_FEATURES),slatedb
 
+## Build LMDB with async feature to verify async trait implementation.
+## Note: Full test suite conversion to async is not yet complete (see PR #69).
+build-lmdb-async:
+	$(CARGO) build -p kite_sql --lib --no-default-features --features async,time,copy,decimal,macros,orm,parser,lmdb,spill
+
 ## Run the SlateDB storage unit tests (async path, in-memory object store, S3 config).
 test-slatedb:
 	$(CARGO) test -p kite_sql --lib --no-default-features --features $(ASYNC_FEATURES),slatedb-s3 storage::slatedb
