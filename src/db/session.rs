@@ -603,10 +603,43 @@ mod tests {
         Ok(rows)
     }
 
+    #[derive(Debug, Clone)]
+    struct OdkuTestDialect {
+        inner: crate::dialect::GenericSqlDialect,
+    }
+
+    impl crate::dialect::SqlDialect for OdkuTestDialect {
+        fn name(&self) -> &'static str {
+            "test_odku"
+        }
+
+        fn parser_dialect(&self) -> &dyn sqlparser::dialect::Dialect {
+            self.inner.parser_dialect()
+        }
+
+        fn supports_on_duplicate_key_update(&self) -> bool {
+            true
+        }
+
+        fn upsert_affected_rows(&self, inserted: bool, updated: bool) -> u64 {
+            match (inserted, updated) {
+                (true, false) => 1,
+                (false, true) => 2,
+                (false, false) => 0,
+                (true, true) => unreachable!("row cannot be both inserted and updated"),
+            }
+        }
+    }
+
     async fn odku_database(
     ) -> Result<(TempDir, Database<crate::storage::lmdb::LmdbStorage>), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
-        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        let mut database = DataBaseBuilder::path(temp_dir.path())
+            .register_dialect(Arc::new(OdkuTestDialect {
+                inner: crate::dialect::GenericSqlDialect::new(),
+            }))
+            .default_dialect("test_odku")?
+            .build_lmdb()?;
         database
             .ddl("CREATE TABLE t (id INT PRIMARY KEY, v INT, c INT)")
             .await?;
@@ -852,8 +885,8 @@ mod tests {
 
     #[test]
     async fn test_odku_null_unique_key_is_not_a_conflict() -> Result<(), DatabaseError> {
-        let temp_dir = TempDir::new().unwrap();
-        let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+        let (_temp_dir, mut database) = odku_database().await?;
+        database.ddl("DROP TABLE t").await?;
         database
             .ddl("CREATE TABLE u (id INT PRIMARY KEY, email VARCHAR(50) UNIQUE, n INT)")
             .await?;

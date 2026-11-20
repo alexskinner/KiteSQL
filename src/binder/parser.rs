@@ -1484,6 +1484,17 @@ where
 
         let on_duplicate_key_update = match on.as_ref() {
             Some(sqlparser::ast::OnInsert::DuplicateKeyUpdate(assignments)) => {
+                if !self
+                    .binder
+                    .context
+                    .dialect
+                    .supports_on_duplicate_key_update()
+                {
+                    return Err(DatabaseError::UnsupportedStmt(
+                        "INSERT ... ON DUPLICATE KEY UPDATE is not supported in this dialect"
+                            .to_string(),
+                    ));
+                }
                 Some((assignments.as_slice(), insert_alias.as_ref()))
             }
             Some(sqlparser::ast::OnInsert::OnConflict(_)) | Some(&_) => {

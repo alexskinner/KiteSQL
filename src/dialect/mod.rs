@@ -147,9 +147,22 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
     ) -> Option<crate::types::LogicalType> {
         None
     }
+
+    /// Whether this dialect supports `INSERT ... ON DUPLICATE KEY UPDATE` syntax.
+    /// The default (`false`) rejects it.
+    fn supports_on_duplicate_key_update(&self) -> bool {
+        false
+    }
+
+    /// The affected-rows count for an upsert operation: (`inserted`, `updated`) → count.
+    /// A dialect may return 2 for a changed row, 1 for an inserted row, 0 for an unchanged row.
+    /// The default returns 1 for both insert and update (standard behavior).
+    fn upsert_affected_rows(&self, _inserted: bool, _updated: bool) -> u64 {
+        1
+    }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct GenericSqlDialect {
     parser: GenericDialect,
 }

@@ -107,12 +107,16 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         }
         let values_plan = self.bind_values(values, row_count, table.columns.clone());
 
+        let dialect = self.context.dialect;
+        let upsert_update_count = dialect.upsert_affected_rows(false, true);
+
         Ok(LogicalPlan::new(
             Operator::Insert(InsertOperator {
                 table,
                 is_overwrite,
                 on_duplicate_key_update,
                 identity,
+                upsert_update_count,
             }),
             Childrens::Only(Box::new(values_plan)),
         ))
@@ -144,12 +148,16 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
         }
         let input_plan = self.bind_project(input_plan, projection, arena)?;
 
+        let dialect = self.context.dialect;
+        let upsert_update_count = dialect.upsert_affected_rows(false, true);
+
         Ok(LogicalPlan::new(
             Operator::Insert(InsertOperator {
                 table,
                 is_overwrite,
                 on_duplicate_key_update,
                 identity,
+                upsert_update_count,
             }),
             Childrens::Only(Box::new(input_plan)),
         ))
