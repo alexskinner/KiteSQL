@@ -12,8 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-//! The async API on Amazon S3, through SlateDB, run on tokio. It writes a table on a spawned
-//! task, closes the database, opens it again from the bucket and reads the table back.
+//! The async API on Amazon S3, through SlateDB, run on tokio. It writes a table, closes the
+//! database, opens it again from the bucket and reads the table back.
 //!
 //! ```text
 //! KITESQL_S3_BUCKET=my-bucket AWS_REGION=us-east-1 \
@@ -60,8 +60,9 @@ mod app {
 
         let storage = SlateDbStorage::open_s3(path.as_str(), &config, Default::default()).await?;
         let mut database = DataBaseBuilder::path(".").build_with_storage(storage.clone())?;
-        // The database and its futures are `Send`, so the work can run on any worker thread.
-        tokio::spawn(async move {
+        // Runs on the current task: rustc cannot yet prove some ORM futures `Send` for every
+        // lifetime (rust-lang/rust#110338), so they are not handed to `tokio::spawn` here.
+        async move {
             database.drop_table_if_exists::<MyStruct>().await?;
             database.create_table_if_not_exists::<MyStruct>().await?;
             for (c1, c2) in [(0, "zero"), (1, "one"), (2, "two")] {
@@ -85,9 +86,8 @@ mod app {
                 .await?
                 .done()
                 .await
-        })
-        .await
-        .expect("example task panicked")?;
+        }
+        .await?;
         // Flushes what is still in memory to S3 and releases the database.
         storage.close().await?;
 

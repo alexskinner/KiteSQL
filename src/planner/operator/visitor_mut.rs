@@ -1,5 +1,5 @@
 // GRCOV_EXCL_START
-#[cfg(test)]
+#[cfg(all(test, not(target_arch = "wasm32")))]
 use crate::planner::PlanArena;
 // GRCOV_EXCL_STOP
 // Copyright 2024 KipData/KiteSQL
