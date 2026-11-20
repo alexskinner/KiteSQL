@@ -4499,6 +4499,176 @@ pub(crate) mod test {
         Ok(())
     }
 
+    #[cfg(all(feature = "parser", feature = "lmdb"))]
+    #[test]
+    fn test_dialect_text_collation() -> Result<(), DatabaseError> {
+        use crate::dialect::SqlDialect;
+        use crate::types::collation::TextCollation;
+        use std::borrow::Cow;
+        use std::sync::Arc;
+
+        fn lower(text: &str) -> Cow<'_, str> {
+            if text.chars().any(char::is_uppercase) {
+                Cow::Owned(text.to_lowercase())
+            } else {
+                Cow::Borrowed(text)
+            }
+        }
+
+        #[derive(Debug)]
+        struct CaseFoldingDialect {
+            inner: crate::dialect::GenericSqlDialect,
+        }
+
+        impl SqlDialect for CaseFoldingDialect {
+            fn name(&self) -> &str {
+                "case_folding_test"
+            }
+
+            fn parser_dialect(&self) -> &dyn sqlparser::dialect::Dialect {
+                self.inner.parser_dialect()
+            }
+
+            fn text_collation(&self) -> Option<TextCollation> {
+                Some(TextCollation::new("lower", lower))
+            }
+
+            fn is_binary_collation(&self, name: &str) -> bool {
+                name.eq_ignore_ascii_case("bytes")
+            }
+        }
+
+        fn rows<S: Storage>(
+            database: &crate::db::Database<S>,
+            sql: &str,
+        ) -> Result<Vec<Vec<DataValue>>, DatabaseError> {
+            let mut iter = database
+                .run(sql)
+                .inspect_err(|err| eprintln!("{sql}: {err}"))?;
+            let mut rows = Vec::new();
+            while let Some(row) = iter.next_tuple(|_, row| row.take_values())? {
+                rows.push(row);
+            }
+            iter.done()?;
+            Ok(rows)
+        }
+        fn texts(rows: Vec<Vec<DataValue>>) -> Vec<String> {
+            rows.into_iter()
+                .map(|row| {
+                    row.iter()
+                        .map(|v| v.to_string())
+                        .collect::<Vec<_>>()
+                        .join(",")
+                })
+                .collect()
+        }
+        let open = |dir: &std::path::Path, folding: bool| {
+            let builder = DataBaseBuilder::path(dir);
+            if folding {
+                builder
+                    .register_dialect(Arc::new(CaseFoldingDialect {
+                        inner: crate::dialect::GenericSqlDialect::new(),
+                    }))
+                    .default_dialect("case_folding_test")?
+                    .build_lmdb()
+            } else {
+                builder.build_lmdb()
+            }
+        };
+
+        let temp_dir = TempDir::new().expect("unable to create temporary working directory");
+        // A table created byte-wise, before the collation.
+        {
+            let mut database = open(temp_dir.path(), false)?;
+            database.ddl("create table legacy(id varchar(10) primary key, n int)")?;
+            database
+                .run("insert into legacy values ('Smith', 1), ('smith', 2)")?
+                .done()?;
+        }
+
+        let mut database = open(temp_dir.path(), true)?;
+        database.load(CatalogKind::Table("legacy".to_string()))?;
+        database
+            .ddl("create table people(id int primary key, name varchar(20) unique, tag varchar(10) collate bytes)")?;
+        database
+            .run("insert into people values (1, 'Smith', 'a'), (2, 'jones', 'A')")?
+            .done()?;
+        // The unique key holds the folded name.
+        let err = database
+            .run("insert into people values (3, 'SMITH', 'b')")
+            .and_then(|iter| iter.done())
+            .unwrap_err();
+        assert!(matches!(err, DatabaseError::DuplicateUniqueValue), "{err}");
+        assert_eq!(
+            texts(rows(
+                &database,
+                "select id from people where name = 'SMITH'"
+            )?),
+            ["1"]
+        );
+        assert_eq!(
+            texts(rows(
+                &database,
+                "select id from people where name in ('JONES', 'x')"
+            )?),
+            ["2"]
+        );
+        assert_eq!(
+            texts(rows(&database, "select 'a' = 'A', 'B' > 'a'")?),
+            ["true,true"]
+        );
+        assert_eq!(
+            texts(rows(&database, "select name from people order by name")?),
+            ["jones", "Smith"]
+        );
+        // A byte-wise column compares and sorts by bytes.
+        assert_eq!(
+            texts(rows(&database, "select id from people where tag = 'a'")?),
+            ["1"]
+        );
+        assert_eq!(
+            texts(rows(&database, "select tag from people order by tag")?),
+            ["A", "a"]
+        );
+        assert_eq!(
+            texts(rows(
+                &database,
+                "select upper(name), count(*) from people group by upper(name) order by 1"
+            )?),
+            ["JONES,1", "SMITH,1"]
+        );
+        database.ddl("create table dup(id int primary key, t varchar(10))")?;
+        database
+            .run("insert into dup values (1, 'x'), (2, 'X'), (3, 'y')")?
+            .done()?;
+        assert_eq!(
+            texts(rows(&database, "select count(distinct t) from dup")?),
+            ["2"]
+        );
+        // The byte-wise table keeps both keys and still finds each row.
+        assert_eq!(
+            texts(rows(&database, "select n from legacy order by n")?),
+            ["1", "2"]
+        );
+        // Its key lookups stay byte-wise until the table is recreated.
+        assert_eq!(
+            texts(rows(&database, "select n from legacy where id = 'smith'")?),
+            ["2"]
+        );
+        drop(database);
+
+        // A table created under the collation is refused without it.
+        let mut database = open(temp_dir.path(), false)?;
+        database.load(CatalogKind::Table("people".to_string()))?;
+        let err = database
+            .run("select * from people")
+            .and_then(|iter| iter.done())
+            .unwrap_err();
+        assert!(err.to_string().contains("lower"), "{err}");
+
+        Ok(())
+    }
+
     #[test]
     fn test_update_rejects_null_in_not_null_column() -> Result<(), DatabaseError> {
         let mut database = DataBaseBuilder::path(".").build_in_memory()?;

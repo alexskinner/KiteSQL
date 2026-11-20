@@ -24,13 +24,14 @@ use crate::optimizer::core::top_n::ColumnTopN;
 use crate::planner::MetaArena;
 use crate::serdes::{ReferenceDecodeContext, ReferenceSerialization};
 use crate::storage::StorageTransaction;
+use crate::types::collation;
 use crate::types::index::{Index, IndexId, IndexMeta, IndexType, INDEX_ID_LEN};
 use crate::types::mapped::MappedScope;
 use crate::types::serialize::{BytesPool, TupleValueSerializableImpl};
 use crate::types::tuple::{Tuple, TupleId, TupleLike};
 use crate::types::value::{DataValue, IndexKeyMapping};
 use crate::types::{ColumnId, LogicalType};
-use std::borrow::Borrow;
+use std::borrow::{Borrow, Cow};
 use std::io::{Cursor, Read};
 use std::mem;
 use std::sync::LazyLock;
@@ -118,6 +119,7 @@ enum CodecType {
     Tuple,
     DisplayTypes,
     Identity,
+    TextCollation,
 }
 
 /// The two identity keys of a table (see [`TableCodec::with_identity`]).
@@ -288,6 +290,10 @@ impl TableCodec {
                 out.extend_from_slice(&prefix);
                 out.push(b'5');
             }
+            CodecType::TextCollation => {
+                out.extend_from_slice(&prefix);
+                out.push(b'6');
+            }
             CodecType::Index => {
                 out.extend_from_slice(&prefix);
                 out.push(b'7');
@@ -349,7 +355,9 @@ impl TableCodec {
         lower.reserve(KEY_PREFIX_LEN_HINT + tuple_id.memcomparable_len_hint());
         Self::write_key_prefix(lower, CodecType::Tuple, prefix);
         lower.push(BOUND_MIN_TAG);
-        tuple_id.memcomparable_encode(lower)?;
+        collation::with_raw_keys(!collation::folds_keys(table_id), || {
+            tuple_id.memcomparable_encode(lower)
+        })?;
 
         if let Some((len_hint, write_value)) = tuple_value {
             value.reserve(len_hint + size_of::<u64>());
@@ -502,25 +510,56 @@ impl TableCodec {
             lower.push(BOUND_MIN_TAG);
             lower.extend_from_slice(&index.id.to_le_bytes());
             lower.push(BOUND_MIN_TAG);
-            for i in 0..index.values.len() {
-                index.values.value_at(i).memcomparable_encode(lower)?;
-            }
-
-            if let Some(tuple_id) = tuple_id {
-                if matches!(index.ty, IndexType::Normal | IndexType::Composite)
-                    || (matches!(index.ty, IndexType::Unique) && index_has_null(index.values))
-                {
-                    tuple_id.memcomparable_encode(lower)?;
+            collation::with_raw_keys(!collation::folds_keys(table_id), || {
+                for i in 0..index.values.len() {
+                    index.values.value_at(i).memcomparable_encode(lower)?;
                 }
-            }
+
+                if let Some(tuple_id) = tuple_id {
+                    if matches!(index.ty, IndexType::Normal | IndexType::Composite)
+                        || (matches!(index.ty, IndexType::Unique) && index_has_null(index.values))
+                    {
+                        tuple_id.memcomparable_encode(lower)?;
+                    }
+                }
+                Ok::<(), DatabaseError>(())
+            })?;
 
             if let Some(tuple_id) = tuple_id {
+                // The row a key points to, as a scan of the table yields it: a primary key
+                // read back from a folded key is the collation key.
+                let tuple_id = if collation::folds_keys(table_id) {
+                    Self::key_text_of(tuple_id)
+                } else {
+                    Cow::Borrowed(tuple_id)
+                };
                 value.reserve(tuple_id.memcomparable_len_hint() + size_of::<u64>());
                 tuple_id.encode_reference_value(&mut *value)?;
                 value.extend_from_slice(&stamp.to_le_bytes());
             }
 
             f(lower.as_slice(), value.as_slice()).await
+        }
+    }
+
+    /// `value` with its text replaced by the collation key.
+    fn key_text_of(value: &DataValue) -> Cow<'_, DataValue> {
+        match value {
+            DataValue::Utf8 { value: text, .. } => match collation::text_key(text.as_str()) {
+                Cow::Borrowed(_) => Cow::Borrowed(value),
+                Cow::Owned(key) => Cow::Owned(DataValue::from(key)),
+            },
+            DataValue::Tuple(values)
+                if values.iter().any(|v| matches!(v, DataValue::Utf8 { .. })) =>
+            {
+                Cow::Owned(DataValue::Tuple(
+                    values
+                        .iter()
+                        .map(|v| Self::key_text_of(v).into_owned())
+                        .collect(),
+                ))
+            }
+            _ => Cow::Borrowed(value),
         }
     }
 
@@ -711,6 +750,21 @@ impl TableCodec {
         })?;
 
         f(lower.as_slice(), value.as_slice()).await
+    }
+
+    /// Key: `{TableId}{TEXT_COLLATION_TAG}`, holding [`crate::catalog::TextCollationMeta`].
+    pub async fn with_text_collation<R>(
+        &mut self,
+        table_id: TableId,
+        f: impl AsyncFnOnce(&[u8]) -> Result<R, DatabaseError>,
+    ) -> Result<R, DatabaseError> {
+        self.clear_buffers();
+        let key = self.with_table_buffers(table_id, |key, prefix, _| {
+            Self::write_key_prefix(key, CodecType::TextCollation, prefix);
+            Ok(key.clone())
+        })?;
+
+        f(key.as_slice()).await
     }
 
     pub fn decode_display_types<T: StorageTransaction>(

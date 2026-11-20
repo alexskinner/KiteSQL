@@ -485,7 +485,9 @@ impl PartialEq for DataValue {
             (UInt64(_), _) => false,
             (Binary { value: v1, .. }, Binary { value: v2, .. }) => v1.eq(v2),
             (Binary { .. }, _) => false,
-            (Utf8 { value: v1, .. }, Utf8 { value: v2, .. }) => v1.eq(v2),
+            (Utf8 { value: v1, .. }, Utf8 { value: v2, .. }) => {
+                crate::types::collation::text_eq(v1.as_str(), v2.as_str())
+            }
             (Utf8 { .. }, _) => false,
             (Null, Null) => true,
             (Null, _) => false,
@@ -579,7 +581,9 @@ impl PartialOrd for DataValue {
             (UInt64(_), _) => None,
             (Binary { value: v1, .. }, Binary { value: v2, .. }) => v1.partial_cmp(v2),
             (Binary { .. }, _) => None,
-            (Utf8 { value: v1, .. }, Utf8 { value: v2, .. }) => v1.partial_cmp(v2),
+            (Utf8 { value: v1, .. }, Utf8 { value: v2, .. }) => {
+                Some(crate::types::collation::text_cmp(v1.as_str(), v2.as_str()))
+            }
             (Utf8 { .. }, _) => None,
             (Null, Null) => Some(Ordering::Equal),
             (Null, _) => None,
@@ -682,7 +686,7 @@ impl Hash for DataValue {
             }
             Utf8 { value: v, .. } => {
                 12u8.hash(state);
-                v.hash(state);
+                crate::types::collation::text_hash(v.as_str(), state);
             }
             Date32(v) => {
                 13u8.hash(state);
@@ -1339,7 +1343,10 @@ impl DataValue {
             DataValue::Time32(v, ..) => encode_u!(b, v),
             DataValue::UInt64(v) => encode_u!(b, v),
             DataValue::Binary { value, .. } => Self::encode_string(b, value),
-            DataValue::Utf8 { value: v, .. } => Self::encode_string(b, v.as_bytes()),
+            DataValue::Utf8 { value: v, .. } => Self::encode_string(
+                b,
+                crate::types::collation::encoding_key(v.as_str()).as_bytes(),
+            ),
             DataValue::Boolean(v) => b.push_byte(if *v { b'1' } else { b'0' }),
             DataValue::Float32(f) => {
                 let mut u = f.to_bits();

@@ -411,13 +411,69 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
         Ok(ScalarExpression::OuterParam { id, ty })
     }
 
+    /// Whether `expr` is a text column declared with a byte-wise collation (see
+    /// `SqlDialect::is_binary_collation`).
+    pub(crate) fn is_binary_text(expr: ExprRef, arena: &PlanArena) -> bool {
+        let ScalarExpression::ColumnRef { column, .. } = arena.expression(expr) else {
+            return false;
+        };
+        let column = arena.column(*column);
+        let crate::catalog::ColumnRelation::Table {
+            table_id,
+            column_id,
+        } = &column.summary().relation
+        else {
+            return false;
+        };
+        matches!(
+            column.datatype(),
+            LogicalType::Char(..) | LogicalType::Varchar(..)
+        ) && arena
+            .table(*table_id)
+            .is_some_and(|table| table.is_binary_text_column(*column_id))
+    }
+
+    /// Text operands compared byte-wise: with a byte-wise column among `exprs`, every text
+    /// operand is compared as its bytes.
+    pub(crate) fn binary_text_operands(
+        exprs: &mut [ExprRef],
+        arena: &mut PlanArena,
+    ) -> Result<(), DatabaseError> {
+        if !exprs.iter().any(|expr| Self::is_binary_text(*expr, arena)) {
+            return Ok(());
+        }
+        for expr in exprs.iter_mut() {
+            if matches!(
+                expr.return_type(arena).as_ref(),
+                LogicalType::Char(..) | LogicalType::Varchar(..)
+            ) {
+                *expr =
+                    expr.type_cast(std::borrow::Cow::Owned(LogicalType::Varbinary(None)), arena)?;
+            }
+        }
+        Ok(())
+    }
+
     pub(crate) fn bind_binary_op_expr(
         &mut self,
-        left_expr: ExprRef,
-        right_expr: ExprRef,
+        mut left_expr: ExprRef,
+        mut right_expr: ExprRef,
         op: expression::BinaryOperator,
         arena: &mut PlanArena,
     ) -> Result<ScalarExpression, DatabaseError> {
+        if matches!(
+            op,
+            expression::BinaryOperator::Gt
+                | expression::BinaryOperator::Lt
+                | expression::BinaryOperator::GtEq
+                | expression::BinaryOperator::LtEq
+                | expression::BinaryOperator::Eq
+                | expression::BinaryOperator::NotEq
+        ) {
+            let mut operands = [left_expr, right_expr];
+            Self::binary_text_operands(&mut operands, arena)?;
+            [left_expr, right_expr] = operands;
+        }
         let left_ty = left_expr.return_type(arena).into_owned();
         let right_ty = right_expr.return_type(arena).into_owned();
         let arithmetic_ty = self.arithmetic_return_type(&op, &left_ty, &right_ty);
@@ -691,6 +747,14 @@ impl<'a, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'a, '_,
                 }
             }
         };
+        let mut args = args;
+        // Distinct values of a byte-wise column are distinct by bytes; only a count can take
+        // them as bytes, since other aggregates return the values themselves.
+        if is_distinct && matches!(kind, AggKind::Count) {
+            for arg in args.iter_mut() {
+                Self::binary_text_operands(std::slice::from_mut(arg), arena)?;
+            }
+        }
         Ok(ScalarExpression::AggCall {
             distinct: is_distinct,
             kind,

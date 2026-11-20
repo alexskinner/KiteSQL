@@ -49,6 +49,67 @@ pub struct TableCatalog {
     /// Runtime-only field: the table's identity column, whose omitted or NULL values are
     /// generated from a per-table counter. Loaded from separate identity metadata.
     identity: Option<ColumnId>,
+    /// Runtime-only field: the text collation the table was created under and its byte-wise
+    /// text columns. Loaded from separate text collation metadata.
+    text_collation: Option<TextCollationMeta>,
+}
+
+/// The text collation a table was created under: its primary key and index keys hold that
+/// collation's keys for text (see [`crate::types::collation`]), unless `raw_keys`.
+/// `binary_columns` are the text columns declared with a byte-wise collation, which compare
+/// byte-wise in expressions. A table with such a column in its primary key or a unique key
+/// keeps byte-wise keys (`raw_keys`), so that key stays unique by bytes.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextCollationMeta {
+    pub(crate) name: Arc<str>,
+    pub(crate) raw_keys: bool,
+    pub(crate) binary_columns: std::collections::BTreeSet<ColumnId>,
+}
+
+impl TextCollationMeta {
+    /// Whether the table's keys hold the collation's keys for text.
+    pub(crate) fn folds_keys(&self) -> bool {
+        !self.raw_keys
+    }
+
+    /// `{name length: u32 LE}{name}{raw keys: u8}{column id: u64 LE}...`
+    pub(crate) fn encode(&self) -> Vec<u8> {
+        let mut bytes = Vec::with_capacity(5 + self.name.len() + 8 * self.binary_columns.len());
+        bytes.extend_from_slice(&(self.name.len() as u32).to_le_bytes());
+        bytes.extend_from_slice(self.name.as_bytes());
+        bytes.push(self.raw_keys as u8);
+        for column_id in &self.binary_columns {
+            bytes.extend_from_slice(&column_id.to_le_bytes());
+        }
+        bytes
+    }
+
+    pub(crate) fn decode(bytes: &[u8]) -> Result<Self, DatabaseError> {
+        let malformed = || DatabaseError::InvalidValue("malformed text collation metadata".into());
+        let len = bytes
+            .get(..4)
+            .and_then(|b| b.try_into().ok())
+            .map(u32::from_le_bytes)
+            .ok_or_else(malformed)? as usize;
+        let name = bytes
+            .get(4..4 + len)
+            .and_then(|b| std::str::from_utf8(b).ok())
+            .ok_or_else(malformed)?;
+        let raw_keys = match bytes.get(4 + len) {
+            Some(0) => false,
+            Some(1) => true,
+            _ => return Err(malformed()),
+        };
+        let (ids, tail) = bytes[5 + len..].as_chunks::<8>();
+        if !tail.is_empty() {
+            return Err(malformed());
+        }
+        Ok(Self {
+            name: name.into(),
+            raw_keys,
+            binary_columns: ids.iter().map(|b| ColumnId::from_le_bytes(*b)).collect(),
+        })
+    }
 }
 
 /// What a write needs of its table, worked out once when the statement is bound.
@@ -314,6 +375,7 @@ impl TableCatalog {
             primary_key_type: LogicalType::SqlNull,
             display_types: BTreeMap::new(),
             identity: None,
+            text_collation: None,
         };
         for col_catalog in columns.into_iter() {
             let _ = table_catalog.add_column(col_catalog, arena).unwrap();
@@ -347,6 +409,22 @@ impl TableCatalog {
 
     pub(crate) fn set_identity_column(&mut self, column_id: Option<ColumnId>) {
         self.identity = column_id;
+    }
+
+    /// The text collation the table was created under; `None`: byte-wise keys.
+    pub fn text_collation(&self) -> Option<&TextCollationMeta> {
+        self.text_collation.as_ref()
+    }
+
+    pub(crate) fn set_text_collation(&mut self, meta: Option<TextCollationMeta>) {
+        self.text_collation = meta;
+    }
+
+    /// Whether text column `column_id` compares byte-wise (declared with a binary collation).
+    pub fn is_binary_text_column(&self, column_id: ColumnId) -> bool {
+        self.text_collation
+            .as_ref()
+            .is_some_and(|meta| meta.binary_columns.contains(&column_id))
     }
 
     pub(crate) fn collect_display_types(&self) -> DisplayTypesMeta {
@@ -412,6 +490,7 @@ impl TableCatalog {
             primary_key_type,
             display_types: BTreeMap::new(),
             identity: None,
+            text_collation: None,
         })
     }
 
@@ -440,6 +519,7 @@ impl TableCatalog {
         // Copy display types from source table
         table.display_types = self.display_types.clone();
         table.identity = self.identity;
+        table.text_collation = self.text_collation.clone();
 
         Ok(table)
     }

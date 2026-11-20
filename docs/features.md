@@ -133,6 +133,37 @@ The `map_column_type` hook takes precedence over `map_data_type`. By default, `m
 
 Two hooks let a dialect change numeric typing. `number_literal` reads a numeric literal's text and may return its value and type (for example an exact DECIMAL for `0.1`); `None` keeps the engine's reading. `arithmetic_return_type` may give the result type of `+ - * / %` for a pair of operand types. When it returns a DECIMAL with a scale, the operation is computed in DECIMAL (also for integer operands) and rounded half away from zero to that scale, once, at the end of a chain of such operations or comparisons. `None` keeps the engine's type.
 
+#### Text Collation
+
+By default text compares byte-wise. A dialect can return a `TextCollation` from `text_collation`: a name and a comparison-key function. Strings with equal keys are then equal, and strings order by their keys, in `=`, `<>`, `<`, `IN`, `BETWEEN`, `CASE`, `NULLIF`, `ORDER BY`, `GROUP BY`, `DISTINCT`, `UNION`, joins, `MIN`/`MAX` and unique keys:
+
+```rust,ignore
+use kite_sql::types::collation::TextCollation;
+use std::borrow::Cow;
+
+fn fold(text: &str) -> Cow<'_, str> {
+    Cow::Owned(text.to_lowercase())
+}
+
+impl SqlDialect for MyDialect {
+    // ...
+    fn text_collation(&self) -> Option<TextCollation> {
+        Some(TextCollation::new("my_ci", fold))
+    }
+
+    // Columns declared `COLLATE my_bin` compare byte-wise.
+    fn is_binary_collation(&self, name: &str) -> bool {
+        name.eq_ignore_ascii_case("my_bin")
+    }
+}
+```
+
+- A table created under a collation keeps the key in its primary key and index keys, so a unique key rejects `'SMITH'` next to `'Smith'` and a lookup for `'smith'` finds `'Smith'`. Such a table is marked with the collation's name, and a dialect with another collation (or none) refuses it. Index keys hold the key, not the text, so such a table never answers text columns from an index alone.
+- The key function must be stable and idempotent (`key(key(s)) == key(s)`): stored keys depend on it.
+- A table created without a collation keeps byte-wise keys: its key lookups and unique keys stay byte-wise until the table is recreated, while its other comparisons use the collation.
+- A column declared with a collation for which `is_binary_collation` holds compares byte-wise in comparisons, `IN`, `BETWEEN`, `ORDER BY` and `COUNT(DISTINCT …)`. A table with such a column in its primary key or a unique key keeps byte-wise keys.
+- The collation is per statement and per thread, like statement diagnostics: it is installed when the statement is prepared, and the statement runs on that thread.
+
 ### ORM Mapping: `features = ["orm"]`
 See [the ORM guide](../src/orm/README.md) for the full ORM guide, including:
 

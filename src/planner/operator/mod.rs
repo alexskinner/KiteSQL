@@ -1503,6 +1503,7 @@ mod tests {
             index_constraints: Vec::new(),
             display_types: std::collections::BTreeMap::new(),
             identity: None,
+            binary_text_columns: Vec::new(),
         });
         assert!(referenced_columns(&create_table, &mut arena)?.is_empty());
 
@@ -1684,6 +1685,7 @@ mod tests {
                     index_constraints: Vec::new(),
                     display_types: std::collections::BTreeMap::new(),
                     identity: None,
+                    binary_text_columns: Vec::new(),
                 }),
                 "Create users -> [id, name], If Not Exists: true",
             ),

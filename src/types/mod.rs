@@ -13,6 +13,7 @@
 // limitations under the License.
 
 pub mod bitset;
+pub mod collation;
 pub mod evaluator;
 pub mod index;
 pub mod mapped;

@@ -2009,6 +2009,10 @@ impl<'a: 'b, 'b, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder
         sort_fields: Vec<SortField>,
         arena: &mut PlanArena,
     ) -> Result<LogicalPlan, DatabaseError> {
+        let mut sort_fields = sort_fields;
+        for field in sort_fields.iter_mut() {
+            Self::binary_text_operands(std::slice::from_mut(&mut field.expr), arena)?;
+        }
         let children = self.bind_scalar_queries(children, &[QueryBindStep::Sort], arena)?;
         self.context.step(QueryBindStep::Sort);
         Ok(LogicalPlan::new(
