@@ -1,5 +1,7 @@
 // Integration test to verify AggregateFunctionImpl and Accumulator can be implemented from outside kite_sql
 
+#![cfg(all(not(feature = "async"), not(target_arch = "wasm32")))]
+
 use kite_sql::db::DataBaseBuilder;
 use kite_sql::errors::DatabaseError;
 use kite_sql::expression::agg::{AggFnId, AggKind};
@@ -179,6 +181,7 @@ fn test_external_udaf_null_handling() -> Result<(), DatabaseError> {
     Ok(())
 }
 
+#[cfg(feature = "orm")]
 #[test]
 fn test_external_udaf_in_view() -> Result<(), DatabaseError> {
     use kite_sql::Model;
@@ -282,6 +285,7 @@ fn test_external_udaf_lmdb_persist_with_view() -> Result<(), DatabaseError> {
     Ok(())
 }
 
+#[cfg(feature = "orm")]
 #[test]
 fn test_external_udaf_empty_table() -> Result<(), DatabaseError> {
     use kite_sql::Model;

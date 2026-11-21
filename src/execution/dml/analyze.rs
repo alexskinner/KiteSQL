@@ -220,6 +220,10 @@ impl<'a> Analyze<'a> {
                 builder.build(histogram_buckets.unwrap_or(DEFAULT_NUM_OF_BUCKETS))?;
             let meta = IndexStatistics::new(histogram, sketch, top_n);
 
+            // Re-analysis can write fewer buckets than the previous histogram.
+            transaction
+                .remove_index_statistics(table_codec, table_id, index_id)
+                .await?;
             transaction.save_index_statistics(table_codec, table_id, meta.clone(), plan_arena)?;
             applies.push(DDLApply::UpsertIndexStatistics {
                 table_id,
@@ -278,9 +282,18 @@ mod test {
         Ok(())
     }
 
+    async fn count_rows<S: Storage>(db: &Database<S>, sql: &str) -> Result<usize, DatabaseError> {
+        let mut n = 0;
+        let mut it = db.run(sql).await?;
+        while it.next_tuple(|_, _| ()).await?.is_some() {
+            n += 1;
+        }
+        it.done().await?;
+        Ok(n)
+    }
+
     async fn test_analyze_empty_and_small_tables() -> Result<(), DatabaseError> {
-        // Fewer rows than DEFAULT_NUM_OF_BUCKETS (and none at all) used to fail with
-        // TooManyBuckets; MySQL's ANALYZE TABLE accepts any table.
+        // ANALYZE must accept tables with fewer rows than DEFAULT_NUM_OF_BUCKETS, or none.
         let mut kite_sql = DataBaseBuilder::path(".").build_in_memory().await?;
         kite_sql
             .ddl("create table t1 (a int primary key, b int)")
@@ -289,39 +302,46 @@ mod test {
 
         // Test empty table: should succeed with zero buckets
         kite_sql.analyze("t1").await?;
-        let count = |db: &mut Database<_>, sql: &str| -> Result<usize, DatabaseError> {
-            let mut n = 0;
-            let mut it = db.run(sql)?;
-            while it.next_tuple(|_, _| ())?.is_some() {
-                n += 1;
-            }
-            it.done()?;
-            Ok(n)
-        };
 
         // Verify optimizer works with zero-bucket histograms (no divide-by-zero)
         assert_eq!(
-            count(&mut kite_sql, "select * from t1 where a = 1 and b > 0")?,
+            count_rows(&kite_sql, "select * from t1 where a = 1 and b > 0").await?,
             0
         );
-        assert_eq!(count(&mut kite_sql, "select * from t1 where b is null")?, 0);
+        assert_eq!(
+            count_rows(&kite_sql, "select * from t1 where b is null").await?,
+            0
+        );
 
         // Test 3-row table: should succeed with 3 buckets
         kite_sql
-            .run("insert into t1 values (1, 10), (2, 20), (3, 30)")?
-            .done()?;
+            .run("insert into t1 values (1, 10), (2, 20), (3, 30)")
+            .await?
+            .done()
+            .await?;
         kite_sql.analyze("t1").await?;
-        assert_eq!(count(&mut kite_sql, "select * from t1 where b >= 20")?, 2);
-        assert_eq!(count(&mut kite_sql, "select * from t1 where a = 2")?, 1);
+        assert_eq!(
+            count_rows(&kite_sql, "select * from t1 where b >= 20").await?,
+            2
+        );
+        assert_eq!(
+            count_rows(&kite_sql, "select * from t1 where a = 2").await?,
+            1
+        );
 
         // Test 10-row table: should succeed with 10 buckets (at the boundary)
         kite_sql
-            .run("insert into t1 values (4, 40), (5, 50), (6, 60), (7, 70), (8, 80), (9, 90), (10, 100)")?
-            .done()?;
+            .run("insert into t1 values (4, 40), (5, 50), (6, 60), (7, 70), (8, 80), (9, 90), (10, 100)")
+            .await?
+            .done()
+            .await?;
         kite_sql.analyze("t1").await?;
-        assert_eq!(count(&mut kite_sql, "select * from t1 where b > 50")?, 5);
         assert_eq!(
-            count(&mut kite_sql, "select * from t1 where a >= 5 and a <= 8")?,
+            count_rows(&kite_sql, "select * from t1 where b > 50").await?,
+            5
+        );
+        assert_eq!(
+            count_rows(&kite_sql, "select * from t1 where a >= 5 and a <= 8").await?,
             4
         );
 
@@ -396,7 +416,6 @@ mod test {
         ] {
             let mut kite_sql = builder.build_in_memory().await?;
             kite_sql.ddl("create table t1 (a int primary key)").await?;
-            // ANALYZE needs at least DEFAULT_NUM_OF_BUCKETS rows.
             let values = (0..DEFAULT_NUM_OF_BUCKETS)
                 .map(|i| format!("({i})"))
                 .join(", ");
@@ -621,9 +640,24 @@ mod test {
         iter.done().await?;
         assert_eq!(rows, [7, 27, 47, 67, 87].map(DataValue::Int32));
 
-        // A missing root must not publish partially reconstructed statistics.
+        // Re-analysis must remove stale buckets when the sample shrinks to zero.
+        reopened.run("delete from t1").await?.done().await?;
+        reopened.analyze("t1").await?;
         let mut codec = TableCodec::default();
         let mut tx = reopened.storage.transaction()?;
+        let stored = tx
+            .index_statistics(
+                &mut codec,
+                table_id,
+                2,
+                reopened.state.catalog().arena().borrow_mut(),
+            )
+            .await?
+            .unwrap();
+        assert_eq!(stored.histogram().buckets_len(), 0);
+        assert_eq!(stored.histogram().values_len(), 0);
+
+        // A missing root must not publish partially reconstructed statistics.
         codec.with_index_statistics(
             0,
             2,

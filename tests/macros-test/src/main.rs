@@ -22,7 +22,7 @@ mod test {
     use kite_sql::errors::DatabaseError;
     use kite_sql::expression::function::scala::ScalarFunctionImpl;
     use kite_sql::expression::function::table::TableFunctionImpl;
-    use kite_sql::expression::function::FunctionSummary;
+    use kite_sql::expression::function::{FunctionSummary, PersistencePolicy};
     use kite_sql::expression::BinaryOperator;
     use kite_sql::expression::ScalarExpression;
     use kite_sql::orm::{AggKind, OrmQueryResultExt, WindowSpec};
@@ -3077,6 +3077,7 @@ mod test {
             FunctionSummary {
                 name: "sum".into(),
                 arg_types: vec![LogicalType::Integer, LogicalType::Integer],
+                persistence: PersistencePolicy::Durable,
             }
         );
         assert_eq!(sum, DataValue::Int32(2));
@@ -3100,6 +3101,7 @@ mod test {
             FunctionSummary {
                 name: "test_numbers".into(),
                 arg_types: vec![LogicalType::Integer],
+                persistence: PersistencePolicy::Durable,
             }
         );
         assert_eq!(

@@ -36,12 +36,20 @@ const MAX_ERROR_LINES: usize = 30;
 
 /// Records that test SQLite behavior standard SQL rejects, with the records that check its
 /// effect: `(file, first line, last line, reason)`.
-const NON_STANDARD: &[(&str, u32, u32, &str)] = &[(
-    "evidence/slt_lang_update.slt",
-    90,
-    106,
-    "a column assigned more than once in UPDATE",
-)];
+const NON_STANDARD: &[(&str, u32, u32, &str)] = &[
+    (
+        "evidence/slt_lang_update.slt",
+        90,
+        106,
+        "a column assigned more than once in UPDATE",
+    ),
+    (
+        "evidence/slt_lang_aggfunc.slt",
+        253,
+        254,
+        "group_concat() concatenates all its arguments, so DISTINCT takes more than one",
+    ),
+];
 
 fn is_non_standard(path: &Path, line: u32) -> bool {
     NON_STANDARD

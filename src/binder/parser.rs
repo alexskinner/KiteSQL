@@ -58,7 +58,7 @@ pub(super) use sqlparser::ast::{
 };
 #[cfg(feature = "copy")]
 pub(super) use sqlparser::ast::{CopyOption, CopySource, CopyTarget};
-use sqlparser::ast::{GeneratedAs, SequenceOptions};
+use sqlparser::ast::{GeneratedAs, NullsDistinctOption, SequenceOptions};
 use sqlparser::tokenizer::Span;
 use std::borrow::Cow;
 use std::cmp;
@@ -950,12 +950,19 @@ where
                     })?;
                 }
                 TableConstraint::Unique(unique) => {
+                    Self::check_unique_nulls_option(unique.nulls_distinct)?;
                     let column_names: Result<Vec<String>, DatabaseError> = unique
                         .columns
                         .iter()
                         .map(|index_col| index_key_part_column(&index_col.column.expr, &columns))
                         .collect();
                     let cols = column_names?;
+                    if let Some(missing) = cols
+                        .iter()
+                        .find(|name| !columns.iter().any(|column| column.name() == name.as_str()))
+                    {
+                        return Err(DatabaseError::column_not_found(missing.clone()));
+                    }
 
                     let index_name = unique
                         .name
@@ -1136,7 +1143,10 @@ where
                         ));
                     }
                 }
-                ColumnOption::Unique(_) => column_desc.set_unique(),
+                ColumnOption::Unique(unique) => {
+                    Self::check_unique_nulls_option(unique.nulls_distinct)?;
+                    column_desc.set_unique();
+                }
                 ColumnOption::Default(expr) => {
                     default_count += 1;
                     if default_count > 1 {
@@ -1238,12 +1248,20 @@ where
         for (i, index_column) in exprs.into_iter().enumerate() {
             let column_name = index_key_part_column(&index_column.column.expr, &*table_columns)?;
 
-            if let Some(column) = table_columns
+            let column = table_columns
                 .iter_mut()
                 .find(|column| column.name() == column_name)
-            {
-                fn_constraint(i, column.desc_mut())
-            }
+                .ok_or_else(|| DatabaseError::column_not_found(column_name))?;
+            fn_constraint(i, column.desc_mut())
+        }
+        Ok(())
+    }
+
+    fn check_unique_nulls_option(option: NullsDistinctOption) -> Result<(), DatabaseError> {
+        if option != NullsDistinctOption::None {
+            return Err(DatabaseError::UnsupportedStmt(
+                "UNIQUE NULLS options".to_string(),
+            ));
         }
         Ok(())
     }
@@ -1438,13 +1456,13 @@ where
 
         if returning.is_some() {
             return Err(DatabaseError::UnsupportedStmt(
-                "INSERT ... RETURNING is not supported".to_string(),
+                "INSERT RETURNING is not supported".to_string(),
             ));
         }
 
         if !assignments.is_empty() {
             return Err(DatabaseError::UnsupportedStmt(
-                "INSERT ... SET is not supported".to_string(),
+                "INSERT SET is not supported".to_string(),
             ));
         }
 
@@ -1469,7 +1487,7 @@ where
             }
             Some(sqlparser::ast::OnInsert::OnConflict(_)) | Some(&_) => {
                 return Err(DatabaseError::UnsupportedStmt(
-                    "INSERT ... ON CONFLICT (PostgreSQL syntax) is not yet supported".to_string(),
+                    "INSERT ON CONFLICT is not supported".to_string(),
                 ));
             }
             None => None,

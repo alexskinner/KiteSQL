@@ -1,6 +1,8 @@
 // Backward compatibility test: ensure databases with views using abs()/upper()
 // created on main (925e292) can be loaded and queried with this branch.
 
+#![cfg(all(not(feature = "async"), feature = "lmdb"))]
+
 use kite_sql::db::DataBaseBuilder;
 use kite_sql::errors::DatabaseError;
 use kite_sql::storage::lmdb::LmdbStorage;

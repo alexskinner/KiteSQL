@@ -144,6 +144,22 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                 }
             }
 
+            // Every expression reads the old row (or joined row for joined updates), so evaluate
+            // and validate them all before removing any index entries.
+            for (position, expr) in value_exprs.iter() {
+                let eval_tuple = eval_tuple_owned.as_ref().unwrap_or(&tuple);
+                let value = plan_arena
+                    .expression(*expr)
+                    .eval(plan_arena, Some(eval_tuple))?;
+                if value.is_null() {
+                    let column = plan_arena.column(table.columns[*position]);
+                    if !column.nullable() || column.desc().is_primary() {
+                        return Err(DatabaseError::not_null_column(column.name().to_string()));
+                    }
+                }
+                values.push(value.into_owned());
+            }
+
             // Capture old tuple for undo (before modification)
             let old_tuple = if enable_undo {
                 Some(tuple.clone())
@@ -179,21 +195,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Update<'a> {
                 }
             }
 
-            // Every expression reads the old row (or joined row for joined updates), so evaluate them all before writing.
-            for (_, expr) in value_exprs.iter() {
-                let eval_tuple = eval_tuple_owned.as_ref().unwrap_or(&tuple);
-                let value = plan_arena
-                    .expression(*expr)
-                    .eval(plan_arena, Some(eval_tuple))?;
-                values.push(value.into_owned());
-            }
             for ((position, _), value) in value_exprs.iter().zip(values.drain(..)) {
-                if value.is_null() {
-                    let column = plan_arena.column(table.columns[*position]);
-                    if !column.nullable() {
-                        return Err(DatabaseError::not_null_column(column.name().to_string()));
-                    }
-                }
                 tuple[*position] = value;
             }
 

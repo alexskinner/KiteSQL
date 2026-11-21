@@ -364,7 +364,7 @@ impl<'a, 'db, S: Storage + 'db> ResultIter for SessionIter<'a, 'db, S> {
 }
 
 #[maybe_async]
-#[cfg(test)]
+#[cfg(all(test, feature = "lmdb"))]
 mod tests {
     use super::*;
     use crate::db::DataBaseBuilder;

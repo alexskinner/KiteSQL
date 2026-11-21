@@ -20,6 +20,7 @@ use crate::expression::BinaryOperator;
 use crate::types::evaluator::binary_create;
 use crate::types::value::DataValue;
 use crate::types::LogicalType;
+#[cfg(feature = "decimal")]
 use rust_decimal::{Decimal, RoundingStrategy};
 use std::borrow::Cow;
 use std::mem;
@@ -28,6 +29,7 @@ pub struct AvgAccumulator {
     distinct_values: Option<FxHashSet<DataValue>>,
     inner: Option<SumAccumulator>,
     /// `Some` when AVG is typed DECIMAL: the exact sum, and the result scale (if fixed).
+    #[cfg(feature = "decimal")]
     exact: Option<(Decimal, Option<u8>)>,
     count: usize,
     result: DataValue,
@@ -36,7 +38,8 @@ pub struct AvgAccumulator {
 impl AvgAccumulator {
     /// An AVG typed `ty`: DECIMAL(p, s) sums exactly and rounds the quotient half away from
     /// zero to scale s; any other type averages as DOUBLE.
-    pub fn new(distinct: bool, ty: &LogicalType) -> Self {
+    pub fn new(distinct: bool, #[allow(unused_variables)] ty: &LogicalType) -> Self {
+        #[cfg(feature = "decimal")]
         let exact = match ty {
             LogicalType::Decimal(_, scale) => Some((Decimal::ZERO, *scale)),
             _ => None,
@@ -44,6 +47,7 @@ impl AvgAccumulator {
         Self {
             distinct_values: distinct.then(FxHashSet::default),
             inner: None,
+            #[cfg(feature = "decimal")]
             exact,
             count: 0,
             result: DataValue::Null,
@@ -60,6 +64,7 @@ impl Accumulator for AvgAccumulator {
                     return Ok(());
                 }
             }
+            #[cfg(feature = "decimal")]
             if let Some((sum, _)) = &mut self.exact {
                 // Booleans average as 0 and 1.
                 let number = match value {
@@ -96,6 +101,7 @@ impl Accumulator for AvgAccumulator {
         if !self.result.is_null() {
             return Ok(());
         }
+        #[cfg(feature = "decimal")]
         if let Some((sum, scale)) = &self.exact {
             if self.count == 0 {
                 return Ok(());
@@ -140,6 +146,7 @@ impl Accumulator for AvgAccumulator {
             values.clear();
         }
         self.inner = None;
+        #[cfg(feature = "decimal")]
         if let Some((sum, _)) = &mut self.exact {
             *sum = Decimal::ZERO;
         }
@@ -196,6 +203,7 @@ mod tests {
         Ok(())
     }
 
+    #[cfg(feature = "decimal")]
     #[test]
     fn decimal_typed_avg_is_exact_and_rounded_to_its_scale() -> Result<(), DatabaseError> {
         let decimal = |s: &str| DataValue::Decimal(s.parse().unwrap());

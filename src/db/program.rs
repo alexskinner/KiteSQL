@@ -1020,9 +1020,12 @@ mod tests {
         tx.commit().await?;
         {
             let mut s = db.session();
-            s.run("BEGIN")?.done()?;
-            s.run("ALTER TABLE t ADD COLUMN age INT")?.done()?;
-            s.run("COMMIT")?;
+            s.run("BEGIN").await?.done().await?;
+            s.run("ALTER TABLE t ADD COLUMN age INT")
+                .await?
+                .done()
+                .await?;
+            s.run("COMMIT").await?;
         }
         let mut tx = db.new_transaction(false)?;
         match program.execute(&mut tx, [(1, "a".into())]).await {

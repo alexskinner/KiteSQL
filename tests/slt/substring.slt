@@ -163,3 +163,13 @@ query I
 select position('' in '')
 ----
 1
+
+query TT
+select substring('中文abc', 2), substring('中😀文', 2, 1);
+----
+文abc 😀
+
+query II
+select position('文' in '中文abc'), position('b' in '😀ab');
+----
+2 3
