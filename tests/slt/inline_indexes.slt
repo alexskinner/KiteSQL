@@ -127,36 +127,13 @@ create table fk (id int primary key, b varchar(20), UNIQUE KEY u (b(10,2)));
 statement error functional/expression key parts are not supported
 create table fk (id int primary key, b varchar(20), UNIQUE KEY u (substring(b,1,3)));
 
-# MySQL prefix lengths are accepted; uniqueness applies to the whole value.
-statement ok
+# Prefix index lengths (col(n)) require dialect support.
+# Generic dialect rejects this syntax; dialect-specific tests are in their respective test directories.
+statement error unsupported statement: index prefix length .* is not supported in this dialect
 create table kp1 (id int primary key, b varchar(20), KEY (b(10)));
 
-statement ok
+statement error unsupported statement: index prefix length .* is not supported in this dialect
 create table kp2 (id int primary key, b varchar(20), UNIQUE KEY ub (b(10)));
 
-statement ok
+statement error unsupported statement: index prefix length .* is not supported in this dialect
 create table kp3 (id int primary key, b varchar(20), UNIQUE KEY (b(10)));
-
-statement ok
-insert into kp1 values (1, 'abc'), (2, 'abc');
-
-statement ok
-insert into kp2 values (1, 'abc');
-
-statement error
-insert into kp2 values (2, 'abc');
-
-statement ok
-insert into kp3 values (1, 'abc');
-
-statement error
-insert into kp3 values (2, 'abc');
-
-statement ok
-drop table kp1;
-
-statement ok
-drop table kp2;
-
-statement ok
-drop table kp3;

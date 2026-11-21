@@ -952,10 +952,13 @@ where
                 }
                 TableConstraint::Unique(unique) => {
                     Self::check_unique_nulls_option(unique.nulls_distinct)?;
+                    let dialect = self.binder.context.dialect;
                     let column_names: Result<Vec<String>, DatabaseError> = unique
                         .columns
                         .iter()
-                        .map(|index_col| index_key_part_column(&index_col.column.expr, &columns))
+                        .map(|index_col| {
+                            index_key_part_column(&index_col.column.expr, &columns, dialect)
+                        })
                         .collect();
                     let cols = column_names?;
                     if let Some(missing) = cols
@@ -989,10 +992,13 @@ where
                     }
                 }
                 TableConstraint::Index(index) => {
+                    let dialect = self.binder.context.dialect;
                     let column_names: Result<Vec<String>, DatabaseError> = index
                         .columns
                         .iter()
-                        .map(|index_col| index_key_part_column(&index_col.column.expr, &columns))
+                        .map(|index_col| {
+                            index_key_part_column(&index_col.column.expr, &columns, dialect)
+                        })
                         .collect();
                     let cols = column_names?;
                     let index_name = index
@@ -1012,10 +1018,13 @@ where
                     );
                 }
                 TableConstraint::FulltextOrSpatial(index) => {
+                    let dialect = self.binder.context.dialect;
                     let column_names: Result<Vec<String>, DatabaseError> = index
                         .columns
                         .iter()
-                        .map(|index_col| index_key_part_column(&index_col.column.expr, &columns))
+                        .map(|index_col| {
+                            index_key_part_column(&index_col.column.expr, &columns, dialect)
+                        })
                         .collect();
                     let cols = column_names?;
                     let index_name = index
@@ -1246,8 +1255,10 @@ where
         exprs: Vec<IndexColumn>,
         fn_constraint: F,
     ) -> Result<(), DatabaseError> {
+        let dialect = self.binder.context.dialect;
         for (i, index_column) in exprs.into_iter().enumerate() {
-            let column_name = index_key_part_column(&index_column.column.expr, &*table_columns)?;
+            let column_name =
+                index_key_part_column(&index_column.column.expr, &*table_columns, dialect)?;
 
             let column = table_columns
                 .iter_mut()
@@ -2241,11 +2252,15 @@ where
     }
 }
 
-/// The column a CREATE TABLE key part names: `col`, or MySQL's prefix form `col(n)` with a
-/// positive integer length `n`, which parses as a call. Every other function or expression is a
-/// functional key part and is rejected, including a call whose name happens to match a column,
-/// such as `upper(b)` in a table with a column `upper`.
-fn index_key_part_column(expr: &Expr, columns: &[ColumnCatalog]) -> Result<String, DatabaseError> {
+/// The column a CREATE TABLE key part names: `col`, or (when the dialect supports it) a
+/// prefix form `col(n)` with a positive integer length `n`, which parses as a call. Every other
+/// function or expression is a functional key part and is rejected, including a call whose name
+/// happens to match a column, such as `upper(b)` in a table with a column `upper`.
+fn index_key_part_column(
+    expr: &Expr,
+    columns: &[ColumnCatalog],
+    dialect: &dyn crate::dialect::SqlDialect,
+) -> Result<String, DatabaseError> {
     let unsupported = || {
         DatabaseError::UnsupportedStmt(
             "functional/expression key parts are not supported".to_string(),
@@ -2280,7 +2295,13 @@ fn index_key_part_column(expr: &Expr, columns: &[ColumnCatalog]) -> Result<Strin
                 && is_plain_call
                 && columns.iter().any(|candidate| candidate.name() == column)
             {
-                Ok(column)
+                if dialect.supports_index_prefix_length() {
+                    Ok(column)
+                } else {
+                    Err(DatabaseError::UnsupportedStmt(
+                        "index prefix length (col(n)) is not supported in this dialect".to_string(),
+                    ))
+                }
             } else {
                 Err(unsupported())
             }
@@ -4945,7 +4966,34 @@ mod tests {
 
     #[test]
     async fn test_create_table_accepts_prefix_key_parts() -> Result<(), DatabaseError> {
-        let tables = build_t1_table().await?;
+        #[derive(Debug)]
+        struct PrefixIndexDialect {
+            inner: crate::dialect::GenericSqlDialect,
+        }
+
+        impl crate::dialect::SqlDialect for PrefixIndexDialect {
+            fn name(&self) -> &'static str {
+                "test_prefix_index"
+            }
+
+            fn parser_dialect(&self) -> &dyn sqlparser::dialect::Dialect {
+                self.inner.parser_dialect()
+            }
+
+            fn supports_index_prefix_length(&self) -> bool {
+                true
+            }
+        }
+
+        let temp_dir = tempfile::TempDir::new().unwrap();
+        let mut database = crate::db::DataBaseBuilder::path(temp_dir.path())
+            .register_dialect(std::sync::Arc::new(PrefixIndexDialect {
+                inner: crate::dialect::GenericSqlDialect::new(),
+            }))
+            .default_dialect("test_prefix_index")?
+            .build_in_memory()
+            .await?;
+
         for key in [
             "KEY (b(10))",
             "KEY kb (b(10))",
@@ -4955,7 +5003,8 @@ mod tests {
             "FULLTEXT KEY f (b(10))",
         ] {
             let sql = format!("create table pk (id int primary key, b varchar(20), c int, {key})");
-            tables.plan(&sql)?;
+            database.ddl(&sql).await?;
+            database.ddl("DROP TABLE pk").await?;
         }
         Ok(())
     }

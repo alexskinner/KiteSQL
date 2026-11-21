@@ -458,6 +458,11 @@ impl SqlDialect for MySqlDialect {
         true
     }
 
+    /// MySQL accepts prefix length in index key parts (col(n)) but ignores it.
+    fn supports_index_prefix_length(&self) -> bool {
+        true
+    }
+
     /// MySQL's level, code and text for each core diagnostic.
     fn map_diagnostic(&self, mut diagnostic: Diagnostic) -> Option<Diagnostic> {
         let (level, code, message) = match &diagnostic.kind {
