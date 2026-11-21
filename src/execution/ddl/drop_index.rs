@@ -56,7 +56,6 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for DropIndex<'a> {
         } = self.op;
 
         let dropped = {
-            let mut decode = arena.decode_context();
             let (transaction, table_codec) = arena.transaction_codec_mut();
             transaction
                 .drop_index(
@@ -65,7 +64,6 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for DropIndex<'a> {
                     table_name,
                     index_name,
                     *if_exists,
-                    &mut decode,
                 )
                 .await?
         };
