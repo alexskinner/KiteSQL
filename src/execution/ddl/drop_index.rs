@@ -58,13 +58,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for DropIndex<'a> {
         let dropped = {
             let (transaction, table_codec) = arena.transaction_codec_mut();
             transaction
-                .drop_index(
-                    table_codec,
-                    plan_arena,
-                    table_name,
-                    index_name,
-                    *if_exists,
-                )
+                .drop_index(table_codec, plan_arena, table_name, index_name, *if_exists)
                 .await?
         };
         if let Some((table, index_id)) = dropped {
