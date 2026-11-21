@@ -2856,6 +2856,7 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                         }
                     }
 
+                    self.table_function_source = true;
                     if let Ok(ScalarExpression::TableFunction(function)) =
                         self.bind_function_call(table_name.clone(), call_args, arena)
                     {
@@ -2893,7 +2894,10 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
                 )
             }
             TableFactor::TableFunction { expr, alias } => {
-                let expr = self.bind_expr(expr, arena)?;
+                self.table_function_source = matches!(expr, Expr::Function(_));
+                let expr = self.bind_expr(expr, arena);
+                self.table_function_source = false;
+                let expr = expr?;
                 self.bind_table_function_source(
                     expr,
                     sql_optional_table_alias(alias.clone()),
@@ -3491,6 +3495,8 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
         func: &Function,
         arena: &mut PlanArena,
     ) -> Result<ScalarExpression, DatabaseError> {
+        // Only this call may be a FROM-clause table function, not the calls in its arguments.
+        let table_function_source = std::mem::take(&mut self.table_function_source);
         let func_span = func.span();
         let Function {
             name,
@@ -3642,6 +3648,7 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
         } else if let Some(kind) = AggKind::from_name(&function_name) {
             self.bind_aggregate_function(kind, args, is_distinct, arena)
         } else {
+            self.table_function_source = table_function_source;
             self.bind_function_call(function_name, args, arena)
         };
         result.map_err(|err| attach_span_if_absent(err, func_span))

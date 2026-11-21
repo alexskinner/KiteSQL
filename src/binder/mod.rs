@@ -68,6 +68,7 @@ use crate::errors::DatabaseError;
 use crate::expression::{ScalarExpression, TypeCast};
 use crate::planner::operator::join::JoinType;
 use crate::planner::operator::mark_apply::MarkApplyQuantifier;
+use crate::planner::operator::Operator;
 use crate::planner::{ExprRef, LogicalPlan, PlanArena, PlanRef, ScalarQueryRef};
 use crate::storage::{NameMapping, StorageTransaction, TableCache, ViewCache};
 use crate::types::tuple::Schema;
@@ -581,7 +582,26 @@ impl<'a, T: StorageTransaction> BinderContext<'a, T> {
         if let Some(table) = self.table(table_name)? {
             return Ok(Some(Source::Table(table)));
         }
-        Ok(self.view(table_name)?.map(Source::View))
+        let Some(view) = self.view(table_name)? else {
+            return Ok(None);
+        };
+        // A view keeps the plan it was bound to. Once a table that plan scans is dropped (or
+        // dropped and recreated), its columns no longer resolve, so the view cannot be read.
+        if !Self::scanned_tables_exist(&view.plan, self.table_cache) {
+            return Err(DatabaseError::TableNotFound);
+        }
+        Ok(Some(Source::View(view)))
+    }
+
+    fn scanned_tables_exist(plan: &LogicalPlan, tables: &TableCache) -> bool {
+        if let Operator::TableScan(op) = &plan.operator {
+            if !tables.contains_key(&op.table_id) {
+                return false;
+            }
+        }
+        plan.childrens
+            .iter()
+            .all(|child| Self::scanned_tables_exist(child, tables))
     }
 
     /// Rejects a FROM source whose visible name is already bound in the current
@@ -822,6 +842,10 @@ pub struct Binder<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalT
     pub(crate) force_nested_loop: bool,
     with_pk: Option<TableId>,
     pub(crate) parent: Option<&'parent BinderContext<'a, T>>,
+    /// Set only while binding the outermost call of a FROM-clause table function. A table
+    /// function anywhere else (e.g. an argument of another call) has no scalar type, so
+    /// [`Binder::bind_function_call`] only resolves one while this is set.
+    pub(crate) table_function_source: bool,
 }
 
 impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
@@ -839,6 +863,7 @@ impl<'a, 'parent, T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>>
             force_nested_loop: false,
             with_pk: None,
             parent,
+            table_function_source: false,
         }
     }
 
