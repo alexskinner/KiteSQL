@@ -58,9 +58,8 @@ pub(super) use sqlparser::ast::{
 };
 #[cfg(feature = "copy")]
 pub(super) use sqlparser::ast::{CopyOption, CopySource, CopyTarget};
-use sqlparser::ast::{GeneratedAs, NullsDistinctOption, SequenceOptions};
-#[cfg(feature = "parser")]
-use sqlparser::ast::OnInsert;
+#[allow(unused_imports)]
+use sqlparser::ast::{GeneratedAs, NullsDistinctOption, OnInsert, SequenceOptions};
 use sqlparser::tokenizer::Span;
 use std::borrow::Cow;
 use std::cmp;
