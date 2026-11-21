@@ -163,7 +163,6 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for ChangeColumn<'a> {
         }
 
         let apply = {
-            let mut decode = arena.decode_context();
             let (transaction, table_codec) = arena.transaction_codec_mut();
             let table = transaction
                 .change_column(
@@ -176,7 +175,6 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for ChangeColumn<'a> {
                     display_type_change,
                     default_change,
                     not_null_change,
-                    &mut decode,
                 )
                 .await?;
             DDLApply::upsert_table(table, true)

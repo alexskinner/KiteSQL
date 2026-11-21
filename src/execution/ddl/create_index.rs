@@ -99,7 +99,6 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CreateIndex<'a> {
             })
             .unzip();
         let index_id_result = {
-            let mut decode = arena.decode_context();
             let (transaction, table_codec) = arena.transaction_codec_mut();
             let (table, index_id) = transaction
                 .add_index_meta(
@@ -109,7 +108,6 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CreateIndex<'a> {
                     index_name.clone(),
                     column_ids,
                     *ty,
-                    &mut decode,
                 )
                 .await?;
             let table_id = table.id();
