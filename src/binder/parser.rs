@@ -164,6 +164,7 @@ impl<S: Storage> State<S> {
         }
         crate::diagnostics::begin_statement(policy);
         crate::types::collation::begin_statement(dialect.text_collation());
+        crate::dialect::state::begin_statement(dialect);
         Ok(stmts)
     }
 

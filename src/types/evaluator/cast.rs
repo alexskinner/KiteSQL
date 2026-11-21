@@ -1489,7 +1489,7 @@ mod test {
             (
                 LogicalType::Char(4, CharLengthUnits::Characters),
                 DataValue::Utf8 {
-                    value: "1".into(),
+                    value: "true".into(),
                     ty: Utf8Type::Fixed(4),
                     unit: CharLengthUnits::Characters,
                 },
@@ -1497,7 +1497,7 @@ mod test {
             (
                 LogicalType::Varchar(Some(4), CharLengthUnits::Characters),
                 DataValue::Utf8 {
-                    value: "1".into(),
+                    value: "true".into(),
                     ty: Utf8Type::Variable(Some(4)),
                     unit: CharLengthUnits::Characters,
                 },

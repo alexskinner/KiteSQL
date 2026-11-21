@@ -1,3 +1,5 @@
+pub mod state;
+
 use crate::errors::DatabaseError;
 use sqlparser::ast::Statement;
 use sqlparser::dialect::{Dialect as SqlParserDialect, GenericDialect};
@@ -127,6 +129,23 @@ pub trait SqlDialect: Debug + Send + Sync + 'static {
         diagnostic: crate::diagnostics::Diagnostic,
     ) -> Option<crate::diagnostics::Diagnostic> {
         Some(diagnostic)
+    }
+
+    /// The text representation of a boolean value when cast to CHAR or VARCHAR;
+    /// `None` (the default) uses the boolean's string representation ('true'/'false').
+    fn boolean_text(&self, _value: bool) -> Option<&'static str> {
+        None
+    }
+
+    /// Result type for comparing `left` and `right` (`=`, `<>`, `<`, `>`, …); `None` (the
+    /// default) keeps the engine's type. When this returns a type, the engine casts both
+    /// operands to it before comparing.
+    fn comparison_type(
+        &self,
+        _left: &crate::types::LogicalType,
+        _right: &crate::types::LogicalType,
+    ) -> Option<crate::types::LogicalType> {
+        None
     }
 }
 

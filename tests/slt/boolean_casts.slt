@@ -364,13 +364,13 @@ statement ok
 insert into t values (3, true)
 
 query IB
-select * from t where b = '1'
+select * from t where b = 'true'
 ----
 1 true
 3 true
 
 query IB
-select * from t where b = '0'
+select * from t where b = 'false'
 ----
 2 false
 
@@ -380,7 +380,7 @@ select * from t where b <> 'true'
 2 false
 
 query IB
-select * from t where b in ('0', '1')
+select * from t where b in ('true', 'false')
 ----
 1 true
 2 false
@@ -389,12 +389,9 @@ select * from t where b in ('0', '1')
 query IB
 select * from t where b in ('yes', 'no')
 ----
-1 true
-2 false
-3 true
 
 statement ok
-update t set b = '0' where id = 1
+update t set b = 'false' where id = 1
 
 query IB rowsort
 select * from t
@@ -404,7 +401,7 @@ select * from t
 3 true
 
 statement ok
-update t set b = 'yes' where b = '0'
+update t set b = 'true' where b = 'false'
 
 query IB rowsort
 select * from t
@@ -442,7 +439,7 @@ select t.id, t_join.id, t.b, t_join.b2 from t join t_join on t.b = t_join.b2
 2 2 false false
 
 query IIBB rowsort
-select t.id, t_join.id, t.b, t_join.b2 from t join t_join on t.b = '1' and t_join.b2 = 'true'
+select t.id, t_join.id, t.b, t_join.b2 from t join t_join on t.b = 'true' and t_join.b2 = 'true'
 ----
 1 1 true true
 
