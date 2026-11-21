@@ -148,7 +148,7 @@ impl<'db, S: Storage> Session<'db, S> {
                 "SAVEPOINT not supported yet".to_string(),
             )),
             _ => {
-                if Self::is_set_autocommit(&statement) {
+                if self.is_set_autocommit(&statement) {
                     self.handle_set_autocommit(&statement).await?;
                     Ok(SessionIter::Empty)
                 } else {
@@ -159,8 +159,16 @@ impl<'db, S: Storage> Session<'db, S> {
     }
 
     async fn begin_transaction(&mut self) -> Result<(), DatabaseError> {
-        // MySQL behavior: BEGIN while transaction open commits it
-        self.finish_transaction(true).await?;
+        if self.active_transaction.is_some() {
+            let dialect = self.database.state.dialect_registry().default_dialect();
+            if dialect.begin_commits_active_transaction() {
+                self.finish_transaction(true).await?;
+            } else {
+                return Err(DatabaseError::UnsupportedStmt(
+                    "BEGIN inside an active transaction".to_string(),
+                ));
+            }
+        }
 
         // Enable statement-level undo for explicit transactions
         let txn = self.database.new_transaction_with_undo(false, true)?;
@@ -197,7 +205,12 @@ impl<'db, S: Storage> Session<'db, S> {
         Ok(())
     }
 
-    fn is_set_autocommit(statement: &Statement) -> bool {
+    fn is_set_autocommit(&self, statement: &Statement) -> bool {
+        let dialect = self.database.state.dialect_registry().default_dialect();
+        if !dialect.supports_set_autocommit() {
+            return false;
+        }
+
         if let Statement::Set(sqlparser::ast::Set::SingleAssignment {
             variable, values, ..
         }) = statement
@@ -228,7 +241,7 @@ impl<'db, S: Storage> Session<'db, S> {
                 }
             };
 
-            // MySQL behavior: SET autocommit=1 commits any open transaction
+            // SET autocommit=1 commits any open transaction when the dialect supports it
             if new_value && !self.autocommit {
                 self.finish_transaction(true).await?;
             }
@@ -245,7 +258,7 @@ impl<'db, S: Storage> Session<'db, S> {
         &'a mut self,
         statement: Statement,
     ) -> Result<SessionIter<'a, 'db, S>, DatabaseError> {
-        // MySQL behavior: with autocommit=0, implicitly start transaction
+        // With autocommit disabled, implicitly start transaction when dialect supports it
         if !self.autocommit && self.active_transaction.is_none() {
             self.begin_transaction().await?;
         }
@@ -274,7 +287,7 @@ impl<'db, S: Storage> Session<'db, S> {
             };
 
             // For statement-level atomicity: execute and handle errors
-            // If execution fails, the transaction remains open (MySQL semantics)
+            // If execution fails, the transaction remains open
             let (plan, arena) =
                 state.build_plan_in(catalog, &[], &txn.inner, |binder, arena| {
                     binder.bind(&statement, arena)
@@ -374,6 +387,40 @@ mod tests {
     use std::thread;
     use tempfile::TempDir;
 
+    #[derive(Debug, Clone)]
+    struct CommittingBeginDialect {
+        inner: crate::dialect::GenericSqlDialect,
+    }
+
+    impl crate::dialect::SqlDialect for CommittingBeginDialect {
+        fn name(&self) -> &'static str {
+            "test_committing_begin"
+        }
+
+        fn parser_dialect(&self) -> &dyn sqlparser::dialect::Dialect {
+            self.inner.parser_dialect()
+        }
+
+        fn begin_commits_active_transaction(&self) -> bool {
+            true
+        }
+
+        fn supports_set_autocommit(&self) -> bool {
+            self.inner.supports_set_autocommit()
+        }
+    }
+
+    async fn open_committing_begin_test_db(
+        path: &std::path::Path,
+    ) -> Result<Database<crate::storage::lmdb::LmdbStorage>, DatabaseError> {
+        DataBaseBuilder::path(path)
+            .register_dialect(Arc::new(CommittingBeginDialect {
+                inner: crate::dialect::GenericSqlDialect::new(),
+            }))
+            .default_dialect("test_committing_begin")?
+            .build_lmdb()
+    }
+
     #[test]
     async fn test_session_basic_transaction() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
@@ -433,7 +480,7 @@ mod tests {
     }
 
     #[test]
-    async fn test_session_begin_implicitly_commits_lmdb() -> Result<(), DatabaseError> {
+    async fn test_session_begin_rejects_nested_transaction_generic() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().unwrap();
         let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
         database
@@ -449,7 +496,38 @@ mod tests {
             .done()
             .await?;
 
-        // Second BEGIN should commit the first (MySQL behavior)
+        // Generic dialect: second BEGIN inside transaction should error
+        let result = session.run("BEGIN").await;
+        assert!(result.is_err());
+        if let Err(e) = result {
+            assert!(
+                e.to_string().contains("BEGIN inside an active transaction"),
+                "Expected nested BEGIN error, got: {}",
+                e
+            );
+        }
+
+        Ok(())
+    }
+
+    #[test]
+    async fn test_session_begin_commits_when_dialect_allows() -> Result<(), DatabaseError> {
+        let temp_dir = TempDir::new().unwrap();
+        let mut database = open_committing_begin_test_db(temp_dir.path()).await?;
+        database
+            .ddl("CREATE TABLE test (id INT PRIMARY KEY, val INT)")
+            .await?;
+
+        let mut session = database.session();
+
+        session.run("BEGIN").await?.done().await?;
+        session
+            .run("INSERT INTO test VALUES (1, 100)")
+            .await?
+            .done()
+            .await?;
+
+        // Dialect with begin_commits_active_transaction=true: second BEGIN commits first
         session.run("BEGIN").await?.done().await?;
 
         let mut iter = database.run("SELECT * FROM test").await?;
@@ -458,7 +536,10 @@ mod tests {
             count += 1;
         }
         iter.done().await?;
-        assert_eq!(count, 1, "BEGIN should have implicitly committed");
+        assert_eq!(
+            count, 1,
+            "BEGIN should have implicitly committed via dialect hook"
+        );
 
         Ok(())
     }

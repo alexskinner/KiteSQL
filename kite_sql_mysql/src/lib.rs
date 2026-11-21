@@ -448,6 +448,16 @@ impl SqlDialect for MySqlDialect {
         }
     }
 
+    /// MySQL implicitly commits an active transaction when BEGIN is issued.
+    fn begin_commits_active_transaction(&self) -> bool {
+        true
+    }
+
+    /// MySQL supports SET autocommit syntax.
+    fn supports_set_autocommit(&self) -> bool {
+        true
+    }
+
     /// MySQL's level, code and text for each core diagnostic.
     fn map_diagnostic(&self, mut diagnostic: Diagnostic) -> Option<Diagnostic> {
         let (level, code, message) = match &diagnostic.kind {
