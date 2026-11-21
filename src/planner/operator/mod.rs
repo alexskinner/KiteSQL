@@ -1498,7 +1498,6 @@ mod tests {
                     Some(arena.alloc_expression(ScalarExpression::from(2_i32))),
                 )?,
             )],
-            composite_unique_keys: Vec::new(),
             if_not_exists: false,
             unique_constraints: Vec::new(),
             index_constraints: Vec::new(),
@@ -1681,7 +1680,6 @@ mod tests {
                 Operator::CreateTable(CreateTableOperator {
                     table_name: "users".into(),
                     columns: vec![column_catalog("id"), column_catalog("name")],
-                    composite_unique_keys: Vec::new(),
                     if_not_exists: true,
                     unique_constraints: Vec::new(),
                     index_constraints: Vec::new(),

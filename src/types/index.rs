@@ -158,12 +158,6 @@ impl<'a, V: TupleLike + ?Sized> Index<'a, V> {
     pub fn new(id: IndexId, values: &'a V, ty: IndexType) -> Self {
         Index { id, values, ty }
     }
-
-    #[allow(dead_code)]
-    pub(crate) fn is_unique_with_null(&self) -> bool {
-        matches!(self.ty, IndexType::Unique)
-            && (0..self.values.len()).any(|i| self.values.value_at(i).has_null())
-    }
 }
 
 impl IndexInfo {

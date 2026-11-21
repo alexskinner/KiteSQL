@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![cfg(all(not(feature = "async"), feature = "lmdb"))]
+
 //! Test that custom dialects defined in external crates can map types and change parsing.
 
 use kite_sql::db::DataBaseBuilder;

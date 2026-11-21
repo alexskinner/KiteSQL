@@ -58,8 +58,7 @@ pub(super) use sqlparser::ast::{
 };
 #[cfg(feature = "copy")]
 pub(super) use sqlparser::ast::{CopyOption, CopySource, CopyTarget};
-#[allow(unused_imports)]
-use sqlparser::ast::{GeneratedAs, NullsDistinctOption, OnInsert, SequenceOptions};
+use sqlparser::ast::{GeneratedAs, NullsDistinctOption, SequenceOptions};
 use sqlparser::tokenizer::Span;
 use std::borrow::Cow;
 use std::cmp;
@@ -946,10 +945,9 @@ where
         for constraint in create.constraints {
             match constraint {
                 TableConstraint::PrimaryKey(primary) => {
-                    let positions = Self::constraint_columns(&columns, primary.columns)?;
-                    for (i, position) in positions.into_iter().enumerate() {
-                        columns[position].desc_mut().set_primary(Some(i));
-                    }
+                    self.bind_constraint(&mut columns, primary.columns, |i, desc| {
+                        desc.set_primary(Some(i))
+                    })?;
                 }
                 TableConstraint::Unique(unique) => {
                     Self::check_unique_nulls_option(unique.nulls_distinct)?;
@@ -959,6 +957,12 @@ where
                         .map(|index_col| index_key_part_column(&index_col.column.expr, &columns))
                         .collect();
                     let cols = column_names?;
+                    if let Some(missing) = cols
+                        .iter()
+                        .find(|name| !columns.iter().any(|column| column.name() == name.as_str()))
+                    {
+                        return Err(DatabaseError::column_not_found(missing.clone()));
+                    }
 
                     let index_name = unique
                         .name
@@ -1090,7 +1094,6 @@ where
         let display_type = type_spec.display;
         let mut column_desc = ColumnDesc::new(type_spec.logical, None, false, None)?;
         let mut nullable = true;
-        let mut is_primary = false;
 
         let mut primary_key_seen = false;
         let mut explicit_null = false;
@@ -1139,7 +1142,6 @@ where
                             "Multiple PRIMARY KEY options for a single column".to_string(),
                         ));
                     }
-                    is_primary = true;
                 }
                 ColumnOption::Unique(unique) => {
                     Self::check_unique_nulls_option(unique.nulls_distinct)?;
@@ -1231,7 +1233,7 @@ where
         }
 
         Ok((
-            ColumnCatalog::new(column_name, nullable && !is_primary, column_desc),
+            ColumnCatalog::new(column_name, nullable, column_desc),
             display_type,
             identity,
         ))
@@ -1246,12 +1248,11 @@ where
         for (i, index_column) in exprs.into_iter().enumerate() {
             let column_name = index_key_part_column(&index_column.column.expr, &*table_columns)?;
 
-            if let Some(column) = table_columns
+            let column = table_columns
                 .iter_mut()
                 .find(|column| column.name() == column_name)
-            {
-                fn_constraint(i, column.desc_mut())
-            }
+                .ok_or_else(|| DatabaseError::column_not_found(column_name))?;
+            fn_constraint(i, column.desc_mut())
         }
         Ok(())
     }
@@ -1263,32 +1264,6 @@ where
             ));
         }
         Ok(())
-    }
-
-    fn constraint_columns(
-        table_columns: &[ColumnCatalog],
-        index_columns: Vec<IndexColumn>,
-    ) -> Result<Vec<usize>, DatabaseError> {
-        let mut positions = Vec::with_capacity(index_columns.len());
-        for index_column in index_columns {
-            let Expr::Identifier(ident) = index_column.column.expr else {
-                return Err(DatabaseError::UnsupportedStmt(
-                    "only identifier columns are supported in `PRIMARY KEY/UNIQUE`".to_string(),
-                ));
-            };
-            let column_name = lower_ident(&ident);
-            let position = table_columns
-                .iter()
-                .position(|column| column.name() == column_name.as_ref())
-                .ok_or_else(|| {
-                    attach_span_if_absent(
-                        DatabaseError::column_not_found(column_name.into_owned()),
-                        ident.span,
-                    )
-                })?;
-            positions.push(position);
-        }
-        Ok(positions)
     }
 
     fn create_index(self, create: CreateIndex) -> Result<LogicalPlan, DatabaseError> {
@@ -1512,7 +1487,7 @@ where
             }
             Some(sqlparser::ast::OnInsert::OnConflict(_)) | Some(&_) => {
                 return Err(DatabaseError::UnsupportedStmt(
-                    "INSERT ... ON CONFLICT (PostgreSQL syntax) is not yet supported".to_string(),
+                    "INSERT ON CONFLICT is not supported".to_string(),
                 ));
             }
             None => None,

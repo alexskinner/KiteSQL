@@ -435,6 +435,8 @@ impl DataBaseBuilder {
                 hll_precision: self.hll_precision,
                 statistics_relative_error: self.statistics_relative_error,
                 parser_recursion_limit: self.parser_recursion_limit,
+                #[cfg(feature = "parser")]
+                dialect_registry: self.dialect_registry,
                 transaction_isolation: self.transaction_isolation,
                 scalar_functions: self.scalar_functions,
                 table_functions: self.table_functions,
@@ -938,7 +940,12 @@ impl LiveCatalogs {
         }
     }
 
-    #[cfg(test)]
+    #[cfg(all(
+        test,
+        feature = "lmdb",
+        feature = "parser",
+        not(target_arch = "wasm32")
+    ))]
     pub(crate) fn count(&self) -> usize {
         self.count.load(std::sync::atomic::Ordering::SeqCst)
     }
@@ -2936,6 +2943,64 @@ pub(crate) mod test {
         Ok(value)
     }
 
+    #[cfg(feature = "time")]
+    #[test]
+    async fn function_default_survives_table_reload() -> Result<(), DatabaseError> {
+        let storage = crate::storage::new_test_storage().await;
+        {
+            let mut db = DataBaseBuilder::path(".").build_with_storage(storage.clone())?;
+            db.ddl("create table t (id int primary key, v timestamp default current_timestamp)")
+                .await?;
+        }
+
+        let mut db = DataBaseBuilder::path(".").build_with_storage(storage)?;
+        db.load(CatalogKind::Table("t".into())).await?;
+        db.run("insert into t (id) values (1)")
+            .await?
+            .done()
+            .await?;
+        let mut iter = db.run("select v from t").await?;
+        assert_eq!(
+            iter.next_tuple(|_, row| matches!(row[0], DataValue::Time64(..)))
+                .await?,
+            Some(true),
+        );
+        iter.done().await
+    }
+
+    #[cfg(not(feature = "async"))]
+    #[test]
+    async fn rejected_not_null_update_preserves_memory_index() -> Result<(), DatabaseError> {
+        let mut db = DataBaseBuilder::path(".").build_in_memory().await?;
+        db.ddl("create table t(id int primary key, b int not null unique, c int)")
+            .await?;
+        db.run("insert into t values (1, 10, null)")
+            .await?
+            .done()
+            .await?;
+
+        let result = db
+            .run("update t set b = c where id = 1")
+            .await?
+            .done()
+            .await;
+        assert!(
+            matches!(result, Err(DatabaseError::NotNull { column: Some(name), .. }) if name == "b")
+        );
+
+        let query = "select id from t where b = 10";
+        let mut explain = db.run(format!("explain {query}")).await?;
+        assert_eq!(
+            explain
+                .next_tuple(|_, row| row[0].to_string().contains("IndexScan By uk_b_index"))
+                .await?,
+            Some(true),
+        );
+        explain.done().await?;
+        assert_eq!(read_single_i32(db.run(query).await?).await?, 1);
+        Ok(())
+    }
+
     #[test]
     async fn test_run_sql() -> Result<(), DatabaseError> {
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
@@ -4198,7 +4263,7 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn test_udf_default_ddl_operations() -> Result<(), DatabaseError> {
+    async fn test_udf_default_ddl_operations() -> Result<(), DatabaseError> {
         use crate::expression::function::scala::ScalarFunctionImpl;
         use crate::expression::function::FunctionSummary;
         use crate::planner::{ExprRef, MetaArena};
@@ -4251,19 +4316,23 @@ pub(crate) mod test {
 
         let temp_dir = TempDir::new().expect("unable to create temporary working directory");
         let mut kite_sql = DataBaseBuilder::path(temp_dir.path())
-            .build_with_storage(crate::storage::new_test_storage())?;
+            .build_with_storage(crate::storage::new_test_storage().await)?;
 
-        kite_sql.load(CatalogKind::ScalarFunction(my_udf))?;
-
-        kite_sql.ddl("CREATE TABLE t_udf (id int primary key, val int default my_udf(), v int)")?;
+        kite_sql.load(CatalogKind::ScalarFunction(my_udf)).await?;
 
         kite_sql
-            .run("INSERT INTO t_udf (id, v) VALUES (1, 10)")?
-            .done()?;
+            .ddl("CREATE TABLE t_udf (id int primary key, val int default my_udf(), v int)")
+            .await?;
+
+        kite_sql
+            .run("INSERT INTO t_udf (id, v) VALUES (1, 10)")
+            .await?
+            .done()
+            .await?;
 
         let mut found_val = None;
         {
-            let mut iter = kite_sql.run("SELECT val FROM t_udf WHERE id = 1")?;
+            let mut iter = kite_sql.run("SELECT val FROM t_udf WHERE id = 1").await?;
             while let Some(val) = iter.next_tuple(|_, row| row.get(0).cloned()).await? {
                 found_val = val;
             }
@@ -4271,12 +4340,18 @@ pub(crate) mod test {
         }
         assert_eq!(found_val, Some(DataValue::Int32(42)));
 
-        kite_sql.ddl("CREATE INDEX ix_v ON t_udf (v)")?;
-        kite_sql.ddl("DROP INDEX ix_v ON t_udf")?;
-        kite_sql.ddl("ALTER TABLE t_udf ADD COLUMN val2 int default my_udf()")?;
-        kite_sql.ddl("ALTER TABLE t_udf DROP COLUMN val2")?;
-        kite_sql.ddl("ALTER TABLE t_udf ALTER COLUMN val SET DEFAULT my_udf()")?;
-        kite_sql.ddl("ALTER TABLE t_udf ALTER COLUMN val DROP DEFAULT")?;
+        kite_sql.ddl("CREATE INDEX ix_v ON t_udf (v)").await?;
+        kite_sql.ddl("DROP INDEX ix_v ON t_udf").await?;
+        kite_sql
+            .ddl("ALTER TABLE t_udf ADD COLUMN val2 int default my_udf()")
+            .await?;
+        kite_sql.ddl("ALTER TABLE t_udf DROP COLUMN val2").await?;
+        kite_sql
+            .ddl("ALTER TABLE t_udf ALTER COLUMN val SET DEFAULT my_udf()")
+            .await?;
+        kite_sql
+            .ddl("ALTER TABLE t_udf ALTER COLUMN val DROP DEFAULT")
+            .await?;
 
         Ok(())
     }
@@ -4417,7 +4492,7 @@ pub(crate) mod test {
         }
     }
 
-    #[cfg(feature = "parser")]
+    #[cfg(all(feature = "parser", not(feature = "async")))]
     #[test]
     fn test_generic_dialect_rejects_mysql_comment_syntax() -> Result<(), DatabaseError> {
         let database_generic = DataBaseBuilder::path(".").build_in_memory()?;
@@ -4441,7 +4516,7 @@ pub(crate) mod test {
         Ok(())
     }
 
-    #[cfg(feature = "parser")]
+    #[cfg(all(feature = "parser", not(feature = "async")))]
     #[test]
     fn test_dialect_rewrite_hook() -> Result<(), DatabaseError> {
         use crate::dialect::SqlDialect;
@@ -4669,20 +4744,31 @@ pub(crate) mod test {
         Ok(())
     }
 
+    async fn run_to_end<S: Storage>(
+        db: &crate::db::Database<S>,
+        sql: &str,
+    ) -> Result<(), DatabaseError> {
+        db.run(sql).await?.done().await
+    }
+
     #[test]
-    fn test_update_rejects_null_in_not_null_column() -> Result<(), DatabaseError> {
-        let mut database = DataBaseBuilder::path(".").build_in_memory()?;
-        database.ddl("create table t_upd_nn(id int primary key, b int not null, c int)")?;
+    async fn test_update_rejects_null_in_not_null_column() -> Result<(), DatabaseError> {
+        let mut database = DataBaseBuilder::path(".").build_in_memory().await?;
         database
-            .run("insert into t_upd_nn values (1, 1, 1), (2, 2, null)")?
-            .done()?;
+            .ddl("create table t_upd_nn(id int primary key, b int not null, c int)")
+            .await?;
+        database
+            .run("insert into t_upd_nn values (1, 1, 1), (2, 2, null)")
+            .await?
+            .done()
+            .await?;
 
         for sql in [
             "update t_upd_nn set b = null where id = 1",
             "update t_upd_nn set b = c where id = 2",
             "update t_upd_nn set b = c + null",
         ] {
-            let err = database.run(sql).and_then(|iter| iter.done()).unwrap_err();
+            let err = run_to_end(&database, sql).await.unwrap_err();
             assert!(
                 matches!(&err, DatabaseError::NotNull { column: Some(c), .. } if c == "b"),
                 "{sql}: {err}"
@@ -4690,14 +4776,18 @@ pub(crate) mod test {
         }
         // The failed statements changed nothing; a nullable column still takes NULL.
         database
-            .run("update t_upd_nn set c = null where id = 1")?
-            .done()?;
-        let mut iter = database.run("select id, b, c from t_upd_nn order by id")?;
+            .run("update t_upd_nn set c = null where id = 1")
+            .await?
+            .done()
+            .await?;
+        let mut iter = database
+            .run("select id, b, c from t_upd_nn order by id")
+            .await?;
         let mut rows = Vec::new();
-        while let Some(row) = iter.next_tuple(|_, row| row.take_values())? {
+        while let Some(row) = iter.next_tuple(|_, row| row.take_values()).await? {
             rows.push(row);
         }
-        iter.done()?;
+        iter.done().await?;
         assert_eq!(
             rows,
             vec![
@@ -4710,24 +4800,26 @@ pub(crate) mod test {
     }
 
     #[test]
-    fn test_insert_rejects_duplicate_target_column() -> Result<(), DatabaseError> {
-        let mut database = DataBaseBuilder::path(".").build_in_memory()?;
-        database.ddl("create table t_ins_dup(id int primary key, a int, b int)")?;
+    async fn test_insert_rejects_duplicate_target_column() -> Result<(), DatabaseError> {
+        let mut database = DataBaseBuilder::path(".").build_in_memory().await?;
+        database
+            .ddl("create table t_ins_dup(id int primary key, a int, b int)")
+            .await?;
 
         for sql in [
             "insert into t_ins_dup (id, a, a) values (1, 1, 2)",
             "insert into t_ins_dup (id, a, b, b) values (1, 1, 2, 3)",
             "insert into t_ins_dup (id, a, a) select 1, 2, 3",
         ] {
-            let err = database.run(sql).and_then(|iter| iter.done()).unwrap_err();
+            let err = run_to_end(&database, sql).await.unwrap_err();
             assert!(
                 matches!(&err, DatabaseError::DuplicateTargetColumn(c) if c == "a" || c == "b"),
                 "{sql}: {err}"
             );
         }
-        let mut iter = database.run("select count(*) from t_ins_dup")?;
-        let row = iter.next_tuple(|_, row| row.take_values())?.unwrap();
-        iter.done()?;
+        let mut iter = database.run("select count(*) from t_ins_dup").await?;
+        let row = iter.next_tuple(|_, row| row.take_values()).await?.unwrap();
+        iter.done().await?;
         assert_eq!(row, vec![DataValue::Int32(0)]);
 
         Ok(())

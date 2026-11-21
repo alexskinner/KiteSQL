@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#[cfg(test)]
+#[cfg(all(test, not(feature = "async"), not(target_arch = "wasm32")))]
 mod tests {
     use crate::db::DataBaseBuilder;
     use crate::errors::DatabaseError;

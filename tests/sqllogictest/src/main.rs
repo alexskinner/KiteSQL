@@ -83,9 +83,7 @@ fn main() {
     }
 
     for filepath in all_files {
-        let is_mysql = filepath
-            .to_str()
-            .map_or(false, |s| s.contains("/slt_mysql/"));
+        let is_mysql = filepath.to_str().is_some_and(|s| s.contains("/slt_mysql/"));
 
         #[cfg(not(feature = "async"))]
         if is_mysql {

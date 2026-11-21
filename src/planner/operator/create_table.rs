@@ -26,8 +26,6 @@ pub struct CreateTableOperator {
     pub table_name: TableName,
     /// List of columns of the table
     pub columns: Vec<ColumnCatalog>,
-    /// Each key lists positions in `columns` in constraint order.
-    pub composite_unique_keys: Vec<Vec<usize>>,
     pub if_not_exists: bool,
     /// Composite unique constraints: each inner Vec contains column names for a unique constraint
     pub unique_constraints: Vec<Vec<String>>,

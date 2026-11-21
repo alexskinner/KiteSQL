@@ -634,11 +634,11 @@ macro_rules! impl_transaction {
                 statement_stamp(self.db, &mut self.statements)
             }
 
-            fn scala_functions(&self) -> Option<&crate::db::ScalaFunctions> {
+            fn scala_functions(&self) -> Option<&$crate::db::ScalaFunctions> {
                 self.scala_functions.as_deref()
             }
 
-            fn table_functions(&self) -> Option<&crate::db::TableFunctions> {
+            fn table_functions(&self) -> Option<&$crate::db::TableFunctions> {
                 self.table_functions.as_deref()
             }
 
@@ -1028,7 +1028,6 @@ mod test {
             &mut plan_arena,
             "test".to_string(),
             source_columns,
-            &[],
             false,
             Vec::new(),
             Vec::new(),

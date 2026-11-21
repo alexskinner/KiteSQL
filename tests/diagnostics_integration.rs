@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#![cfg(all(not(feature = "async"), feature = "lmdb"))]
+
 //! The statement diagnostics channel: a dialect's policy and code mapping, end to end.
 
 use kite_sql::db::DataBaseBuilder;

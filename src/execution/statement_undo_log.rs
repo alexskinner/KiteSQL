@@ -149,7 +149,9 @@ impl StatementUndoLog {
                             table_codec,
                             table_id,
                             &tuple,
-                            serializers.as_slice(),
+                            // An owned iterator: a borrowed one makes the async future's
+                            // `Send` bound fail to generalise over the borrow's lifetime.
+                            Arc::unwrap_or_clone(serializers),
                             overwrite,
                         )
                         .await?;

@@ -57,7 +57,6 @@ impl<T: StorageTransaction, A: AsRef<[(usize, LogicalType)]>> Binder<'_, '_, T, 
             Operator::CreateTable(CreateTableOperator {
                 table_name,
                 columns,
-                composite_unique_keys: Vec::new(),
                 if_not_exists,
                 unique_constraints,
                 index_constraints,

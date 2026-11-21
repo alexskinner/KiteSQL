@@ -52,7 +52,6 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for CreateTable<'a> {
         let CreateTableOperator {
             table_name,
             columns,
-            composite_unique_keys: _,
             if_not_exists,
             unique_constraints,
             index_constraints,
