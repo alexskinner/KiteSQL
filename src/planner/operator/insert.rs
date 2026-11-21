@@ -23,6 +23,7 @@ pub struct InsertOperator {
     pub on_duplicate_key_update: Option<Vec<(usize, ExprRef)>>,
     /// The table's identity column, whose omitted or NULL values the insert generates.
     pub identity: Option<IdentityTarget>,
+    pub upsert_update_count: u64,
 }
 
 #[derive(Debug, PartialEq, Eq, Clone, Copy, Hash, ReferenceSerialization)]

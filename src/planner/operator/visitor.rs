@@ -761,6 +761,7 @@ pub(crate) mod tests {
                 is_overwrite: false,
                 on_duplicate_key_update: None,
                 identity: None,
+                upsert_update_count: 0,
             }),
             Operator::Update(UpdateOperator {
                 table: crate::catalog::table::DmlTable::default(),

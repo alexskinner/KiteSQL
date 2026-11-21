@@ -36,6 +36,7 @@ pub struct Insert<'a> {
     is_overwrite: bool,
     on_duplicate_key_update: Option<&'a [(usize, ExprRef)]>,
     identity: Option<IdentityTarget>,
+    upsert_update_count: u64,
 }
 
 impl<'a> WriteExecutor<'a> for Insert<'a> {
@@ -48,6 +49,7 @@ impl<'a> WriteExecutor<'a> for Insert<'a> {
                 is_overwrite,
                 on_duplicate_key_update,
                 identity,
+                upsert_update_count,
             },
             input_plan,
         ): Self::Input,
@@ -63,6 +65,7 @@ impl<'a> WriteExecutor<'a> for Insert<'a> {
             is_overwrite: *is_overwrite,
             on_duplicate_key_update: on_duplicate_key_update.as_deref(),
             identity: *identity,
+            upsert_update_count: *upsert_update_count,
         }))
     }
 }
@@ -285,7 +288,6 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
                     }
                     new_tuple[*column_index] = value;
                 }
-                // MySQL reports 2 for a changed row and 0 for an unchanged one.
                 if new_tuple.iter().eq(old_tuple.iter()) {
                     continue;
                 }
@@ -393,7 +395,7 @@ impl<'a, T: StorageTransaction + 'a> ExecutorNode<'a, T> for Insert<'a> {
                     }
                 }
 
-                affected_rows += 2;
+                affected_rows += self.upsert_update_count;
             } else {
                 for (index_meta, exprs) in table.index_exprs.iter() {
                     let index_meta = plan_arena.index(*index_meta);

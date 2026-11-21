@@ -434,6 +434,20 @@ impl SqlDialect for MySqlDialect {
         mysql_comparison_type(left, right)
     }
 
+    /// MySQL supports ON DUPLICATE KEY UPDATE.
+    fn supports_on_duplicate_key_update(&self) -> bool {
+        true
+    }
+
+    /// MySQL reports 2 for a changed row, 1 for an inserted row, 0 for an unchanged row.
+    fn upsert_affected_rows(&self, inserted: bool, _updated: bool) -> u64 {
+        if inserted {
+            1
+        } else {
+            2
+        }
+    }
+
     /// MySQL's level, code and text for each core diagnostic.
     fn map_diagnostic(&self, mut diagnostic: Diagnostic) -> Option<Diagnostic> {
         let (level, code, message) = match &diagnostic.kind {

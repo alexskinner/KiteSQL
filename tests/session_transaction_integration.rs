@@ -8,6 +8,34 @@ use kite_sql::db::{DataBaseBuilder, ResultIter};
 use kite_sql::errors::DatabaseError;
 use tempfile::TempDir;
 
+#[derive(Debug, Clone)]
+struct OdkuTestDialect {
+    inner: kite_sql::dialect::GenericSqlDialect,
+}
+
+impl kite_sql::dialect::SqlDialect for OdkuTestDialect {
+    fn name(&self) -> &'static str {
+        "test_odku"
+    }
+
+    fn parser_dialect(&self) -> &dyn sqlparser::dialect::Dialect {
+        self.inner.parser_dialect()
+    }
+
+    fn supports_on_duplicate_key_update(&self) -> bool {
+        true
+    }
+
+    fn upsert_affected_rows(&self, inserted: bool, updated: bool) -> u64 {
+        match (inserted, updated) {
+            (true, false) => 1,
+            (false, true) => 2,
+            (false, false) => 0,
+            (true, true) => unreachable!("row cannot be both inserted and updated"),
+        }
+    }
+}
+
 #[test]
 fn test_session_transaction_control_integration() -> Result<(), DatabaseError> {
     let temp_dir = TempDir::new().unwrap();
@@ -588,7 +616,12 @@ fn test_on_duplicate_key_update_cms_schema() -> Result<(), DatabaseError> {
     // - Fresh UUID on every insert conflicts on UNIQUE index, not PK
 
     let temp_dir = TempDir::new().unwrap();
-    let mut database = DataBaseBuilder::path(temp_dir.path()).build_lmdb()?;
+    let mut database = DataBaseBuilder::path(temp_dir.path())
+        .register_dialect(std::sync::Arc::new(OdkuTestDialect {
+            inner: kite_sql::dialect::GenericSqlDialect::new(),
+        }))
+        .default_dialect("test_odku")?
+        .build_lmdb()?;
 
     database.ddl(
         "CREATE TABLE cms_system_config (

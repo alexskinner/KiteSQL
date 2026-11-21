@@ -1782,6 +1782,7 @@ mod tests {
                     is_overwrite: true,
                     on_duplicate_key_update: None,
                     identity: None,
+                    upsert_update_count: 0,
                 }),
                 "Insert users, Is Overwrite: true",
             ),
