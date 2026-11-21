@@ -204,8 +204,7 @@ mod tests {
         let transaction = storage.transaction()?;
         let cache = &table_cache;
         let mut exec_buffer = crate::execution::ExecBuffer::default();
-        let functions = (&Default::default(), &Default::default());
-        let mut exec_arena = ExecArena::new(cache, functions, &transaction);
+        let mut exec_arena = ExecArena::new(cache, &transaction);
         let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
         let mut root = <IndexProbeJoin as ReadExecutor>::into_executor(
             (&op, &left, &right),

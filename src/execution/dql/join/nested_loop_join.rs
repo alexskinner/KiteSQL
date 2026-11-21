@@ -559,8 +559,7 @@ mod test {
         plan.populate_output_schema_recursive(&mut plan_arena);
         let context = &table_cache;
         let mut exec_buffer = crate::execution::ExecBuffer::default();
-        let functions = (&Default::default(), &Default::default());
-        let mut exec_arena = ExecArena::new(context, functions, &transaction);
+        let mut exec_arena = ExecArena::new(context, &transaction);
         let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
         let mut root = build_read(&mut arena, &plan_arena, &plan);
         let mut rows = 0;

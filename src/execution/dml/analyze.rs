@@ -634,7 +634,7 @@ mod test {
                 &mut codec,
                 table_id,
                 2,
-                reopened.state.table_arena().borrow_mut(),
+                reopened.state.arena().borrow_mut(),
             )
             .await?
             .unwrap();
