@@ -630,7 +630,12 @@ mod test {
         let mut codec = TableCodec::default();
         let mut tx = reopened.storage.transaction()?;
         let stored = tx
-            .index_statistics(&mut codec, table_id, 2, reopened.state.arena().borrow_mut())
+            .index_statistics(
+                &mut codec,
+                table_id,
+                2,
+                reopened.state.catalog().arena().borrow_mut(),
+            )
             .await?
             .unwrap();
         assert_eq!(stored.histogram().buckets_len(), 0);

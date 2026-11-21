@@ -570,7 +570,7 @@ mod tests {
         let context = &table_cache;
         let mut exec_buffer = crate::execution::ExecBuffer::default();
         let functions = (&Default::default(), &Default::default());
-        let mut exec_arena = ExecArena::new(context, functions, &transaction);
+        let mut exec_arena = ExecArena::new(context, &transaction);
         let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
         let mut root = <MarkApply as ReadExecutor>::into_executor(
             (&op, &left, &right),
@@ -694,7 +694,7 @@ mod tests {
         let transaction = storage.transaction()?;
         let mut exec_buffer = crate::execution::ExecBuffer::default();
         let functions = (&Default::default(), &Default::default());
-        let mut exec_arena = ExecArena::new(&table_cache, functions, &transaction);
+        let mut exec_arena = ExecArena::new(&table_cache, &transaction);
         let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
 
         let right_root = build_read(&mut arena, &plan_arena, &right);
@@ -751,7 +751,7 @@ mod tests {
         let transaction = storage.transaction()?;
         let mut exec_buffer = crate::execution::ExecBuffer::default();
         let functions = (&Default::default(), &Default::default());
-        let mut exec_arena = ExecArena::new(&table_cache, functions, &transaction);
+        let mut exec_arena = ExecArena::new(&table_cache, &transaction);
         let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
 
         let right_root = build_read(&mut arena, &plan_arena, &right);
@@ -807,7 +807,7 @@ mod tests {
         let transaction = storage.transaction()?;
         let mut exec_buffer = crate::execution::ExecBuffer::default();
         let functions = (&Default::default(), &Default::default());
-        let mut exec_arena = ExecArena::new(&table_cache, functions, &transaction);
+        let mut exec_arena = ExecArena::new(&table_cache, &transaction);
         let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
 
         let right_root = build_read(&mut arena, &plan_arena, &right);
@@ -946,7 +946,7 @@ mod tests {
                     }
                     let mut exec_buffer = crate::execution::ExecBuffer::default();
                     let functions = (&Default::default(), &Default::default());
-                    let mut exec_arena = ExecArena::new(cache, functions, &transaction);
+                    let mut exec_arena = ExecArena::new(cache, &transaction);
                     let mut arena =
                         crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
                     let left_input = build_read(&mut arena, &meta, &left);
@@ -1032,7 +1032,7 @@ mod tests {
             op.guard = Some(meta.alloc_expression(ScalarExpression::column_expr(flag_column, 1)));
             let mut exec_buffer = crate::execution::ExecBuffer::default();
             let functions = (&Default::default(), &Default::default());
-            let mut exec_arena = ExecArena::new(cache, functions, &transaction);
+            let mut exec_arena = ExecArena::new(cache, &transaction);
             let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
             let left_input = build_read(&mut arena, &meta, &left);
             let right_root = build_read(&mut arena, &meta, &right);
@@ -1105,7 +1105,7 @@ mod tests {
             let empty = build_values(&mut meta, "empty", vec![]);
             let mut exec_buffer = crate::execution::ExecBuffer::default();
             let functions = (&Default::default(), &Default::default());
-            let mut exec_arena = ExecArena::new(cache, functions, &transaction);
+            let mut exec_arena = ExecArena::new(cache, &transaction);
             let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
             let left_input = build_read(&mut arena, &meta, &left);
             let right_root = build_read(&mut arena, &meta, &right);

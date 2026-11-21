@@ -237,7 +237,7 @@ mod tests {
             duplicate.populate_output_schema_recursive(&mut metadata);
             let mut exec_buffer = crate::execution::ExecBuffer::default();
             let functions = (&Default::default(), &Default::default());
-            let mut exec_arena = ExecArena::new(cache, functions, &transaction);
+            let mut exec_arena = ExecArena::new(cache, &transaction);
             let mut arena = crate::execution::ExecContext::new(&mut exec_buffer, &mut exec_arena);
             let mut first_root = build_read(&mut arena, &metadata, &first);
             let mut duplicate_root = build_read(&mut arena, &metadata, &duplicate);
