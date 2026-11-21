@@ -58,7 +58,7 @@ pub(super) use sqlparser::ast::{
 };
 #[cfg(feature = "copy")]
 pub(super) use sqlparser::ast::{CopyOption, CopySource, CopyTarget};
-use sqlparser::ast::{GeneratedAs, SequenceOptions};
+use sqlparser::ast::{GeneratedAs, NullsDistinctOption, OnInsert, SequenceOptions};
 use sqlparser::tokenizer::Span;
 use std::borrow::Cow;
 use std::cmp;
@@ -945,11 +945,13 @@ where
         for constraint in create.constraints {
             match constraint {
                 TableConstraint::PrimaryKey(primary) => {
-                    self.bind_constraint(&mut columns, primary.columns, |i, desc| {
-                        desc.set_primary(Some(i))
-                    })?;
+                    let positions = Self::constraint_columns(&columns, primary.columns)?;
+                    for (i, position) in positions.into_iter().enumerate() {
+                        columns[position].desc_mut().set_primary(Some(i));
+                    }
                 }
                 TableConstraint::Unique(unique) => {
+                    Self::check_unique_nulls_option(unique.nulls_distinct)?;
                     let column_names: Result<Vec<String>, DatabaseError> = unique
                         .columns
                         .iter()
@@ -1087,6 +1089,7 @@ where
         let display_type = type_spec.display;
         let mut column_desc = ColumnDesc::new(type_spec.logical, None, false, None)?;
         let mut nullable = true;
+        let mut is_primary = false;
 
         let mut primary_key_seen = false;
         let mut explicit_null = false;
@@ -1135,8 +1138,12 @@ where
                             "Multiple PRIMARY KEY options for a single column".to_string(),
                         ));
                     }
+                    is_primary = true;
                 }
-                ColumnOption::Unique(_) => column_desc.set_unique(),
+                ColumnOption::Unique(unique) => {
+                    Self::check_unique_nulls_option(unique.nulls_distinct)?;
+                    column_desc.set_unique();
+                }
                 ColumnOption::Default(expr) => {
                     default_count += 1;
                     if default_count > 1 {
@@ -1223,7 +1230,7 @@ where
         }
 
         Ok((
-            ColumnCatalog::new(column_name, nullable, column_desc),
+            ColumnCatalog::new(column_name, nullable && !is_primary, column_desc),
             display_type,
             identity,
         ))
@@ -1246,6 +1253,41 @@ where
             }
         }
         Ok(())
+    }
+
+    fn check_unique_nulls_option(option: NullsDistinctOption) -> Result<(), DatabaseError> {
+        if option != NullsDistinctOption::None {
+            return Err(DatabaseError::UnsupportedStmt(
+                "UNIQUE NULLS options".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
+    fn constraint_columns(
+        table_columns: &[ColumnCatalog],
+        index_columns: Vec<IndexColumn>,
+    ) -> Result<Vec<usize>, DatabaseError> {
+        let mut positions = Vec::with_capacity(index_columns.len());
+        for index_column in index_columns {
+            let Expr::Identifier(ident) = index_column.column.expr else {
+                return Err(DatabaseError::UnsupportedStmt(
+                    "only identifier columns are supported in `PRIMARY KEY/UNIQUE`".to_string(),
+                ));
+            };
+            let column_name = lower_ident(&ident);
+            let position = table_columns
+                .iter()
+                .position(|column| column.name() == column_name.as_ref())
+                .ok_or_else(|| {
+                    attach_span_if_absent(
+                        DatabaseError::column_not_found(column_name.into_owned()),
+                        ident.span,
+                    )
+                })?;
+            positions.push(position);
+        }
+        Ok(positions)
     }
 
     fn create_index(self, create: CreateIndex) -> Result<LogicalPlan, DatabaseError> {
@@ -1438,13 +1480,13 @@ where
 
         if returning.is_some() {
             return Err(DatabaseError::UnsupportedStmt(
-                "INSERT ... RETURNING is not supported".to_string(),
+                "INSERT RETURNING is not supported".to_string(),
             ));
         }
 
         if !assignments.is_empty() {
             return Err(DatabaseError::UnsupportedStmt(
-                "INSERT ... SET is not supported".to_string(),
+                "INSERT SET is not supported".to_string(),
             ));
         }
 

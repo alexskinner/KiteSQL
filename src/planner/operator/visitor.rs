@@ -802,6 +802,7 @@ pub(crate) mod tests {
             Operator::CreateTable(CreateTableOperator {
                 table_name: "t1".into(),
                 columns: vec![column],
+                composite_unique_keys: Vec::new(),
                 if_not_exists: false,
                 unique_constraints: Vec::new(),
                 index_constraints: Vec::new(),

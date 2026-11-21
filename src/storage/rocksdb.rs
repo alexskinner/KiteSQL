@@ -1028,6 +1028,7 @@ mod test {
             &mut plan_arena,
             "test".to_string(),
             source_columns,
+            &[],
             false,
             Vec::new(),
             Vec::new(),
